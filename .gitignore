@@ -4,6 +4,7 @@ data/last_intraday_card.md
 data/last_anomaly_card.md
 __pycache__/
 *.pyc
+.venv/
 data/*.db
 data/minute/*.parquet
 data/snapshots/*.parquet

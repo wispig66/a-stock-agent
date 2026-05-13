@@ -19,7 +19,7 @@ L4 盘后复盘。**两个核心职责**：
 ## Step 1 · 拉今日完整数据 + 写库
 
 ```bash
-~/miniconda3/envs/stock/bin/python .claude/skills/stock-postmarket/scripts/fetch_postmarket.py
+uv run .claude/skills/stock-postmarket/scripts/fetch_postmarket.py
 ```
 
 这一步同时做三件事：
@@ -36,7 +36,7 @@ L4 盘后复盘。**两个核心职责**：
 自动解析今日盘前推送 + 拉今日行情 + 命中判定，**一条命令出表**：
 
 ```bash
-~/miniconda3/envs/stock/bin/python code/review.py review
+uv run code/review.py review
 ```
 
 输出 markdown 表 + 命中率统计（触发率 / 收红率 / 假突破率 / 止损命中率），直接粘进卡片 Step 4 的复盘段。
@@ -243,7 +243,7 @@ fact pack: data/fact_pack/[YYYYMMDD]_postmarket.md
 
 1. Write 卡片到 `data/last_postmarket_card.md`
 2. ```bash
-   ~/miniconda3/envs/stock/bin/python .claude/skills/stock-premarket/scripts/push.py --file data/last_postmarket_card.md --source stock-postmarket
+   uv run .claude/skills/stock-premarket/scripts/push.py --file data/last_postmarket_card.md --source stock-postmarket
    ```
 
 ## Step 5 · 终端简要返回

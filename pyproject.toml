@@ -1,0 +1,11 @@
+[project]
+name = "stock-cc"
+version = "0.1.0"
+description = "A股短线 Claude Code 辅助系统"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "akshare>=1.18",
+    "pandas>=2.0",
+    "requests>=2.31",
+    "PyYAML>=6.0",
+]

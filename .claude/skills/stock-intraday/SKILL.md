@@ -43,7 +43,7 @@ date '+%H:%M %u'
 ## Step 1A · 纪律提醒分支数据拉取（09:30 / 09:45）
 
 ```bash
-~/miniconda3/envs/stock/bin/python .claude/skills/stock-intraday/scripts/fetch_realtime.py
+uv run .claude/skills/stock-intraday/scripts/fetch_realtime.py
 ```
 
 输出包含：
@@ -60,8 +60,8 @@ date '+%H:%M %u'
 在 Step 1A 之上额外拉：
 
 ```bash
-~/miniconda3/envs/stock/bin/python .claude/skills/stock-intraday/scripts/fetch_realtime.py --halfday  # 11:30 用
-~/miniconda3/envs/stock/bin/python .claude/skills/stock-intraday/scripts/fetch_realtime.py --endday  # 14:30 用
+uv run .claude/skills/stock-intraday/scripts/fetch_realtime.py --halfday  # 11:30 用
+uv run .claude/skills/stock-intraday/scripts/fetch_realtime.py --endday  # 14:30 用
 ```
 
 额外输出：
@@ -221,7 +221,7 @@ date '+%H:%M %u'
 
 1. Write 卡片到 `data/last_intraday_card.md`
 2. ```bash
-   ~/miniconda3/envs/stock/bin/python .claude/skills/stock-premarket/scripts/push.py --file data/last_intraday_card.md --source stock-intraday
+   uv run .claude/skills/stock-premarket/scripts/push.py --file data/last_intraday_card.md --source stock-intraday
    ```
 
 ## Step 5 · 终端简要返回

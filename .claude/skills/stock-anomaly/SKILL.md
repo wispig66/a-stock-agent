@@ -83,7 +83,7 @@ https://www.cls.cn/telegraph
 ## Step 5 · 推送 + 入库
 
 ```bash
-python code/notify.py --source stock-anomaly-summary < /tmp/anomaly_card.md
+uv run code/notify.py --source stock-anomaly-summary < /tmp/anomaly_card.md
 ```
 
 ## 纪律

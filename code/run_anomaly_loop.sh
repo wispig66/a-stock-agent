@@ -9,5 +9,14 @@ LOGDIR="logs"
 mkdir -p "$LOGDIR"
 LOG="$LOGDIR/anomaly_loop_$(date +%Y%m%d).log"
 
+# uv 可执行路径（launchd 无 PATH，必须绝对）
+for candidate in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv"; do
+  if [ -x "$candidate" ]; then
+    UV_BIN="$candidate"
+    break
+  fi
+done
+[ -n "$UV_BIN" ] || { echo "未找到 uv 可执行；先 brew install uv 或 curl -LsSf https://astral.sh/uv/install.sh | sh" >&2; exit 1; }
+
 echo "=== anomaly_loop start $(date) ===" >> "$LOG"
-exec ~/miniconda3/envs/stock/bin/python .claude/skills/stock-anomaly/scripts/anomaly_loop.py "$@" >> "$LOG" 2>&1
+exec "$UV_BIN" run .claude/skills/stock-anomaly/scripts/anomaly_loop.py "$@" >> "$LOG" 2>&1
