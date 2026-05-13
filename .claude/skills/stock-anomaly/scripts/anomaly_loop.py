@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 import argparse
+import json
 import sys
 import time
 from datetime import datetime, time as dtime
@@ -37,6 +38,9 @@ sys.path.insert(0, str(ROOT / ".claude" / "skills" / "stock-intraday" / "scripts
 
 from fetch_realtime import load_today_watchlist, load_holdings  # noqa: E402
 from notify import push  # noqa: E402
+
+RAW_DIR = ROOT / "data" / "anomaly_raw"
+SNAPSHOT_DIR = ROOT / "data" / "holdings_snapshot"
 
 SESSION_AM = (dtime(9, 31), dtime(11, 29))
 SESSION_PM = (dtime(13, 1), dtime(14, 59))
@@ -76,14 +80,42 @@ def format_alert(now: datetime, symbol: str, label: str, row: dict) -> str:
     return f"🆕 [{t[:5]}] {label} · {code} {name} · {symbol}  {info}"
 
 
+def snapshot_holdings(now: datetime) -> None:
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    src = ROOT / "holdings.yaml"
+    dst = SNAPSHOT_DIR / f"{now.strftime('%Y%m%d')}.yaml"
+    if src.exists() and not dst.exists():
+        dst.write_bytes(src.read_bytes())
+        print(f"[anomaly_loop] holdings 快照 → {dst.name}", flush=True)
+
+
+def append_raw(now: datetime, symbol: str, df) -> None:
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    path = RAW_DIR / f"{now.strftime('%Y%m%d')}.jsonl"
+    round_ts = now.isoformat(timespec="seconds")
+    with path.open("a") as f:
+        for _, row in df.iterrows():
+            rec = {
+                "round_ts": round_ts,
+                "symbol": symbol,
+                "code": row["代码"],
+                "name": row["名称"],
+                "time": fmt_time(row.get("时间")),
+                "info": row.get("相关信息", ""),
+            }
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--once", action="store_true")
     p.add_argument("--interval", type=int, default=90)
+    p.add_argument("--no-raw", action="store_true", help="不落全量 jsonl（默认落）")
     args = p.parse_args()
 
     excluded = {w["code"] for w in load_today_watchlist()} | {h["code"] for h in load_holdings()}
     print(f"[anomaly_loop] 排除已监控票 {len(excluded)} 只（观察池+持仓）", flush=True)
+    snapshot_holdings(datetime.now())
 
     sent: set[tuple[str, str]] = set()
     last_max_time: dict[str, str] = {sym: "" for sym in SYMBOLS}
@@ -112,6 +144,12 @@ def main():
                 continue
             if df is None or df.empty:
                 continue
+
+            if not args.no_raw:
+                try:
+                    append_raw(now, symbol, df)
+                except Exception as e:
+                    print(f"[anomaly_loop] raw 落盘失败 {symbol}: {e}", flush=True)
 
             new_max = last_max_time[symbol]
             for _, row in df.iterrows():

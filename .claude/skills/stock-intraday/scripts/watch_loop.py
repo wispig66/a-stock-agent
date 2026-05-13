@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 import argparse
+import json
 import sys
 import time
 from datetime import datetime, time as dtime
@@ -31,6 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fetch_realtime import load_today_watchlist, load_holdings, fetch_spot  # noqa: E402
 from notify import push  # noqa: E402
+
+RAW_DIR = ROOT / "data" / "watch_raw"
+SNAPSHOT_DIR = ROOT / "data" / "holdings_snapshot"
 
 
 SESSION_AM = (dtime(9, 31), dtime(11, 29))
@@ -88,11 +92,32 @@ def evaluate(row: dict, watch_map: dict, hold_map: dict) -> list[tuple[str, str]
     return alerts
 
 
+def snapshot_holdings(now: datetime) -> None:
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    src = ROOT / "holdings.yaml"
+    dst = SNAPSHOT_DIR / f"{now.strftime('%Y%m%d')}.yaml"
+    if src.exists() and not dst.exists():
+        dst.write_bytes(src.read_bytes())
+        print(f"[watch_loop] holdings 快照 → {dst.name}", flush=True)
+
+
+def append_raw(now: datetime, df) -> None:
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    path = RAW_DIR / f"{now.strftime('%Y%m%d')}.jsonl"
+    round_ts = now.isoformat(timespec="seconds")
+    with path.open("a") as f:
+        for _, row in df.iterrows():
+            rec = {"round_ts": round_ts, **{k: row[k] for k in row.index if row[k] is not None}}
+            f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--once", action="store_true", help="跑一轮就退")
     p.add_argument("--interval", type=int, default=90, help="轮询秒数")
+    p.add_argument("--no-raw", action="store_true", help="不落全量 jsonl（默认落）")
     args = p.parse_args()
+    snapshot_holdings(datetime.now())
 
     watchlist = load_today_watchlist()
     holdings = load_holdings()
@@ -133,6 +158,12 @@ def main():
             continue
 
         print(f"[watch_loop] round {round_idx} {now.strftime('%H:%M:%S')} got {len(df)} rows", flush=True)
+
+        if not args.no_raw:
+            try:
+                append_raw(now, df)
+            except Exception as e:
+                print(f"[watch_loop] raw 落盘失败: {e}", flush=True)
 
         for _, row in df.iterrows():
             for kind, msg in evaluate(row.to_dict(), watch_map, hold_map):

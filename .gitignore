@@ -10,5 +10,8 @@ data/snapshots/*.parquet
 data/fact_pack/*.md
 data/last_card.md
 data/last_postmarket_card.md
+data/anomaly_raw/
+data/watch_raw/
+data/holdings_snapshot/
 logs/*.log
 .DS_Store

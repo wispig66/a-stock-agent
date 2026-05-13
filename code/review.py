@@ -19,6 +19,22 @@ from pathlib import Path
 
 DB = Path(__file__).resolve().parent.parent / "data" / "daily.db"
 
+REVIEW_STATS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS review_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT,
+    faction TEXT,
+    genre TEXT,
+    buy_point TEXT,
+    stop_loss TEXT,
+    high REAL, low REAL, close REAL, pct REAL,
+    status TEXT,
+    UNIQUE(review_date, code)
+);
+"""
+
 FACTION_RE = re.compile(r"【\s*派别\s*([A-Z])\s*[·・]\s*([^】]+)】")
 STOCK_HEAD_RE = re.compile(r"^\s*(\d+)\.\s*(\d{6})\s+([^\s\[\(（【]+)")
 BUY_PRICE_RE = re.compile(r"买点[：:][^\n]*?¥\s*([\d.]+)")
@@ -155,6 +171,29 @@ def review_today(entries: list[dict]) -> list[dict]:
     return entries
 
 
+def persist_stats(reviewed: list[dict], review_date: str) -> int:
+    with sqlite3.connect(DB) as conn:
+        conn.execute(REVIEW_STATS_SCHEMA)
+        n = 0
+        for e in reviewed:
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO review_stats
+                       (review_date, code, name, faction, genre, buy_point, stop_loss,
+                        high, low, close, pct, status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (review_date, e["code"], e["name"], e["faction"], e.get("genre"),
+                     str(e["buy_point"]) if e["buy_point"] is not None else None,
+                     str(e["stop_loss"]) if e["stop_loss"] is not None else None,
+                     e.get("high"), e.get("low"), e.get("close"), e.get("pct"),
+                     e.get("status")),
+                )
+                n += 1
+            except Exception as ex:
+                print(f"[review] persist {e['code']} 失败: {ex}", file=sys.stderr)
+    return n
+
+
 def render_markdown(reviewed: list[dict]) -> str:
     out = [
         "| # | 代码 | 名称 | 派 | 买点 | 止损 | 今收 | 涨跌% | 状态 |",
@@ -200,6 +239,7 @@ def main():
     ap.add_argument("cmd", choices=["parse", "review"])
     ap.add_argument("--date", help="YYYY-MM-DD，默认今日")
     ap.add_argument("--format", choices=["json", "markdown"])
+    ap.add_argument("--no-persist", action="store_true", help="review 子命令默认入 review_stats 表")
     args = ap.parse_args()
 
     row = fetch_premarket(args.date)
@@ -220,6 +260,11 @@ def main():
                       f"buy={e['buy_point']} stop={e['stop_loss']} pos={e['position_max_pct']}")
     else:
         reviewed = review_today(entries)
+        if not args.no_persist:
+            from datetime import date
+            rd = args.date or date.today().isoformat()
+            n = persist_stats(reviewed, rd)
+            print(f"[review] 写入 review_stats {n} 行（{rd}）", file=sys.stderr)
         fmt = args.format or "markdown"
         if fmt == "json":
             print(json.dumps(reviewed, ensure_ascii=False, indent=2, default=str))
