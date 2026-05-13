@@ -1,4 +1,7 @@
 .env
+holdings.yaml
+data/last_intraday_card.md
+data/last_anomaly_card.md
 __pycache__/
 *.pyc
 data/*.db
