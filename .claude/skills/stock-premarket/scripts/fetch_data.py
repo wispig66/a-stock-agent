@@ -39,6 +39,9 @@ pd.set_option("display.max_columns", None)
 
 ROOT = Path(__file__).resolve().parents[4]  # stock-premarket/scripts -> skills -> .claude -> stock
 DB = ROOT / "data" / "daily.db"
+
+sys.path.insert(0, str(ROOT / "code"))
+from db import connect as db_connect  # noqa: E402
 OUT_DIR = ROOT / "data" / "fact_pack"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -151,7 +154,7 @@ def fetch_ths_hot(date: str) -> pd.DataFrame:
 def historical_sentiment(days: int = 10) -> pd.DataFrame:
     if not DB.exists():
         return pd.DataFrame()
-    with sqlite3.connect(DB) as conn:
+    with db_connect(DB) as conn:
         try:
             df = pd.read_sql(
                 f"SELECT * FROM sentiment_daily ORDER BY date DESC LIMIT {days}", conn

@@ -52,6 +52,20 @@ uv run .claude/skills/stock-premarket/scripts/fetch_data.py
 
 题材轮动派的本质是消息驱动，不看消息等于瞎打。
 
+**2.x · 读昨日 L3 anomaly findings**（若存在）
+
+```bash
+ls data/anomaly_findings/ 2>/dev/null | tail -1
+```
+
+取**最近一份** `data/anomaly_findings/YYYYMMDD.md`（通常是前一交易日）读进来。来源是 L3 stock-anomaly 盘中调用产生的"冒头新方向候选"清单。
+
+**用法约束**：
+- 仅作"昨日尾盘异动出了啥题材"的背景输入
+- **不**自动加进今日观察池
+- 仅在 Step 3a/3b 题材判断时允许引用："昨日 L3 标记了 XX 题材冒头，今日 fact pack/新闻是否验证"
+- 文件不存在 → 跳过，不影响主流程
+
 ## Step 3 · 综合判定（按下面 3a/3b/3c 顺序做）
 
 ### 3a. 情绪周期阶段判定

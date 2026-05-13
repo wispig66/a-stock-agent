@@ -38,6 +38,9 @@ DB = PROJECT_ROOT / "data" / "daily.db"
 OUT_DIR = PROJECT_ROOT / "data" / "fact_pack"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+sys.path.insert(0, str(PROJECT_ROOT / "code"))
+from db import connect as db_connect  # noqa: E402
+
 
 def log(*a):
     print(*a, file=sys.stderr, flush=True)
@@ -153,7 +156,7 @@ def compute_sentiment(date: str, zt: pd.DataFrame, zd: pd.DataFrame,
 # ============================================================
 
 def upsert_sentiment(sent: dict):
-    with sqlite3.connect(DB) as conn:
+    with db_connect(DB) as conn:
         conn.execute("""
             INSERT INTO sentiment_daily
                 (date, limit_up_count, limit_down_count, max_consec,
@@ -194,7 +197,7 @@ def upsert_ths_hot(date_iso: str, hot: pd.DataFrame):
             "big_net": _float(r.get("大单净量")),
             "reason": str(r.get("题材归因", "")),
         })
-    with sqlite3.connect(DB) as conn:
+    with db_connect(DB) as conn:
         conn.executemany("""
             INSERT INTO ths_hot_reason
                 (date, code, name, close, change_pct, turnover_pct,
@@ -292,7 +295,7 @@ def render_pack(date: str, sent: dict, zt: pd.DataFrame, zd: pd.DataFrame,
 
     lines.append("## 六、近 10 日情绪表（含今日）")
     lines.append("")
-    with sqlite3.connect(DB) as conn:
+    with db_connect(DB) as conn:
         recent = pd.read_sql(
             "SELECT date, limit_up_count, limit_down_count, max_consec,"
             " promotion_rate, blast_rate, phase"

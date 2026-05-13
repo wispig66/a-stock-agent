@@ -5,10 +5,8 @@ Week 1 最小验收脚本：拉全市场最近 N 天日线，写入 SQLite。
 本脚本用新浪接口（akshare.stock_zh_a_daily）。
 
 用法：
-    conda activate stock
-    cd ~/Desktop/stock
-    python code/download_daily.py            # 默认 30 天 + 全市场
-    python code/download_daily.py 30 100     # 30 天 + 前 100 只（冒烟测试）
+    uv run code/download_daily.py            # 默认 30 天 + 全市场
+    uv run code/download_daily.py 30 100     # 30 天 + 前 100 只（冒烟测试）
 """
 
 from __future__ import annotations
@@ -20,6 +18,8 @@ from pathlib import Path
 
 import pandas as pd
 import akshare as ak
+
+from db import connect as db_connect
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "data" / "daily.db"
@@ -94,7 +94,7 @@ def main(days: int = 30, limit: int | None = None) -> None:
     if limit:
         pairs = pairs[:limit]
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     total_rows = 0
     failed: list[str] = []
 

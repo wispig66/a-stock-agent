@@ -16,6 +16,7 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
+from db import connect as db_connect
 
 DB = Path(__file__).resolve().parent.parent / "data" / "daily.db"
 
@@ -110,7 +111,7 @@ def parse_premarket(text: str) -> list[dict]:
 
 
 def fetch_premarket(target_date: str | None) -> tuple[int, str] | None:
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     if target_date:
         row = conn.execute(
             "SELECT msg_id, text FROM push_log "
@@ -172,7 +173,7 @@ def review_today(entries: list[dict]) -> list[dict]:
 
 
 def persist_stats(reviewed: list[dict], review_date: str) -> int:
-    with sqlite3.connect(DB) as conn:
+    with db_connect(DB) as conn:
         conn.execute(REVIEW_STATS_SCHEMA)
         n = 0
         for e in reviewed:

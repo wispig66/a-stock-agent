@@ -28,6 +28,9 @@ ROOT = Path(__file__).resolve().parents[4]
 DB = ROOT / "data" / "daily.db"
 HOLDINGS_FILE = ROOT / "holdings.yaml"
 
+sys.path.insert(0, str(ROOT / "code"))
+from db import connect as db_connect  # noqa: E402
+
 
 def log(*a):
     print(*a, file=sys.stderr, flush=True)
@@ -40,7 +43,7 @@ def section(title: str):
 def load_today_watchlist() -> list[dict]:
     """从 push_log 取今日 stock-premarket 最新一条，正则提取代码 + 名称 + 派别 + 买卖纪律。"""
     today = datetime.now().strftime("%Y-%m-%d")
-    with sqlite3.connect(DB) as conn:
+    with db_connect(DB) as conn:
         row = conn.execute(
             """SELECT text FROM push_log
                WHERE source='stock-premarket'

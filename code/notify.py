@@ -22,6 +22,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 import requests
+from db import connect as db_connect
 
 # 读 .env
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
@@ -51,7 +52,7 @@ def _log_to_db(source: str, text: str, msg_id: int | None, chunks: int,
     if not DB.exists():
         return  # DB 还没建时静默跳过
     try:
-        with sqlite3.connect(DB) as conn:
+        with db_connect(DB) as conn:
             conn.execute(
                 """INSERT INTO push_log
                    (timestamp, source, chat_id, msg_id, text, chunks, success, error)
@@ -156,7 +157,7 @@ def _convert_md_tables(text: str, stash) -> str:
 
 def _send(text: str, parse_mode: str | None = None) -> dict:
     if not TOKEN or not CHAT_ID:
-        raise NotifyError("TG_BOT_TOKEN / TG_CHAT_ID 未配置，检查 ~/Desktop/stock/.env")
+        raise NotifyError(f"TG_BOT_TOKEN / TG_CHAT_ID 未配置，检查 {ENV_FILE}")
     payload = {"chat_id": CHAT_ID, "text": text, "disable_web_page_preview": True}
     if parse_mode:
         payload["parse_mode"] = parse_mode
@@ -233,7 +234,7 @@ if __name__ == "__main__":
         if not DB.exists():
             print("DB 不存在")
         else:
-            with sqlite3.connect(DB) as c:
+            with db_connect(DB) as c:
                 rows = c.execute(
                     "SELECT id, timestamp, source, msg_id, length(text) as len, success "
                     "FROM push_log ORDER BY id DESC LIMIT ?", (n,)
@@ -242,4 +243,4 @@ if __name__ == "__main__":
                 for row in rows:
                     print(f"  #{row[0]} {row[1]} [{row[2]}] msg_id={row[3]} len={row[4]} ok={row[5]}")
     else:
-        print("用法: python notify.py [whoami|test|tail [N]]")
+        print("用法: uv run code/notify.py [whoami|test|tail [N]]")

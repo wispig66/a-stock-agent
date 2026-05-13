@@ -40,6 +40,18 @@ sqlite3 data/daily.db "SELECT timestamp, text FROM push_log
 
 ## Step 3 · 叠加消息面（继承 [[feedback-news-awareness]]）
 
+**3a · 本地：同花顺 reason tag 交叉验证**（零网络成本，先做）
+
+```bash
+sqlite3 data/daily.db "SELECT name, code, reason FROM ths_hot_reason
+  WHERE date = (SELECT max(date) FROM ths_hot_reason)
+  ORDER BY change_pct DESC LIMIT 30;"
+```
+
+把异动聚类出的 Top 3 题材去匹配 reason tag：命中的标 🔥（reason 驱动验证），未命中的标 🆕（纯异动冒头、无 D-1 验证、降一档信号强度）。
+
+**3b · 远程：财联社电报对照**
+
 对 Top 3 题材每个调 WebFetch 拉财联社电报：
 
 ```
@@ -52,6 +64,25 @@ https://www.cls.cn/telegraph
 - 是否与今早 L1 观察池题材冲突（主线切换风险 🔄）
 
 ## Step 4 · 输出叙事卡片
+
+**空状态优先判断**：若 Step 2 聚类后没有任何题材达到"≥3 只异动"门槛，**禁止**为了出卡片硬凑方向。直接走下方"无聚集模板"，不要走完整模板。
+
+**无聚集模板**（题材聚类 0 个时用）：
+
+```markdown
+🆕 <b>盘中异动汇总 · HH:MM</b>（最近 30 分钟）
+
+🌡️ <b>异动密度</b>：火箭 N1 · 封板 N2 · 炸板 N3 · 60日新高 N4
+
+⚪ <b>本时段无明显题材聚集</b>
+当前异动散乱、无 ≥3 只同题材冒头，资金未形成合力。建议继续观望，30 分钟后再看。
+（强势单票 / 炸板潮 / 持仓利空 命中时仍按下方分块输出，但不要造"新方向"。）
+
+———
+本系统纪律：无聚集不强行造方向 · 异动需 ≥3 票同题材才算冒头
+```
+
+**完整模板**（题材聚类 ≥1 个时用）：
 
 ```markdown
 🆕 <b>盘中异动汇总 · HH:MM</b>（最近 30 分钟）
@@ -80,7 +111,17 @@ https://www.cls.cn/telegraph
 - 保持：纪律未触发的不动
 ```
 
-## Step 5 · 推送 + 入库
+## Step 5 · 推送 + 入库 + 持久化给次日 L1
+
+**5a · 落盘文件（给次日 L1 复评用）**
+
+把卡片**同时** Write 一份到 `data/anomaly_findings/YYYYMMDD.md`（YYYYMMDD = 今日交易日）。
+- 同一天多次调用 → 后写覆盖前写（最后一次的快照即可，L1 关心的是"昨日尾盘异动出了啥"）
+- 目录不存在时先 `mkdir -p data/anomaly_findings`
+
+L1 SKILL.md Step 1 已被改为：若 `data/anomaly_findings/<前一交易日>.md` 存在，读进来作为"昨日异动新主线候选"输入，**不**自动加入观察池，但允许 LLM 在题材判断时引用。
+
+**5b · Telegram 推送**
 
 ```bash
 uv run code/notify.py --source stock-anomaly-summary < /tmp/anomaly_card.md

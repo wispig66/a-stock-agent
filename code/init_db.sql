@@ -1,6 +1,13 @@
 -- daily.db schema for stock 短线 CC 辅助系统
 -- 用法：sqlite3 data/daily.db < code/init_db.sql
 
+-- 启用 WAL（持久化 PRAGMA，写进 DB 文件头一次永久生效）
+-- 写不阻塞读、锁持续短，避免 daemon 与 skill 并发写互相打架
+PRAGMA journal_mode = WAL;
+
+-- 注意：synchronous 和 busy_timeout 是按连接独立的，**不会**持久化到 DB 文件。
+-- Python 端通过 code/db.py 的 connect() 工厂每次连接都设，不要依赖这里。
+
 CREATE TABLE IF NOT EXISTS daily_kline (
     code TEXT NOT NULL,
     date TEXT NOT NULL,

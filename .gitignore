@@ -14,5 +14,6 @@ data/last_postmarket_card.md
 data/anomaly_raw/
 data/watch_raw/
 data/holdings_snapshot/
+data/anomaly_findings/
 logs/*.log
 .DS_Store
