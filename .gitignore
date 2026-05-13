@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+data/*.db
+data/minute/*.parquet
+data/snapshots/*.parquet
+data/fact_pack/*.md
+data/last_card.md
+data/last_postmarket_card.md
+logs/*.log
+.DS_Store

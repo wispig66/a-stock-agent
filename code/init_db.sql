@@ -1,0 +1,117 @@
+-- daily.db schema for stock 短线 CC 辅助系统
+-- 用法：sqlite3 data/daily.db < code/init_db.sql
+
+CREATE TABLE IF NOT EXISTS daily_kline (
+    code TEXT NOT NULL,
+    date TEXT NOT NULL,
+    open REAL,
+    high REAL,
+    low REAL,
+    close REAL,
+    vol REAL,
+    amount REAL,
+    pct_chg REAL,
+    PRIMARY KEY (code, date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kline_date ON daily_kline(date);
+
+CREATE TABLE IF NOT EXISTS limit_up (
+    date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT,
+    limit_up_num INTEGER,
+    seal_amount REAL,
+    turnover_rate REAL,
+    first_seal_time TEXT,
+    open_count INTEGER,
+    concept TEXT,
+    PRIMARY KEY (date, code)
+);
+
+CREATE TABLE IF NOT EXISTS lhb (
+    date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT,
+    seat_name TEXT,
+    buy_amount REAL,
+    sell_amount REAL,
+    net_amount REAL,
+    rank INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_lhb_date_code ON lhb(date, code);
+
+CREATE TABLE IF NOT EXISTS sentiment_daily (
+    date TEXT PRIMARY KEY,
+    limit_up_count INTEGER,
+    limit_down_count INTEGER,
+    max_consec INTEGER,
+    promotion_rate REAL,
+    second_promotion_rate REAL,
+    blast_rate REAL,
+    money_effect REAL,
+    loss_effect INTEGER,
+    phase TEXT
+);
+
+-- 推送日志：每次 Telegram 推送都入库，用于后续分析与持续改进
+CREATE TABLE IF NOT EXISTS push_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,        -- ISO 8601
+    source TEXT,                    -- 'stock-premarket' / 'stock-postmarket' / 'manual' 等
+    chat_id TEXT,
+    msg_id INTEGER,                 -- Telegram message_id（多段时取第一段）
+    text TEXT NOT NULL,             -- 原始消息内容（完整）
+    chunks INTEGER DEFAULT 1,       -- 分段数
+    success INTEGER DEFAULT 1,      -- 1=成功 0=失败
+    error TEXT                      -- 失败时的错误信息
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_log_ts ON push_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_push_log_source ON push_log(source);
+
+-- 同花顺热点强势股 + 题材归因（盘后 15:30+ 才有当日数据；盘前跑用 D-1）
+CREATE TABLE IF NOT EXISTS ths_hot_reason (
+    date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT,
+    close REAL,
+    change_pct REAL,
+    turnover_pct REAL,
+    amount REAL,
+    big_net REAL,
+    reason TEXT,
+    PRIMARY KEY (date, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ths_hot_date ON ths_hot_reason(date);
+
+-- 个股日级资金流（百度股市通）
+CREATE TABLE IF NOT EXISTS fund_flow_daily (
+    date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    close REAL,
+    change_pct REAL,
+    super_net REAL,
+    large_net REAL,
+    medium_net REAL,
+    small_net REAL,
+    main_in REAL,
+    PRIMARY KEY (date, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fund_flow_date ON fund_flow_daily(date);
+
+-- 限售解禁日历缓存
+CREATE TABLE IF NOT EXISTS unlock_calendar (
+    code TEXT NOT NULL,
+    unlock_date TEXT NOT NULL,
+    type TEXT,
+    shares REAL,
+    float_ratio REAL,
+    fetched_at TEXT,
+    PRIMARY KEY (code, unlock_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_unlock_date ON unlock_calendar(unlock_date);
