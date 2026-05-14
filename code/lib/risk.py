@@ -10,6 +10,7 @@
 from __future__ import annotations
 import sys
 from pathlib import Path
+from typing import Callable, Iterable
 
 import yaml
 
@@ -41,3 +42,49 @@ def load_risk_config() -> dict:
         if k in raw:
             cfg[k] = raw[k]
     return cfg
+
+
+def compute_exposure(
+    holdings: Iterable[dict],
+    total_capital: float,
+    price_fn: Callable[[str], float | None],
+) -> dict:
+    """根据持仓 + 实时价算总仓位。
+
+    Args:
+        holdings: 字典序列，至少含 code / cost / shares。可以是 Holding dataclass
+            的 list（dataclass 支持属性访问，这里只用 dict 接口便于测试）。
+        total_capital: 总资金基准。
+        price_fn: code -> 实时价（取不到返回 None，自动回退到 cost）。
+
+    Returns:
+        {total_value, exposure_pct, position_count}
+    """
+    total_value = 0.0
+    count = 0
+    for h in holdings:
+        code = _attr(h, "code")
+        cost = float(_attr(h, "cost"))
+        shares = int(_attr(h, "shares"))
+        if not code or shares <= 0:
+            continue
+        try:
+            price = price_fn(code)
+        except Exception:
+            price = None
+        unit = float(price) if price else cost
+        total_value += unit * shares
+        count += 1
+    pct = (total_value / total_capital * 100) if total_capital > 0 else 0.0
+    return {
+        "total_value": total_value,
+        "exposure_pct": round(pct, 2),
+        "position_count": count,
+    }
+
+
+def _attr(obj, key):
+    """同时兼容 dict 和 dataclass 的字段访问。"""
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
