@@ -10,6 +10,7 @@
   - `code/lib/risk.py`：`load_risk_config` / `compute_exposure` / `preflight_check` / `make_price_fn_from_df` / `fetch_spot_price_fn`
   - `.claude/skills/stock-premarket/scripts/preflight.py` CLI 入口
   - L1 卡片支持总仓位超额 ⚠️ 横幅 + 每只候选股"当前可用 X%"额度行
+- watch_loop 锁仓期告警分轨：今日买入持仓 (today < unlock_date) 命中 hold_stop / hold_dump / hold_vol 时改文案为"🌙 锁仓中 · 明早处理"，alert_key 加 `_locked` 后缀与解锁版去重隔离
 
 ### TG 单股查询助手 · stock-query (2026-05-14)
 
