@@ -40,6 +40,10 @@ def is_trade_day(d: date) -> bool:
 def next_trade_day(d: date) -> date:
     """返回严格大于 d 的下一个交易日。"""
     days = _load()
+    if d < days[0]:
+        raise CalendarOutOfRange(
+            f"日历从 {days[0]} 起，无法回答 {d} 之后的下一交易日；请刷新日历"
+        )
     idx = bisect.bisect_right(days, d)
     if idx >= len(days):
         raise CalendarOutOfRange(
