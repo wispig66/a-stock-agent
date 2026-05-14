@@ -1,7 +1,6 @@
 """验证 stock_basic 表 schema 与初始化脚本可重入执行。"""
 from __future__ import annotations
 import sqlite3
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
