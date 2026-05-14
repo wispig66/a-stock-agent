@@ -209,6 +209,21 @@ uv run pytest tests/
 
 > 高级用户可通过 `UV_PYTHON=/path/to/python uv sync` 指定 Python 解释器；也可直接复用已有 conda/venv（用 `source xxx/bin/activate && pip install -e .`），但推荐 uv 路径。
 
+### 风控配置
+
+复制模板：
+
+```bash
+cp risk_config.example.yaml risk_config.yaml
+```
+
+字段：
+- `total_capital`：总资金（现金 + 持仓市值基准），单位元
+- `max_total_exposure_pct`：总仓位红线，超过 L1 卡片顶部出 ⚠️ 横幅
+- `max_single_position_pct`：单只首仓硬上限
+
+`risk_config.yaml` 含资金金额，已 gitignore。
+
 ## 目录结构
 
 ```

@@ -2,7 +2,14 @@
 
 记录较大版本变更。小修复直接看 git log。
 
-## [Unreleased]
+## [Unreleased] 2026-05-14
+
+### Added
+- 组合层风控 Week 1：总仓位计算器 + L1 盘前预检横幅
+  - `risk_config.yaml`（gitignore）+ `risk_config.example.yaml` 模板
+  - `code/lib/risk.py`：`load_risk_config` / `compute_exposure` / `preflight_check` / `make_price_fn_from_df` / `fetch_spot_price_fn`
+  - `.claude/skills/stock-premarket/scripts/preflight.py` CLI 入口
+  - L1 卡片支持总仓位超额 ⚠️ 横幅 + 每只候选股"当前可用 X%"额度行
 
 ### TG 单股查询助手 · stock-query (2026-05-14)
 
