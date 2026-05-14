@@ -11,6 +11,7 @@
   - `.claude/skills/stock-premarket/scripts/preflight.py` CLI 入口
   - L1 卡片支持总仓位超额 ⚠️ 横幅 + 每只候选股"当前可用 X%"额度行
 - watch_loop 锁仓期告警分轨：今日买入持仓 (today < unlock_date) 命中 hold_stop / hold_dump / hold_vol 时改文案为"🌙 锁仓中 · 明早处理"，alert_key 加 `_locked` 后缀与解锁版去重隔离
+- L4 盘后卡片新增持仓题材集中度判定：⚠️ ≥60% / 🟡 ≥40% / ✅ <40% / 空仓跳过，与 3a 题材延续性联动给出"保持/减半"动作建议
 
 ### TG 单股查询助手 · stock-query (2026-05-14)
 

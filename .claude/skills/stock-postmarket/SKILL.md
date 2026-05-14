@@ -264,7 +264,7 @@ uv run code/review.py review
 - [基于明日已知催化 / 隔夜外围的风险]
 
 ——————————
-本系统纪律：盘后必复盘 · 持仓必处理 · 9:50 纪律严守
+本系统纪律：盘后必复盘 · 持仓必处理 · 题材集中度必出现 · 9:50 纪律严守
 明早 08:30 L1 自动接力盯盘
 fact pack: data/fact_pack/[YYYYMMDD]_postmarket.md
 ```
