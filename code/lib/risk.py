@@ -83,6 +83,26 @@ def compute_exposure(
     }
 
 
+def preflight_check(exposure: dict, cfg: dict) -> dict:
+    """根据 exposure 和配置决定是否需要横幅 + 剩余可用额度。
+
+    Returns:
+        {
+          ok: bool,                # exposure_pct <= max_total_exposure_pct
+          banner: str | None,      # 超额时为提示文案
+          available_pct: float,    # max(0, 上限 - 当前)
+        }
+    """
+    cap = float(cfg.get("max_total_exposure_pct", 70))
+    cur = float(exposure.get("exposure_pct", 0))
+    ok = cur <= cap
+    available = max(0.0, cap - cur)
+    banner = None
+    if not ok:
+        banner = f"⚠️ 当前总仓位 {cur:.0f}%（上限 {cap:.0f}%）· 今日建议先减仓再加新单"
+    return {"ok": ok, "banner": banner, "available_pct": round(available, 2)}
+
+
 def _attr(obj, key):
     """同时兼容 dict 和 dataclass 的字段访问。"""
     if isinstance(obj, dict):

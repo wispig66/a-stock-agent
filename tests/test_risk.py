@@ -74,3 +74,34 @@ def test_compute_exposure_price_fallback_to_cost():
     )
     assert result["total_value"] == pytest.approx(6770.0)
     assert result["exposure_pct"] == pytest.approx(1.354, abs=0.01)
+
+
+def test_preflight_check_under_limit():
+    """未超额：无横幅，剩余可用 = 上限 - 当前。"""
+    exposure = {"total_value": 250000.0, "exposure_pct": 50.0, "position_count": 3}
+    cfg = {"total_capital": 500000, "max_total_exposure_pct": 70, "max_single_position_pct": 30}
+    r = risk.preflight_check(exposure, cfg)
+    assert r["ok"] is True
+    assert r["banner"] is None
+    assert r["available_pct"] == 20.0
+
+
+def test_preflight_check_over_limit():
+    """超额：横幅出现，available 取 0。"""
+    exposure = {"total_value": 360000.0, "exposure_pct": 72.0, "position_count": 5}
+    cfg = {"total_capital": 500000, "max_total_exposure_pct": 70, "max_single_position_pct": 30}
+    r = risk.preflight_check(exposure, cfg)
+    assert r["ok"] is False
+    assert r["banner"] is not None
+    assert "72" in r["banner"] and "70" in r["banner"]
+    assert r["available_pct"] == 0.0
+
+
+def test_preflight_check_at_exact_limit():
+    """正好等于上限：算未超额，available=0。"""
+    exposure = {"total_value": 350000.0, "exposure_pct": 70.0, "position_count": 4}
+    cfg = {"total_capital": 500000, "max_total_exposure_pct": 70, "max_single_position_pct": 30}
+    r = risk.preflight_check(exposure, cfg)
+    assert r["ok"] is True
+    assert r["banner"] is None
+    assert r["available_pct"] == 0.0
