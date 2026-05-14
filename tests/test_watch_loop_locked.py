@@ -51,3 +51,50 @@ def test_locked_hold_stop():
     assert "🌙 锁仓中" in msg
     assert "明早" in msg
     assert "立即出" not in msg
+
+
+def test_unlocked_hold_stop_unchanged():
+    """today >= unlock_date 时 hold_stop 文案保持现状（含"立即出"）。"""
+    row = _row(price=6.40)
+    hold_map = {"601991": _hold(unlock_date="2026-05-13")}
+    today = date(2026, 5, 14)
+
+    alerts = watch_loop.evaluate(row, watch_map={}, hold_map=hold_map, today=today)
+
+    kinds = [k for k, _ in alerts]
+    assert "hold_stop" in kinds
+    assert "hold_stop_locked" not in kinds
+    msg = next(m for k, m in alerts if k == "hold_stop")
+    assert "💥 持仓跌破止损" in msg
+    assert "立即出" in msg
+    assert "🌙" not in msg
+
+
+def test_locked_hold_dump():
+    """锁仓 + 砸盘 -6% → kind=hold_dump_locked，文案含"T+1 不可出"。"""
+    # 价格保持在止损之上（6.60 > 6.50），避免触发 hold_stop_locked 干扰断言
+    row = _row(price=6.60, pct=-6.0)
+    hold_map = {"601991": _hold(unlock_date="2026-05-15")}
+    today = date(2026, 5, 14)
+
+    alerts = watch_loop.evaluate(row, watch_map={}, hold_map=hold_map, today=today)
+
+    kinds = [k for k, _ in alerts]
+    assert "hold_dump_locked" in kinds
+    assert "hold_dump" not in kinds
+    msg = next(m for k, m in alerts if k == "hold_dump_locked")
+    assert "🌙 锁仓中" in msg
+    assert "T+1 不可出" in msg
+
+
+def test_unlock_date_missing_treated_as_unlocked():
+    """unlock_date=None（老条目）→ 当解锁处理，走原文案。"""
+    row = _row(price=6.40)
+    hold_map = {"601991": _hold(unlock_date=None)}
+    today = date(2026, 5, 14)
+
+    alerts = watch_loop.evaluate(row, watch_map={}, hold_map=hold_map, today=today)
+
+    kinds = [k for k, _ in alerts]
+    assert "hold_stop" in kinds
+    assert "hold_stop_locked" not in kinds
