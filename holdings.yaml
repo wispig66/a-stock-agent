@@ -1,0 +1,39 @@
+# 实盘持仓清单（手动维护）
+#
+# 用法：
+#   - 买入后立刻在这里加一条，含 stop_loss / take_profit（盘前 L1 卡片里已给）
+#   - 卖出后删除对应条目（或在末尾标 status: closed 保留历史）
+#   - L2 stock-intraday 每个时点读这个文件，对比实时价给提醒
+#   - L4 stock-postmarket 也会读，做当日复盘
+#
+# 字段说明：
+#   code        — 6 位股票代码（必填）
+#   name        — 股票名称（必填）
+#   cost        — 成本价（必填，含手续费均价；加仓时自动加权重算）
+#   shares      — 持仓股数（必填）
+#   buy_date    — 买入日期 YYYY-MM-DD（必填）；多次加仓存"最新一笔"日期
+#   genre       — 派别：A=二板接力 / B=龙头补涨 / C=超跌反弹 / D=首板（必填）
+#   stop_loss   — 硬止损价（必填，赵老哥派纪律）
+#   take_profit — 目标止盈价（可选）
+#   unlock_date — T+1 解锁日 YYYY-MM-DD（自动计算 = next_trade_day(buy_date)；
+#                 today < unlock_date 视为锁仓中，watch_loop 告警走"明早预案"分轨）
+#   source      — 录入来源：manual / watch_loop_buy_alert / bot_buy（默认 manual）
+#   note        — 备注：题材 / L1 推荐时的买卖纪律摘要
+#
+# 历史条目兼容：老条目缺 unlock_date / source 时，read_holdings 会兜底为
+#   unlock_date = buy_date（视为已解锁），source = manual，可放心保留。
+#
+# ——————————————————————————————————————————————
+# 示例（删掉后填实际持仓）
+
+holdings: []
+
+# - code: "601991"
+#   name: "大唐发电"
+#   cost: 6.77
+#   shares: 1000
+#   buy_date: "2026-05-12"
+#   genre: "A"
+#   stop_loss: 6.50
+#   take_profit: 7.30
+#   note: "算电协同二板接力，封板价 6.77 × 1.01 买入"
