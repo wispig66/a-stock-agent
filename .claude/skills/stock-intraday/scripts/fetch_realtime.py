@@ -109,8 +109,68 @@ def load_holdings() -> list[dict]:
     return [h for h in out if h.get("code") and h.get("name") and h.get("cost")]
 
 
+_SINA_LINE_PAT = re.compile(r'hq_str_(\w+)="([^"]*)"')
+
+
+def _sina_code(code: str) -> str:
+    """6 位代码 → 新浪格式 sh / sz / bj 前缀。"""
+    if code.startswith(("6", "9")):
+        return "sh" + code
+    if code.startswith(("0", "3")):
+        return "sz" + code
+    if code.startswith(("4", "8")) or code[:3] in ("920", "830"):
+        return "bj" + code
+    return "sh" + code
+
+
+def _fetch_spot_sina(codes: list[str]) -> pd.DataFrame:
+    """新浪 hq.sinajs.cn 批量直连。绕过东财代理风控。
+    字段与 stock_zh_a_spot_em 对齐；新浪不提供量比/换手率，那两列为 None。
+    """
+    import requests
+    if not codes:
+        return pd.DataFrame()
+    sina_codes = [_sina_code(c) for c in codes]
+    url = "https://hq.sinajs.cn/list=" + ",".join(sina_codes)
+    r = requests.get(url, headers={"Referer": "https://finance.sina.com.cn/"}, timeout=5)
+    r.encoding = "gbk"
+    rows = []
+    for m in _SINA_LINE_PAT.finditer(r.text):
+        sina_code = m.group(1)
+        f = m.group(2).split(",")
+        if len(f) < 10 or not f[0]:  # 停牌/空响应：name 空
+            continue
+        code = sina_code[2:]
+        try:
+            prev_close = float(f[2]) if f[2] else 0
+            cur = float(f[3]) if f[3] else prev_close
+        except ValueError:
+            continue
+        pct = round((cur - prev_close) / prev_close * 100, 2) if prev_close else 0
+        def _f(s):
+            try:
+                return float(s)
+            except (ValueError, TypeError):
+                return None
+        rows.append({
+            "代码": code,
+            "名称": f[0],
+            "最新价": cur,
+            "涨跌幅": pct,
+            "最高": _f(f[4]),
+            "最低": _f(f[5]),
+            "今开": _f(f[1]),
+            "量比": None,       # 新浪 hq 不提供
+            "换手率": None,     # 新浪 hq 不提供
+            "成交额": _f(f[9]),
+        })
+    return pd.DataFrame(rows)
+
+
 def fetch_spot(codes: list[str]) -> pd.DataFrame:
-    """优先批量 stock_zh_a_spot_em（含 5000+ 票），失败回退到逐只 stock_bid_ask_em。"""
+    """优先批量 EM spot；失败回退到新浪 hq 批量。
+    旧版的 stock_bid_ask_em 逐只回退已废弃——同走东财代理，同样会被风控拒。
+    """
     import time
     if not codes:
         return pd.DataFrame()
@@ -121,30 +181,19 @@ def fetch_spot(codes: list[str]) -> pd.DataFrame:
             df = df[df["代码"].isin(codes)][cols_keep].copy()
             return df.reset_index(drop=True)
         except Exception as e:
-            log(f"[warn] 批量 spot 第 {attempt+1} 次失败: {e}")
+            log(f"[warn] EM 批量 spot 第 {attempt+1} 次失败: {type(e).__name__}: {str(e)[:120]}")
             time.sleep(1.5)
 
-    log("[warn] 批量失败，回退到逐只 stock_bid_ask_em")
-    rows = []
-    for code in codes:
-        try:
-            bid = ak.stock_bid_ask_em(symbol=code)
-            d = dict(zip(bid["item"], bid["value"]))
-            rows.append({
-                "代码": code,
-                "名称": d.get("股票简称", ""),
-                "最新价": d.get("最新"),
-                "涨跌幅": d.get("涨幅"),
-                "最高": d.get("最高"),
-                "最低": d.get("最低"),
-                "今开": d.get("今开"),
-                "量比": d.get("量比"),
-                "换手率": d.get("换手"),
-                "成交额": d.get("成交额"),
-            })
-        except Exception as e:
-            log(f"[warn] {code} 单只拉取失败: {e}")
-    return pd.DataFrame(rows)
+    log("[warn] EM 全失败，回退到新浪 hq")
+    try:
+        df = _fetch_spot_sina(codes)
+        if not df.empty:
+            log(f"[ok] 新浪 hq 拉到 {len(df)} 只")
+            return df
+        log("[warn] 新浪 hq 返回空")
+    except Exception as e:
+        log(f"[warn] 新浪 hq 失败: {type(e).__name__}: {str(e)[:120]}")
+    return pd.DataFrame()
 
 
 def fetch_zt_pool_today() -> pd.DataFrame:
