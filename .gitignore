@@ -24,3 +24,6 @@ data/tg_offset.txt
 research/
 docs/superpowers/
 .pytest_cache/
+
+# 风控配置（含资金金额，不进 git）
+risk_config.yaml

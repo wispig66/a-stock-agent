@@ -1,0 +1,14 @@
+# 风控配置 · 复制为 risk_config.yaml 后填实际数值
+# total_capital: 现金 + 持仓市值的总资金基准，单位元
+total_capital: 500000
+
+# 总仓位红线（占总资金 %），超过即 L1 卡片顶部出 ⚠️ 横幅
+max_total_exposure_pct: 70
+
+# 单只首仓硬上限（占总资金 %）
+max_single_position_pct: 30
+
+# 以下为 Week 2-3 扩展位，本期未实现：
+# loss_streak_threshold: 2
+# loss_streak_window_days: 5
+# max_per_theme: 3
