@@ -31,6 +31,22 @@ uv run .claude/skills/stock-postmarket/scripts/fetch_postmarket.py
 
 读完整 stdout。这是今日 fact pack（6 节）：今日情绪快照 / 连板梯队 / 跌停炸板 / 龙虎榜 / 同花顺题材 Top 10 / 近 10 日情绪表。
 
+## Step 1.5 · 风控状态更新（连亏 streak）
+
+执行命令获取连亏状态 JSON：
+
+```bash
+uv run python .claude/skills/stock-postmarket/scripts/update_loss_streak.py
+```
+
+返回字段：
+- `loss_streak` (int) — 截至今日的连亏天数
+- `warn_active` (bool) — 是否触发心态提醒（loss_streak ≥ loss_streak_warn_threshold）
+- `recent_pnl` (list) — 最近 5 天浮盈亏明细，用于卡片渲染
+- `today_pnl_pct` / `is_loss_today` — 仅日志参考，不进卡片
+
+兜底：脚本失败时返回 `warn_active=false`，本步不阻塞 L4 流程。
+
 ## Step 2 · 复盘今日盘前观察池
 
 自动解析今日盘前推送 + 拉今日行情 + 命中判定，**一条命令出表**：
@@ -246,6 +262,14 @@ uv run code/review.py review
 
 （无明显教训时写"今日策略命中符合预期，无新增教训"，不要凑数）
 
+🧊 <b>心态提醒</b>（仅当 update_loss_streak.py 返回 warn_active=true 时输出，否则整段省略）
+
+你已连续 {loss_streak} 天浮亏（逐行列出 recent_pnl 中 is_loss=true 的条目，格式：日期 pnl_pct%，最近的在最后）。
+明日 L1 候选股建议自觉收紧：
+- 首仓控制在 15%（原 30% 的一半）
+- 优先低吸，不参与首板/二板接力
+- 若明日浮盈日出现，本提醒自动消失
+
 ⚠️ <b>风险提示</b>
 
 第一行必为持仓题材集中度（按 3d 判定结果四选一，不允许省略；空仓时也要出"今日空仓"那行）：
@@ -264,7 +288,7 @@ uv run code/review.py review
 - [基于明日已知催化 / 隔夜外围的风险]
 
 ——————————
-本系统纪律：盘后必复盘 · 持仓必处理 · 题材集中度必出现 · 9:50 纪律严守
+本系统纪律：盘后必复盘 · 持仓必处理 · 题材集中度必出现 · 连亏 streak 必跟踪 · 9:50 纪律严守
 明早 08:30 L1 自动接力盯盘
 fact pack: data/fact_pack/[YYYYMMDD]_postmarket.md
 ```
