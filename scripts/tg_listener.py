@@ -108,9 +108,8 @@ def handle(text: str, chat_id, today: Optional[str] = None) -> None:
     if query.is_st(code):
         push_reply(_reject(code, "ST 票风险过高，本助手不分析"))
         return
-    if query.is_suspended_today(code, today=today):
-        push_reply(_reject(code, "今日停牌，跳过"))
-        return
+    # 注：停牌检测下推到 skill 内（用实时盘口判定）。基于 daily_kline 的判定
+    # 在盘前/盘中不可靠——当日 kline 要等盘后 download_daily 才入库。
 
     mode = "holding" if code in held_codes() else "fresh"
 
