@@ -12,6 +12,7 @@
   - L1 卡片支持总仓位超额 ⚠️ 横幅 + 每只候选股"当前可用 X%"额度行
 - watch_loop 锁仓期告警分轨：今日买入持仓 (today < unlock_date) 命中 hold_stop / hold_dump / hold_vol 时改文案为"🌙 锁仓中 · 明早处理"，alert_key 加 `_locked` 后缀与解锁版去重隔离
 - L4 盘后卡片新增持仓题材集中度判定：⚠️ ≥60% / 🟡 ≥40% / ✅ <40% / 空仓跳过，与 3a 题材延续性联动给出"保持/减半"动作建议
+- L4 盘后连亏心态提醒（轻量版）：每日跟踪持仓加权浮盈亏，连亏 ≥ 2 天在卡片顶部插入 🧊 心态提醒段（提示明日自觉首仓减半至 15%，浮盈日自动消失）；新增 `risk_state.yaml`（gitignore）+ `code/lib/loss_streak.py` + `risk_config` 加 `loss_day_threshold_pct` / `loss_streak_warn_threshold` 两阈值；L1 / preflight / risk.py 不动
 
 ### TG 单股查询助手 · stock-query (2026-05-14)
 
