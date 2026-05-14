@@ -23,7 +23,7 @@ import argparse
 import json
 import sys
 import time
-from datetime import datetime, time as dtime
+from datetime import date, datetime, time as dtime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -54,8 +54,17 @@ def alert_key(code: str, kind: str) -> str:
     return f"{code}::{kind}"
 
 
-def evaluate(row: dict, watch_map: dict, hold_map: dict) -> list[tuple[str, str]]:
-    """对单只票，返回 [(alert_kind, message)] 列表。"""
+def evaluate(
+    row: dict,
+    watch_map: dict,
+    hold_map: dict,
+    today: date | None = None,
+) -> list[tuple[str, str]]:
+    """对单只票，返回 [(alert_kind, message)] 列表。
+
+    持仓告警在锁仓期（today < unlock_date）改文案为"🌙 锁仓中 · 明早处理"，
+    并把 kind 加 `_locked` 后缀以与解锁版去重隔离。
+    """
     code = row["代码"]
     name = row.get("名称") or watch_map.get(code, {}).get("name") or hold_map.get(code, {}).get("name") or ""
     price = row.get("最新价")
@@ -65,19 +74,50 @@ def evaluate(row: dict, watch_map: dict, hold_map: dict) -> list[tuple[str, str]
     if price is None or pct is None:
         return []
 
+    if today is None:
+        today = date.today()
+
     alerts: list[tuple[str, str]] = []
     h = hold_map.get(code)
     w = watch_map.get(code)
 
     # 持仓优先级最高
     if h:
+        locked = _is_locked(h, today)
         sl = h.get("stop_loss")
         if sl and price <= sl:
-            alerts.append(("hold_stop", f"💥 持仓跌破止损 · {code} {name} · 现价 {price} ≤ 止损 {sl}（成本 {h.get('cost')}）→ 立即出"))
+            if locked:
+                alerts.append((
+                    "hold_stop_locked",
+                    f"🌙 锁仓中 · 持仓跌破止损 · {code} {name} · 现价 {price} ≤ 止损 {sl}（成本 {h.get('cost')}）· 不可出，明早集合竞价处理",
+                ))
+            else:
+                alerts.append((
+                    "hold_stop",
+                    f"💥 持仓跌破止损 · {code} {name} · 现价 {price} ≤ 止损 {sl}（成本 {h.get('cost')}）→ 立即出",
+                ))
         if pct is not None and pct <= -5:
-            alerts.append(("hold_dump", f"🚨 持仓砸盘 · {code} {name} · 涨跌 {pct}% · 检查止损"))
+            if locked:
+                alerts.append((
+                    "hold_dump_locked",
+                    f"🌙 锁仓中 · 持仓砸盘 · {code} {name} · 涨跌 {pct}% · T+1 不可出，明早决策",
+                ))
+            else:
+                alerts.append((
+                    "hold_dump",
+                    f"🚨 持仓砸盘 · {code} {name} · 涨跌 {pct}% · 检查止损",
+                ))
         if pct is not None and vol_ratio is not None and abs(pct) >= 5 and vol_ratio >= 2:
-            alerts.append(("hold_vol", f"💥 持仓异动放量 · {code} {name} · {pct}% · 量比 {vol_ratio}"))
+            if locked:
+                alerts.append((
+                    "hold_vol_locked",
+                    f"🌙 锁仓中 · 持仓异动放量 · {code} {name} · {pct}% · 量比 {vol_ratio}（仅信息）",
+                ))
+            else:
+                alerts.append((
+                    "hold_vol",
+                    f"💥 持仓异动放量 · {code} {name} · {pct}% · 量比 {vol_ratio}",
+                ))
 
     if w:
         buy = w.get("buy")
@@ -90,6 +130,20 @@ def evaluate(row: dict, watch_map: dict, hold_map: dict) -> list[tuple[str, str]
             alerts.append(("watch_zt", f"✅ 观察池封板 · {code} {name} [{w.get('genre')}] · {pct}% 已涨停"))
 
     return alerts
+
+
+def _is_locked(h: dict, today: date) -> bool:
+    """根据 hold_map 条目和当前日期判定是否锁仓。
+
+    unlock_date 缺失或解析失败一律视为已解锁（保护老条目）。
+    """
+    ud = h.get("unlock_date")
+    if not ud:
+        return False
+    try:
+        return date.fromisoformat(ud) > today
+    except (TypeError, ValueError):
+        return False
 
 
 def snapshot_holdings(now: datetime) -> None:
