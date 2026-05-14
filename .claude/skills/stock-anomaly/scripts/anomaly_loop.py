@@ -1,27 +1,31 @@
 """
-全市场异动捕捉 daemon · 独立后台进程，不调 CC。
+持仓+观察池异动捕捉 daemon · 独立后台进程，不调 CC。
 
-差异化定位：
-  watch_loop.py — 盯今日观察池 + holdings（已知名单）
-  anomaly_loop.py — 扫全市场新冒头的票（未知名单），自动排除已在监控的
+差异化定位（与 watch_loop 同一批股票、不同信号源冗余）：
+  watch_loop.py    — 自算 minute-by-minute 价格阈值（±5%、破止损、放量 2x 等）
+  anomaly_loop.py  — 用 akshare stock_changes_em 标注事件（60日新高、火箭、封板、炸板）
+                     60 日新高是 watch_loop 算不出的；akshare 封板/炸板比自算更权威
 
 数据源：akshare stock_changes_em（东财异动池，多 symbol）
 监控时段：交易日 09:31-11:29 + 13:01-14:59
 轮询频率：90 秒（与 watch_loop 错开 ±10s）
 
 扫描的 anomaly symbol（每轮全部扫一遍）：
-  · 火箭发射 — 3 分钟急涨 ≥ 5%
-  · 封涨停 — 新封板
-  · 涨停打开 — 炸板（情绪杀器）
-  · 60日新高 — 中线突破
+  · 火箭发射 — 3 分钟急涨 ≥ 5%  → 整轮聚合成 1 条 digest 推送（开盘可能很多）
+  · 封涨停板 — 新封板             → 单只 ping
+  · 涨停打开 — 炸板（情绪杀器）   → 单只 ping
+  · 60日新高 — 中线突破           → 单只 ping
 
 去重：(code, kind) 一会话只推一次；新一轮只看 时间 > 上轮最大时间 的条目。
-过滤：观察池 + holdings 中的代码不推（那些 watch_loop 在管）。
+过滤：**只推**持仓 + 今日观察池中的代码（不推全市场，避免 TG 洪流）。
+      持仓+观察池为空时 daemon 直接退出，节省资源。
+      load_today_watchlist 和 load_holdings 在启动时加载一次，
+      盘中修改 holdings.yaml 不会被 daemon 看到（需重启）。
 
 用法：
-  python anomaly_loop.py
-  python anomaly_loop.py --once
-  python anomaly_loop.py --interval 60
+  uv run anomaly_loop.py
+  uv run anomaly_loop.py --once
+  uv run anomaly_loop.py --interval 60
 """
 
 from __future__ import annotations
@@ -80,6 +84,20 @@ def format_alert(now: datetime, symbol: str, label: str, row: dict) -> str:
     return f"🆕 [{t[:5]}] {label} · {code} {name} · {symbol}  {info}"
 
 
+def format_rocket_digest(now: datetime, entries: list[dict]) -> str:
+    """火箭发射本轮聚合 digest。entries 已是仅持仓+观察池命中的 row.to_dict()。"""
+    head = f"🚀 [{now.strftime('%H:%M')}] 火箭发射 · 持仓/观察池命中 {len(entries)} 只"
+    lines = [head]
+    for row in entries[:8]:
+        code = row["代码"]
+        name = row["名称"]
+        info = row.get("相关信息", "")
+        lines.append(f"- {code} {name}  {info}")
+    if len(entries) > 8:
+        lines.append(f"- …还有 {len(entries) - 8} 只")
+    return "\n".join(lines)
+
+
 def snapshot_holdings(now: datetime) -> None:
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     src = ROOT / "holdings.yaml"
@@ -113,8 +131,11 @@ def main():
     p.add_argument("--no-raw", action="store_true", help="不落全量 jsonl（默认落）")
     args = p.parse_args()
 
-    excluded = {w["code"] for w in load_today_watchlist()} | {h["code"] for h in load_holdings()}
-    print(f"[anomaly_loop] 排除已监控票 {len(excluded)} 只（观察池+持仓）", flush=True)
+    watched = {w["code"] for w in load_today_watchlist()} | {h["code"] for h in load_holdings()}
+    if not watched:
+        print("[anomaly_loop] 持仓+观察池均为空，无监控目标，退出", flush=True)
+        return
+    print(f"[anomaly_loop] 监控持仓+观察池 {len(watched)} 只", flush=True)
     snapshot_holdings(datetime.now())
 
     sent: set[tuple[str, str]] = set()
@@ -136,6 +157,7 @@ def main():
 
         round_idx += 1
         total_new = 0
+        rocket_buffer: list[dict] = []  # 本轮命中持仓/观察池的火箭条目，整轮末压成 1 条 digest
         for symbol, label in SYMBOLS.items():
             try:
                 df = fetch_anomaly(symbol)
@@ -155,7 +177,7 @@ def main():
             for _, row in df.iterrows():
                 code = row["代码"]
                 t = fmt_time(row.get("时间"))
-                if code in excluded:
+                if code not in watched:
                     continue
                 if t <= last_max_time[symbol]:
                     continue
@@ -166,15 +188,26 @@ def main():
                     continue
                 sent.add(key)
                 total_new += 1
-                msg = format_alert(now, symbol, label, row.to_dict())
-                try:
-                    r = push(msg, source="stock-anomaly")
-                    print(f"[anomaly_loop] PUSH {code} {symbol} msg_id={r['result']['message_id']}", flush=True)
-                except Exception as e:
-                    print(f"[anomaly_loop] push 失败 {code} {symbol}: {e}", flush=True)
+                if symbol == "火箭发射":
+                    rocket_buffer.append(row.to_dict())
+                else:
+                    msg = format_alert(now, symbol, label, row.to_dict())
+                    try:
+                        r = push(msg, source="stock-anomaly")
+                        print(f"[anomaly_loop] PUSH {code} {symbol} msg_id={r['result']['message_id']}", flush=True)
+                    except Exception as e:
+                        print(f"[anomaly_loop] push 失败 {code} {symbol}: {e}", flush=True)
                 if t > new_max:
                     new_max = t
             last_max_time[symbol] = new_max
+
+        if rocket_buffer:
+            digest = format_rocket_digest(now, rocket_buffer)
+            try:
+                r = push(digest, source="stock-anomaly")
+                print(f"[anomaly_loop] PUSH 火箭 digest ×{len(rocket_buffer)} msg_id={r['result']['message_id']}", flush=True)
+            except Exception as e:
+                print(f"[anomaly_loop] push 火箭 digest 失败: {e}", flush=True)
 
         print(f"[anomaly_loop] round {round_idx} {now.strftime('%H:%M:%S')} 新增 {total_new} 条", flush=True)
 

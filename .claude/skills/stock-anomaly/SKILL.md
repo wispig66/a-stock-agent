@@ -9,9 +9,11 @@ metadata:
 
 ## 与其他 skill 的边界
 
-- **watch_loop.py**（盘中常驻）：盯今早观察池 + holdings 已知名单的 6 种触发
-- **anomaly_loop.py**（盘中常驻）：扫全市场新冒头票，自动排除观察池+holdings，单条推 Telegram
+- **watch_loop.py**（盘中常驻）：自算 minute-by-minute 价格阈值（±5% / 破止损 / 放量 2x / 自算封板等 6 种），目标：持仓 + 观察池
+- **anomaly_loop.py**（盘中常驻）：用 akshare `stock_changes_em` 标注事件（60日新高 / 火箭 / 封板 / 炸板），目标：**同样**是持仓 + 观察池（与 watch_loop 同一批股票、不同信号源冗余）。火箭发射整轮 digest 推送避免开盘洪流，其他三类单只 ping
 - **本 skill**：用户问"现在有什么新方向"时跑一次，把 anomaly_loop 最近 30 分钟的散点推送**聚成叙事**，叠加消息面，给出"是否值得加入观察池 / 是否提示新主线切换"的判断
+
+**架构注**：anomaly_loop 不再扫全市场——开盘头 5 分钟全市场火箭发射 300-500 只直接 TG 洪水，无实用价值。改为只看你已经关心的股票（持仓+观察池），用 akshare 的事件标签作为 watch_loop 的信号冗余。
 
 ## 触发场景
 
