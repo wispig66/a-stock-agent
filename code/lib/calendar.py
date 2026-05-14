@@ -38,7 +38,10 @@ def is_trade_day(d: date) -> bool:
 
 
 def next_trade_day(d: date) -> date:
-    """返回严格大于 d 的下一个交易日。"""
+    """返回严格大于 d 的下一个交易日。
+
+    若 d 早于本地日历最早日期或晚于最晚日期，抛 CalendarOutOfRange。
+    """
     days = _load()
     if d < days[0]:
         raise CalendarOutOfRange(

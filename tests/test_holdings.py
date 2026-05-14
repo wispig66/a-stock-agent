@@ -18,6 +18,7 @@ def tmp_yaml(tmp_path: Path, monkeypatch) -> Path:
     yml = tmp_path / "holdings.yaml"
     yml.write_text("holdings: []\n", encoding="utf-8")
     monkeypatch.setattr(h, "HOLDINGS_FILE", yml)
+    monkeypatch.setattr(h, "LOCK_FILE", tmp_path / "holdings.yaml.lock")
     return yml
 
 
@@ -114,8 +115,8 @@ def test_legacy_record_without_unlock_date(tmp_yaml):
     assert got[0].source == "manual"
 
 
-def test_atomic_write(tmp_yaml):
-    """写入过程中 yaml 不应出现半截内容（原子 rename 测试）。"""
+def test_yaml_valid_after_write(tmp_yaml):
+    """写入后 yaml 应能被完整解析（验证文件格式正确，非并发原子性测试）。"""
     rec = h.Holding(
         code="000601", name="韶能股份", genre="B",
         cost=9.0, shares=1000,
