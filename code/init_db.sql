@@ -122,3 +122,15 @@ CREATE TABLE IF NOT EXISTS unlock_calendar (
 );
 
 CREATE INDEX IF NOT EXISTS idx_unlock_date ON unlock_calendar(unlock_date);
+
+-- 股票基础信息（代码→名称/板块/上市日/ST 标志），refresh_stock_basic.py 每日刷新
+CREATE TABLE IF NOT EXISTS stock_basic (
+    code TEXT PRIMARY KEY,
+    name TEXT,
+    board TEXT,           -- main / chinext / star / bse
+    list_date TEXT,
+    is_st INTEGER DEFAULT 0,
+    updated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_basic_board ON stock_basic(board);
