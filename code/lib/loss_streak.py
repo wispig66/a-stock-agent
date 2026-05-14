@@ -95,3 +95,26 @@ def count_loss_streak(history: list[dict], today: date) -> int:
         else:
             break
     return streak
+
+
+def load_state(path: Path | None = None) -> dict:
+    """读 risk_state.yaml；缺失或解析失败返回 {daily_pnl: []}。"""
+    f = path or STATE_FILE
+    if not f.exists():
+        return {"daily_pnl": []}
+    try:
+        raw = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as e:
+        print(f"[loss_streak] risk_state.yaml 解析失败 ({e})，重置为空", file=sys.stderr)
+        return {"daily_pnl": []}
+    raw.setdefault("daily_pnl", [])
+    return raw
+
+
+def save_state(state: dict, path: Path | None = None) -> None:
+    """写 risk_state.yaml；失败仅 stderr，不抛。"""
+    f = path or STATE_FILE
+    try:
+        f.write_text(yaml.safe_dump(state, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    except OSError as e:
+        print(f"[loss_streak] risk_state.yaml 写入失败 ({e})", file=sys.stderr)

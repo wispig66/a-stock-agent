@@ -130,3 +130,26 @@ def test_count_loss_streak_reset_by_profit_day():
         {"date": "2026-05-14", "pnl_pct": -3.1, "is_loss": True},
     ]
     assert loss_streak.count_loss_streak(history, date(2026, 5, 14)) == 1
+
+
+def test_load_state_missing_returns_empty(tmp_path, monkeypatch):
+    """状态文件不存在 → 返回 {daily_pnl: []}。"""
+    fake = tmp_path / "nope.yaml"
+    monkeypatch.setattr(loss_streak, "STATE_FILE", fake)
+    state = loss_streak.load_state()
+    assert state == {"daily_pnl": []}
+
+
+def test_save_then_load_roundtrip(tmp_path, monkeypatch):
+    """save → load 数据一致。"""
+    f = tmp_path / "risk_state.yaml"
+    monkeypatch.setattr(loss_streak, "STATE_FILE", f)
+    state = {
+        "daily_pnl": [
+            {"date": "2026-05-13", "pnl_pct": -2.3, "is_loss": True},
+            {"date": "2026-05-14", "pnl_pct": -3.1, "is_loss": True},
+        ]
+    }
+    loss_streak.save_state(state)
+    loaded = loss_streak.load_state()
+    assert loaded == state
