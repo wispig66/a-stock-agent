@@ -4,6 +4,33 @@
 
 ## [Unreleased]
 
+### TG 单股查询助手 · stock-query (2026-05-14)
+
+新增「在 Telegram 发股票代码 → 30-90s 内回一张题材派决策卡」入口。常驻 daemon 10s 长轮询，前置校验秒级拒绝不合规票（科创/北交所/ST/未找到），合规票走 `claude -p` headless 跑新 skill `stock-query` 并把卡片流式写到 TG 同一条消息。
+
+**新增**
+- `.claude/skills/stock-query/SKILL.md` — 题材派 6 维判定 + fresh/holding 双分支模板 + 三档明确表态
+- `scripts/tg_listener.py` — TG 长轮询守护进程，fcntl 文件锁串行化、1 跑 + 3 等队列、`subprocess` + `--output-format stream-json --include-partial-messages` 流式跑 skill，工具调用阶段也 editMessageText 显示进度
+- `scripts/start_tg_listener.sh` / `stop_tg_listener.sh` — 交互式 shell 拉起 daemon（绕开 launchd + ~/Desktop 的 TCC 阻塞）
+- `code/lib/query.py` — 单股查询数据层：`parse_input` / `board_of` / `is_st` / `lookup_by_name` + 联网拉 K 线 / 盘口 / 资金流 / 概念榜 / 新闻
+- `scripts/refresh_stock_basic.py` — 全市场 sh_a + sz_a 每日刷新（Sina `Market_Center.getHQNodeData`，5202 票 / 259 ST），挂到 postmarket 流程末尾
+- `code/run_tg_listener.sh` + `launchd/com.user.stocktglistener.plist` — KeepAlive 模板（项目搬出 Desktop 后可启用）
+- `tests/test_query_lib.py`、`tests/test_query_lib_network.py`、`tests/test_refresh_stock_basic.py`、`tests/test_stock_basic_schema.py`、`tests/test_tg_listener.py` — 30+ TDD 用例
+- `data/daily.db` 新增 `stock_basic` 表（code / name / board / is_st / list_date / updated_at）
+
+**改动**
+- `code/init_db.sql` — 追加 `stock_basic` DDL
+- `code/run_postmarket.sh` — 主流程结尾调 `refresh_stock_basic.py`（失败不阻断）
+- `README.md` — 新增「TG 单股查询」一节 + macOS TCC/FDA 注意事项
+
+**设计 / 计划文档**
+- `docs/superpowers/specs/2026-05-14-tg-stock-query-design.md`
+- `docs/superpowers/plans/2026-05-14-tg-stock-query.md`
+
+**已知限制**
+- launchd 拉起的 daemon 在 `~/Desktop` 项目下会因 macOS TCC 在 `getcwd` 阻塞，需用 `scripts/start_tg_listener.sh` 在交互式 shell 中启动；若把项目搬到 `~/code` 之类无 TCC 限制的目录则可直接挂 launchd。
+- 东财 push2.eastmoney.com 在本项目出口 IP 仍被风控拒，`fetch_concept_strength` / `fetch_money_flow` 实测会失败；skill 内已写好"数据缺失降一档"的降级路径。
+
 ### T+1 awareness 改造 · Batch 1 数据基础 (2026-05-14)
 
 为整套系统的 T+1 机制感知改造打地基。**本批次对用户可见行为无任何变化**，仅新增可调用工具与字段。后续 Batch 2 / 3 才会把这些能力接入 watch_loop 告警和 skill 文案。
