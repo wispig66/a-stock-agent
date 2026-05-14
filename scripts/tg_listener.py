@@ -36,7 +36,7 @@ OFFSET_FILE = ROOT / "data" / "tg_offset.txt"
 LOCK_FILE = "/tmp/stock-query.lock"
 MAX_QUEUE = 3
 SKILL_TIMEOUT = 180
-EDIT_THROTTLE = 1.5         # Telegram editMessageText 限速：≥1s/chat 才安全
+EDIT_THROTTLE = 1.0         # Telegram editMessageText 限速：≥1s/chat 才安全
 TG_MAX_LEN = 4000           # 4096 上限，留 96 字 buffer
 
 _running = 0
@@ -100,8 +100,12 @@ def held_codes() -> set[str]:
 
 
 def run_skill_streaming(code: str, mode: str,
-                        on_chunk: Callable[[str], None]) -> str:
-    """流式跑 stock-query skill。on_chunk(accumulated) 在文本累积时回调（已节流）。
+                        on_text: Callable[[str], None],
+                        on_tool: Callable[[str], None]) -> str:
+    """流式跑 stock-query skill。
+
+    on_text(accumulated)：模型写卡片时（每个 text_delta）回调，调用方自行节流
+    on_tool(tool_name)：每次 tool_use 开始时回调（拉数据进度）
     返回最终完整卡片文本。
     """
     prompt = (f"请使用 stock-query skill 分析这只股票，严格按 SKILL.md "
@@ -125,11 +129,11 @@ def run_skill_streaming(code: str, mode: str,
     start = time.time()
 
     try:
-        for line in proc.stdout:
+        for raw in iter(proc.stdout.readline, ""):
             if time.time() - start > SKILL_TIMEOUT:
                 proc.kill()
                 raise subprocess.TimeoutExpired(cmd, SKILL_TIMEOUT)
-            line = line.strip()
+            line = raw.strip()
             if not line:
                 continue
             try:
@@ -138,27 +142,29 @@ def run_skill_streaming(code: str, mode: str,
                 continue
             etype = evt.get("type")
 
-            # 真正的 token 级流：partial assistant 事件
+            # 工具调用：拉数据阶段的进度信号
             if etype == "stream_event":
                 ev = evt.get("event", {})
-                if ev.get("type") == "content_block_delta":
+                ev_type = ev.get("type")
+                if ev_type == "content_block_start":
+                    block = ev.get("content_block", {})
+                    if block.get("type") == "tool_use":
+                        on_tool(block.get("name", "tool"))
+                elif ev_type == "content_block_delta":
                     delta = ev.get("delta", {})
                     if delta.get("type") == "text_delta":
                         accumulated += delta.get("text", "")
-                        on_chunk(accumulated)
+                        on_text(accumulated)
                 continue
 
-            # 整段 assistant 文本（兜底 / 非 partial 模式）
             if etype == "assistant":
                 content = (evt.get("message") or {}).get("content") or []
                 for blk in content:
                     if blk.get("type") == "text":
-                        # 替换累积（避免重复）
                         accumulated = blk.get("text", "") or accumulated
-                        on_chunk(accumulated)
+                        on_text(accumulated)
                 continue
 
-            # 最终结果，权威
             if etype == "result":
                 final_text = (evt.get("result") or "").strip()
                 continue
@@ -229,17 +235,38 @@ def handle(text: str, chat_id, today: Optional[str] = None) -> None:
         return
 
     _waiting += 1
-    last_edit = [0.0]  # nonlocal-via-list 单元
+    last_edit = [0.0]   # 节流时间戳
+    tools_done = [0]    # tool_use 次数
+    start_ts = time.time()
 
-    def on_chunk(buf: str) -> None:
+    # 友好工具名映射（其它工具走默认）
+    TOOL_LABEL = {
+        "Bash": "查数据",
+        "Read": "读文件",
+        "Grep": "搜数据",
+        "Glob": "找数据",
+    }
+
+    def _throttled_edit(text: str, force: bool = False) -> None:
         now = time.time()
-        if now - last_edit[0] < EDIT_THROTTLE:
+        if not force and now - last_edit[0] < EDIT_THROTTLE:
             return
         last_edit[0] = now
         try:
-            _tg_edit(msg_id, f"🔍 {code}\n\n{buf}")
+            _tg_edit(msg_id, text)
         except Exception as e:
             print(f"[tg_listener] edit 失败: {e}", file=sys.stderr)
+
+    def on_tool(name: str) -> None:
+        tools_done[0] += 1
+        label = TOOL_LABEL.get(name, name)
+        elapsed = int(time.time() - start_ts)
+        _throttled_edit(
+            f"🔍 {code}\n\n⏳ 已用 {elapsed}s · 第 {tools_done[0]} 步：{label}…"
+        )
+
+    def on_text(buf: str) -> None:
+        _throttled_edit(f"🔍 {code}\n\n{buf}")
 
     try:
         with open(LOCK_FILE, "w") as lk:
@@ -247,7 +274,7 @@ def handle(text: str, chat_id, today: Optional[str] = None) -> None:
             _waiting -= 1
             _running += 1
             try:
-                card = run_skill_streaming(code, mode, on_chunk)
+                card = run_skill_streaming(code, mode, on_text, on_tool)
             except subprocess.TimeoutExpired:
                 _tg_edit(msg_id, f"⌛ {code}\n分析超时，稍后再试")
                 return
