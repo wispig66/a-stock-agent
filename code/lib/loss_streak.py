@@ -49,3 +49,49 @@ def compute_daily_pnl(
             continue  # cost 兜底 → 该笔 pnl=0
         pnl_value += (float(price) - cost) * shares
     return round(pnl_value / total_capital * 100, 2)
+
+
+def update_pnl_history(
+    history: list[dict],
+    today: date,
+    pnl_pct: float,
+    cfg: dict,
+) -> list[dict]:
+    """追加今日记录 + 环形截断到最新 MAX_HISTORY 条。
+
+    同日记录已存在时覆盖（重复跑 L4 不重复入库）。
+    """
+    threshold = float(cfg.get("loss_day_threshold_pct", -2.0))
+    today_str = today.isoformat()
+    new_entry = {
+        "date": today_str,
+        "pnl_pct": round(float(pnl_pct), 2),
+        "is_loss": float(pnl_pct) < threshold,
+    }
+    # 去掉同日的旧条目
+    filtered = [h for h in history if h.get("date") != today_str]
+    filtered.append(new_entry)
+    # 环形截断保留最新 MAX_HISTORY 条
+    if len(filtered) > MAX_HISTORY:
+        filtered = filtered[-MAX_HISTORY:]
+    return filtered
+
+
+def count_loss_streak(history: list[dict], today: date) -> int:
+    """从 today 倒数连续 is_loss=True 的天数。
+
+    跳过 today 之后的记录（防御）；从 ≤ today 的最近一条向前数。
+    """
+    today_str = today.isoformat()
+    relevant = [h for h in history if h.get("date", "") <= today_str]
+    if not relevant:
+        return 0
+    # 按日期降序
+    relevant.sort(key=lambda h: h["date"], reverse=True)
+    streak = 0
+    for h in relevant:
+        if h.get("is_loss"):
+            streak += 1
+        else:
+            break
+    return streak
