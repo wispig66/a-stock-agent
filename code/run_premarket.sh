@@ -3,7 +3,7 @@
 # 工作日 08:30 触发；周末和节假日跑也无害（脚本内部回退到上一个完整交易日）。
 
 set -e
-cd /Users/wispig/Desktop/stock
+cd "$(dirname "$0")/.."
 
 LOG_DIR=logs
 mkdir -p $LOG_DIR

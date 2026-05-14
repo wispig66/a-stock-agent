@@ -3,7 +3,7 @@
 # SKILL.md 内部按当前 date '+%H:%M' 自路由到对应分支。
 
 set -e
-cd /Users/wispig/Desktop/stock
+cd "$(dirname "$0")/.."
 
 LOG_DIR=logs
 mkdir -p $LOG_DIR

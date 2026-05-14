@@ -20,3 +20,7 @@ logs/*.log
 holdings.yaml.lock
 data/tg_listener.pid
 data/tg_offset.txt
+.claude/settings.local.json
+research/
+docs/superpowers/
+.pytest_cache/

@@ -409,7 +409,7 @@ claude --bare -p "$(cat prompts/premarket.md)" \
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/wispig/Desktop/stock/code/premarket.sh</string>
+    <string>&lt;PROJECT_ROOT&gt;/code/premarket.sh</string>
   </array>
   <key>StartCalendarInterval</key>
   <dict>

@@ -2,7 +2,7 @@
 # 盘后 skill 调用脚本。工作日 15:30 触发；周末跑也无害（脚本内部判断当日是否有效交易日）。
 
 set -e
-cd /Users/wispig/Desktop/stock
+cd "$(dirname "$0")/.."
 
 LOG_DIR=logs
 mkdir -p $LOG_DIR
