@@ -53,8 +53,12 @@ def test_parse_input_chinese_name():
     assert query.parse_input("茅台") == ("name", "茅台")
 
 
-def test_parse_input_rejects_garbage():
-    assert query.parse_input("你好") == ("name", "你好")  # 含中文走 name 路径，由 lookup_by_name 兜底
+def test_parse_input_chinese_treated_as_name():
+    # 任何含中文的输入都走 name 路径，由 lookup_by_name 返回 [] 兜底"未找到"
+    assert query.parse_input("你好") == ("name", "你好")
+
+
+def test_parse_input_unknown():
     assert query.parse_input("12345") == ("unknown", "12345")
     assert query.parse_input("") == ("unknown", "")
 

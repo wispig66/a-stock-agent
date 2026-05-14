@@ -20,7 +20,7 @@ DB = ROOT / "data" / "daily.db"
 
 _CODE_RE = re.compile(r"^\d{6}$")
 _PREFIX_RE = re.compile(r"^(?:sh|sz|bj)", re.IGNORECASE)
-_CHINESE_RE = re.compile(r"[一-鿿]")
+_CHINESE_RE = re.compile(r"[㐀-䶿一-鿿]")
 
 
 def parse_input(text: str) -> tuple[str, str]:
