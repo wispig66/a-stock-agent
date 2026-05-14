@@ -18,3 +18,5 @@ data/anomaly_findings/
 logs/*.log
 .DS_Store
 holdings.yaml.lock
+data/tg_listener.pid
+data/tg_offset.txt
