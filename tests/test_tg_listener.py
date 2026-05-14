@@ -43,7 +43,7 @@ def _setup(monkeypatch, tmp_path):
 
 def test_handle_unknown_silent(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
-    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill") as r:
+    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill_streaming") as r:
         tl.handle("12345", chat_id="999", today="2026-05-14")
     p.assert_not_called()
     r.assert_not_called()
@@ -51,7 +51,7 @@ def test_handle_unknown_silent(tmp_path, monkeypatch):
 
 def test_handle_star_rejected(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
-    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill") as r:
+    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill_streaming") as r:
         tl.handle("688981", chat_id="999", today="2026-05-14")
     p.assert_called_once()
     msg = p.call_args.args[0]
@@ -61,7 +61,7 @@ def test_handle_star_rejected(tmp_path, monkeypatch):
 
 def test_handle_st_rejected(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
-    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill") as r:
+    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill_streaming") as r:
         tl.handle("000725", chat_id="999", today="2026-05-14")
     p.assert_called_once()
     assert "ST" in p.call_args.args[0]
@@ -70,7 +70,7 @@ def test_handle_st_rejected(tmp_path, monkeypatch):
 
 def test_handle_unknown_code(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
-    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill") as r:
+    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill_streaming") as r:
         tl.handle("999999", chat_id="999", today="2026-05-14")
     p.assert_called_once()
     assert "未找到" in p.call_args.args[0]
@@ -83,7 +83,7 @@ def test_handle_chinese_multi_hit(tmp_path, monkeypatch):
     conn.execute("INSERT INTO stock_basic(code,name,board,is_st,updated_at) "
                  "VALUES('600702','舍得茅台酒','main',0,'2026-05-14')")
     conn.commit(); conn.close()
-    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill") as r:
+    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill_streaming") as r:
         tl.handle("茅台", chat_id="999", today="2026-05-14")
     p.assert_called_once()
     assert "找到多只" in p.call_args.args[0]
@@ -92,17 +92,22 @@ def test_handle_chinese_multi_hit(tmp_path, monkeypatch):
 
 def test_handle_fresh_dispatches_skill(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
-    with patch.object(tl, "push_reply") as p, \
-         patch.object(tl, "run_skill", return_value="📊 fake card") as r:
+    with patch.object(tl, "_tg_send", return_value=42) as send, \
+         patch.object(tl, "_tg_edit") as edit, \
+         patch.object(tl, "run_skill_streaming",
+                      return_value="📊 fake card") as r:
         tl.handle("600519", chat_id="999", today="2026-05-14")
     r.assert_called_once()
     code, mode = r.call_args.args[0], r.call_args.args[1]
     assert code == "600519"
     assert mode == "fresh"
-    # 两次 push：先 loading 提示，再卡片
-    assert p.call_count == 2
-    assert "分析中" in p.call_args_list[0].args[0]
-    assert p.call_args_list[1].args[0] == "📊 fake card"
+    # 占位发送一次
+    send.assert_called_once()
+    assert "分析中" in send.call_args.args[0]
+    # 最终编辑落到同一条消息（msg_id=42）
+    final_call = edit.call_args_list[-1]
+    assert final_call.args[0] == 42
+    assert "📊" in final_call.args[1] or "fake card" in final_call.args[1]
 
 
 def test_handle_holding_branch(tmp_path, monkeypatch):
@@ -111,8 +116,9 @@ def test_handle_holding_branch(tmp_path, monkeypatch):
         "holdings:\n  - code: '600519'\n    name: 贵州茅台\n    genre: B\n"
         "    cost: 1580\n    shares: 100\n    buy_date: 2026-05-09\n"
     )
-    with patch.object(tl, "push_reply"), \
-         patch.object(tl, "run_skill", return_value="📊 fake") as r:
+    with patch.object(tl, "_tg_send", return_value=1), \
+         patch.object(tl, "_tg_edit"), \
+         patch.object(tl, "run_skill_streaming", return_value="📊 fake") as r:
         tl.handle("600519", chat_id="999", today="2026-05-14")
     assert r.call_args.args[1] == "holding"
 
@@ -120,15 +126,19 @@ def test_handle_holding_branch(tmp_path, monkeypatch):
 def test_handle_wrong_chat_id_silent(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
     monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "12345")
-    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill") as r:
+    with patch.object(tl, "push_reply") as p, \
+         patch.object(tl, "_tg_send") as send, \
+         patch.object(tl, "run_skill_streaming") as r:
         tl.handle("600519", chat_id="999", today="2026-05-14")
     p.assert_not_called()
+    send.assert_not_called()
     r.assert_not_called()
 
 
 def test_handle_chinese_no_hit(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
-    with patch.object(tl, "push_reply") as p, patch.object(tl, "run_skill") as r:
+    with patch.object(tl, "push_reply") as p, \
+         patch.object(tl, "run_skill_streaming") as r:
         tl.handle("根本不存在公司名", chat_id="999", today="2026-05-14")
     p.assert_called_once()
     assert "未找到" in p.call_args.args[0]

@@ -1,18 +1,22 @@
-"""TG 长轮询守护进程：接收单股代码/名称 → 调 CC headless 跑 stock-query → 回卡片。
+"""TG 长轮询守护进程：接收单股代码/名称 → 调 CC headless 跑 stock-query → 流式回卡片。
 
 并发：fcntl 文件锁 + 排队计数器；1 跑 + 3 等 = 4 容量，第 5 拒绝。
 失败重试：TG API 指数退避，CC 子进程超时 180s 直接报错。
 进程崩溃由 launchd KeepAlive 拉起；offset 持久化到 data/tg_offset.txt。
+
+流式输出：claude -p --output-format stream-json --include-partial-messages
+解析 content_block_delta 累积文本，每 1.5s editMessageText 一次（限速 + 节省 API 调用）。
 """
 from __future__ import annotations
 import fcntl
+import json
 import os
 import subprocess
 import sys
 import time
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 import yaml
@@ -20,9 +24,10 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "code"))
 from lib import query  # noqa: E402
-from notify import push_md  # noqa: E402
+from notify import push_md, md_to_tg_html  # noqa: E402
 
 ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID") or os.environ.get("TG_CHAT_ID", "")
+TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
 TG_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 TG_API = f"https://api.telegram.org/bot{TG_TOKEN}"
 
@@ -31,18 +36,57 @@ OFFSET_FILE = ROOT / "data" / "tg_offset.txt"
 LOCK_FILE = "/tmp/stock-query.lock"
 MAX_QUEUE = 3
 SKILL_TIMEOUT = 180
+EDIT_THROTTLE = 1.5         # Telegram editMessageText 限速：≥1s/chat 才安全
+TG_MAX_LEN = 4000           # 4096 上限，留 96 字 buffer
 
 _running = 0
 _waiting = 0
 
 
+# ============================================================
+# Telegram 低层 API（发送 / 编辑）
+# ============================================================
+
+def _tg_send(text: str, parse_mode: Optional[str] = None) -> int:
+    """发新消息，返回 message_id。"""
+    r = requests.post(f"{TG_API}/sendMessage", json={
+        "chat_id": TG_CHAT_ID, "text": text[:TG_MAX_LEN],
+        "disable_web_page_preview": True,
+        **({"parse_mode": parse_mode} if parse_mode else {}),
+    }, timeout=10)
+    r.raise_for_status()
+    return r.json()["result"]["message_id"]
+
+
+def _tg_edit(message_id: int, text: str, parse_mode: Optional[str] = None) -> None:
+    """编辑已发消息。HTML parse 失败时回退纯文本（流式过程中 markdown 半截不可避免）。"""
+    payload = {
+        "chat_id": TG_CHAT_ID, "message_id": message_id,
+        "text": text[:TG_MAX_LEN], "disable_web_page_preview": True,
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    r = requests.post(f"{TG_API}/editMessageText", json=payload, timeout=10)
+    if r.status_code == 400 and parse_mode:
+        # HTML 半截解析失败 → 纯文本重试
+        payload.pop("parse_mode", None)
+        r = requests.post(f"{TG_API}/editMessageText", json=payload, timeout=10)
+    # 忽略 "message is not modified"（内容没变）和 429 限流，不影响主流程
+    if r.status_code not in (200, 400, 429):
+        r.raise_for_status()
+
+
 def push_reply(text: str) -> None:
-    """回 TG。"""
+    """非流式回 TG（拒绝卡 / 错误提示 用）。"""
     try:
         push_md(text, source="stock-query")
     except Exception as e:
         print(f"[tg_listener] push 失败: {e}", file=sys.stderr)
 
+
+# ============================================================
+# 业务
+# ============================================================
 
 def held_codes() -> set[str]:
     if not HOLDINGS_FILE.exists():
@@ -55,18 +99,77 @@ def held_codes() -> set[str]:
             if h.get("code")}
 
 
-def run_skill(code: str, mode: str) -> str:
-    """通过 claude -p headless 跑 stock-query skill；返回 markdown。"""
+def run_skill_streaming(code: str, mode: str,
+                        on_chunk: Callable[[str], None]) -> str:
+    """流式跑 stock-query skill。on_chunk(accumulated) 在文本累积时回调（已节流）。
+    返回最终完整卡片文本。
+    """
     prompt = (f"请使用 stock-query skill 分析这只股票，严格按 SKILL.md "
               f"模板输出卡片，不要任何额外文字：code={code} mode={mode}")
-    proc = subprocess.run(
-        ["claude", "-p", "--permission-mode", "bypassPermissions"],
-        cwd=str(ROOT),
-        input=prompt, capture_output=True, text=True, timeout=SKILL_TIMEOUT,
+    cmd = ["claude", "-p", "--permission-mode", "bypassPermissions",
+           "--output-format", "stream-json",
+           "--include-partial-messages",
+           "--verbose"]
+
+    proc = subprocess.Popen(
+        cmd, cwd=str(ROOT),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, bufsize=1,
     )
+    assert proc.stdin and proc.stdout
+    proc.stdin.write(prompt)
+    proc.stdin.close()
+
+    accumulated = ""
+    final_text = ""
+    start = time.time()
+
+    try:
+        for line in proc.stdout:
+            if time.time() - start > SKILL_TIMEOUT:
+                proc.kill()
+                raise subprocess.TimeoutExpired(cmd, SKILL_TIMEOUT)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            etype = evt.get("type")
+
+            # 真正的 token 级流：partial assistant 事件
+            if etype == "stream_event":
+                ev = evt.get("event", {})
+                if ev.get("type") == "content_block_delta":
+                    delta = ev.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        accumulated += delta.get("text", "")
+                        on_chunk(accumulated)
+                continue
+
+            # 整段 assistant 文本（兜底 / 非 partial 模式）
+            if etype == "assistant":
+                content = (evt.get("message") or {}).get("content") or []
+                for blk in content:
+                    if blk.get("type") == "text":
+                        # 替换累积（避免重复）
+                        accumulated = blk.get("text", "") or accumulated
+                        on_chunk(accumulated)
+                continue
+
+            # 最终结果，权威
+            if etype == "result":
+                final_text = (evt.get("result") or "").strip()
+                continue
+    finally:
+        proc.wait(timeout=5)
+
     if proc.returncode != 0:
-        raise RuntimeError(f"claude -p 退出码 {proc.returncode}: {proc.stderr[:500]}")
-    return proc.stdout.strip()
+        err = proc.stderr.read()[:500] if proc.stderr else ""
+        raise RuntimeError(f"claude -p 退出码 {proc.returncode}: {err}")
+
+    return final_text or accumulated.strip()
 
 
 def _reject(code: str, reason: str) -> str:
@@ -74,13 +177,13 @@ def _reject(code: str, reason: str) -> str:
 
 
 def handle(text: str, chat_id, today: Optional[str] = None) -> None:
-    """处理一条入站消息。出口只有 silent / push_reply。"""
+    """处理一条入站消息。出口只有 silent / push_reply / 流式 edit。"""
     if str(chat_id) != str(ALLOWED_CHAT_ID):
         return
 
     kind, val = query.parse_input(text)
     if kind == "unknown":
-        return  # 闲聊/纯数字非6位/空串 → 静默
+        return
 
     today = today or date.today().isoformat()
 
@@ -108,8 +211,6 @@ def handle(text: str, chat_id, today: Optional[str] = None) -> None:
     if query.is_st(code):
         push_reply(_reject(code, "ST 票风险过高，本助手不分析"))
         return
-    # 注：停牌检测下推到 skill 内（用实时盘口判定）。基于 daily_kline 的判定
-    # 在盘前/盘中不可靠——当日 kline 要等盘后 download_daily 才入库。
 
     mode = "holding" if code in held_codes() else "fresh"
 
@@ -118,29 +219,52 @@ def handle(text: str, chat_id, today: Optional[str] = None) -> None:
         push_reply(f"⏳ {code}\n忙，稍后再问")
         return
     queued = bool(_running)
-    if queued:
-        push_reply(f"🔍 {code} 排队中（前面还有 {_running + _waiting} 个），稍候…")
-    else:
-        push_reply(f"🔍 {code} 分析中…（约 30–90 秒）")
+    initial = (f"🔍 {code} 排队中（前面 {_running + _waiting} 个）…"
+               if queued
+               else f"🔍 {code} 分析中…（约 30–90 秒）")
+    try:
+        msg_id = _tg_send(initial)
+    except Exception as e:
+        print(f"[tg_listener] 占位发送失败: {e}", file=sys.stderr)
+        return
+
     _waiting += 1
+    last_edit = [0.0]  # nonlocal-via-list 单元
+
+    def on_chunk(buf: str) -> None:
+        now = time.time()
+        if now - last_edit[0] < EDIT_THROTTLE:
+            return
+        last_edit[0] = now
+        try:
+            _tg_edit(msg_id, f"🔍 {code}\n\n{buf}")
+        except Exception as e:
+            print(f"[tg_listener] edit 失败: {e}", file=sys.stderr)
+
     try:
         with open(LOCK_FILE, "w") as lk:
             fcntl.flock(lk, fcntl.LOCK_EX)
             _waiting -= 1
             _running += 1
             try:
-                card = run_skill(code, mode)
+                card = run_skill_streaming(code, mode, on_chunk)
             except subprocess.TimeoutExpired:
-                push_reply(f"⌛ {code}\n分析超时，稍后再试")
+                _tg_edit(msg_id, f"⌛ {code}\n分析超时，稍后再试")
                 return
             except Exception as e:
-                push_reply(f"⚠️ {code}\n分析失败：{e}")
+                _tg_edit(msg_id, f"⚠️ {code}\n分析失败：{e}")
                 return
             finally:
                 _running -= 1
-        push_reply(card)
+        # 最终卡片：HTML 渲染后落到同一条消息
+        try:
+            _tg_edit(msg_id, md_to_tg_html(card) if card else "（空卡片）",
+                     parse_mode="HTML")
+        except Exception as e:
+            print(f"[tg_listener] 最终 edit 失败 → 退化为新发: {e}",
+                  file=sys.stderr)
+            push_reply(card)
     except Exception:
-        # 如果锁未拿到（理论上不会，flock 是阻塞的）回滚 _waiting
         _waiting = max(0, _waiting - 1)
         raise
 
