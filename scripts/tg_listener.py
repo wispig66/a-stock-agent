@@ -117,6 +117,11 @@ def handle(text: str, chat_id, today: Optional[str] = None) -> None:
     if _running and _waiting >= MAX_QUEUE:
         push_reply(f"⏳ {code}\n忙，稍后再问")
         return
+    queued = bool(_running)
+    if queued:
+        push_reply(f"🔍 {code} 排队中（前面还有 {_running + _waiting} 个），稍候…")
+    else:
+        push_reply(f"🔍 {code} 分析中…（约 30–90 秒）")
     _waiting += 1
     try:
         with open(LOCK_FILE, "w") as lk:

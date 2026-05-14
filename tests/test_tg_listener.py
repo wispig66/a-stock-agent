@@ -99,7 +99,10 @@ def test_handle_fresh_dispatches_skill(tmp_path, monkeypatch):
     code, mode = r.call_args.args[0], r.call_args.args[1]
     assert code == "600519"
     assert mode == "fresh"
-    p.assert_called_once_with("📊 fake card")
+    # 两次 push：先 loading 提示，再卡片
+    assert p.call_count == 2
+    assert "分析中" in p.call_args_list[0].args[0]
+    assert p.call_args_list[1].args[0] == "📊 fake card"
 
 
 def test_handle_holding_branch(tmp_path, monkeypatch):
