@@ -17,3 +17,4 @@ data/holdings_snapshot/
 data/anomaly_findings/
 logs/*.log
 .DS_Store
+holdings.yaml.lock

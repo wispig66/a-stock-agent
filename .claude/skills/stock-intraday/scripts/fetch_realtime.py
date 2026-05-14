@@ -101,12 +101,29 @@ def load_today_watchlist() -> list[dict]:
 
 
 def load_holdings() -> list[dict]:
-    if not HOLDINGS_FILE.exists():
-        log(f"[warn] holdings.yaml 不存在：{HOLDINGS_FILE}")
-        return []
-    data = yaml.safe_load(HOLDINGS_FILE.read_text(encoding="utf-8")) or {}
-    out = data.get("holdings") or []
-    return [h for h in out if h.get("code") and h.get("name") and h.get("cost")]
+    """转调 code/lib/holdings.read_holdings，保持 list[dict] 返回兼容下游。"""
+    try:
+        from lib.holdings import read_holdings  # noqa: WPS433 局部导入避免循环
+    except ImportError as e:
+        log(f"[warn] lib.holdings 不可用，回退旧读法：{e}")
+        if not HOLDINGS_FILE.exists():
+            log(f"[warn] holdings.yaml 不存在：{HOLDINGS_FILE}")
+            return []
+        data = yaml.safe_load(HOLDINGS_FILE.read_text(encoding="utf-8")) or {}
+        out = data.get("holdings") or []
+        return [h for h in out if h.get("code") and h.get("name") and h.get("cost")]
+    holdings = read_holdings()
+    # 转 dict，字段名沿用既有约定
+    return [
+        {
+            "code": h.code, "name": h.name, "cost": h.cost, "shares": h.shares,
+            "buy_date": h.buy_date.isoformat(), "genre": h.genre,
+            "stop_loss": h.stop_loss, "take_profit": h.take_profit,
+            "unlock_date": h.unlock_date.isoformat() if h.unlock_date else None,
+            "source": h.source, "note": h.note,
+        }
+        for h in holdings
+    ]
 
 
 _SINA_LINE_PAT = re.compile(r'hq_str_(\w+)="([^"]*)"')
