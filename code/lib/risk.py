@@ -108,3 +108,34 @@ def _attr(obj, key):
     if isinstance(obj, dict):
         return obj.get(key)
     return getattr(obj, key, None)
+
+
+def make_price_fn_from_df(df) -> Callable[[str], float | None]:
+    """把 akshare stock_zh_a_spot_em() 返回的 DataFrame 转成 code -> price 闭包。
+
+    停牌/缺失返回 None，调用方按 cost 兜底。
+    """
+    import math
+    mapping: dict[str, float] = {}
+    for _, row in df.iterrows():
+        code = str(row.get("代码", "")).zfill(6)
+        price = row.get("最新价")
+        try:
+            p = float(price)
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(p):
+            continue
+        mapping[code] = p
+    return lambda c: mapping.get(str(c).zfill(6))
+
+
+def fetch_spot_price_fn() -> Callable[[str], float | None]:
+    """拉一次全市场实时价，返回 price_fn。失败返回 always-None 函数。"""
+    try:
+        import akshare as ak  # type: ignore
+        df = ak.stock_zh_a_spot_em()
+        return make_price_fn_from_df(df)
+    except Exception as e:
+        print(f"[risk] stock_zh_a_spot_em 失败: {e}，全部走 cost 兜底", file=sys.stderr)
+        return lambda c: None

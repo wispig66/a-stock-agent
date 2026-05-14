@@ -105,3 +105,26 @@ def test_preflight_check_at_exact_limit():
     assert r["ok"] is True
     assert r["banner"] is None
     assert r["available_pct"] == 0.0
+
+
+def test_make_price_fn_from_df():
+    """price_fn 工厂：从 DataFrame 构造 code -> price 闭包。"""
+    import pandas as pd
+    df = pd.DataFrame(
+        [
+            {"代码": "601991", "最新价": 7.05},
+            {"代码": "600519", "最新价": 1601.23},
+        ]
+    )
+    fn = risk.make_price_fn_from_df(df)
+    assert fn("601991") == pytest.approx(7.05)
+    assert fn("600519") == pytest.approx(1601.23)
+    assert fn("999999") is None
+
+
+def test_make_price_fn_handles_nan():
+    """NaN 最新价（停牌）返回 None。"""
+    import pandas as pd
+    df = pd.DataFrame([{"代码": "601991", "最新价": float("nan")}])
+    fn = risk.make_price_fn_from_df(df)
+    assert fn("601991") is None
