@@ -8,7 +8,6 @@ max_total_exposure_pct: 70
 # 单只首仓硬上限（占总资金 %）
 max_single_position_pct: 30
 
-# 以下为 Week 2-3 扩展位，本期未实现：
-# loss_streak_threshold: 2
-# loss_streak_window_days: 5
-# max_per_theme: 3
+# 连亏心态提醒（Week 2-3 C）
+loss_day_threshold_pct: -2.0       # 单日浮亏 < 该值算一天亏
+loss_streak_warn_threshold: 2      # 连亏 ≥ 该值出 🧊 心态提醒

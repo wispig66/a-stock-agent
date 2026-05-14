@@ -21,6 +21,8 @@ DEFAULT_CONFIG = {
     "total_capital": 500000,
     "max_total_exposure_pct": 70,
     "max_single_position_pct": 30,
+    "loss_day_threshold_pct": -2.0,
+    "loss_streak_warn_threshold": 2,
 }
 
 

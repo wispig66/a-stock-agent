@@ -27,3 +27,6 @@ docs/superpowers/
 
 # 风控配置（含资金金额，不进 git）
 risk_config.yaml
+
+# 风控运行时状态（含浮盈亏历史，不进 git）
+risk_state.yaml
