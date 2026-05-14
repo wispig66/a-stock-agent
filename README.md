@@ -83,6 +83,27 @@ L2 4 时点：09:30 / 09:45 纪律提醒卡（轻、状态机） + 11:30 / 14:30
 
 副作用：自动 UPSERT `sentiment_daily` 表，让下一日 L1 阶段判定拥有 10 日基线。
 
+### TG 单股查询 · stock-query（全天候）
+
+在 Telegram 直接发股票代码或名称（主板/创业板），常驻 daemon `scripts/tg_listener.py` 10s 长轮询 → 调 `claude -p` 跑 `stock-query` skill → 30–90s 内回一张题材派决策卡。
+
+- **fresh 分支**：未持仓 → 三档明确表态 [买入 / 观察 / 回避]；观察档必须给"什么信号出现升级为买入"
+- **holding 分支**：在 `holdings.yaml` 里的票自动切换为 [加仓 / 持有 / 减仓清仓]
+- **前置拒绝**（不调 CC，秒级回复）：科创板 / 北交所 / ST / 停牌 / 不存在代码
+- **并发**：fcntl 串行，最多 1 跑 + 3 等，第 5 个请求回"忙"
+- **隔离**：只接受 `ALLOWED_CHAT_ID`（默认 = `TG_CHAT_ID`）的消息，其它 chat 静默
+
+启动（**项目在 `~/Desktop` 下时只能用交互式启动**，见下方注意）：
+
+```bash
+bash scripts/start_tg_listener.sh    # nohup 后台，PID 写到 data/tg_listener.pid
+bash scripts/stop_tg_listener.sh     # 停
+```
+
+`stock_basic` 表（代码 → 名称 / 板块 / ST 标志）由 `scripts/refresh_stock_basic.py` 每日刷新，已挂到 postmarket 流程末尾。
+
+**注意（macOS TCC/FDA）**：launchd 模板 `launchd/com.user.stocktglistener.plist` 已入库，但项目在 `~/Desktop` 下时 launchd 拉起的 `uv` 进程会在 `getcwd` 阻塞（Desktop 是受 TCC 保护的目录，背景守护进程拿不到 Full Disk Access）。若你把项目搬到 `~/code` 之类无 TCC 限制的目录，`bash scripts/install_launchd.sh` 即可挂载常驻；否则用上面的 `start_tg_listener.sh` 在交互式 shell 里拉起（终端 inheritance 自带 TCC 权限）。
+
 ### 数据扩展层
 
 抽取自 [simonlin1212/a-stock-data](https://github.com/simonlin1212/a-stock-data)（Apache 2.0）的 5 个端点，封装在 `.claude/skills/stock-premarket/scripts/extras.py`：
