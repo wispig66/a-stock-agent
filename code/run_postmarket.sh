@@ -29,5 +29,12 @@ done
     < /dev/null
 
   echo
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] 刷新 stock_basic（给 TG 单股查询用）"
+  for c in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv"; do
+    [ -x "$c" ] && { "$c" run --no-sync scripts/refresh_stock_basic.py \
+      || echo "stock_basic 刷新失败（不阻断 postmarket 主流程）"; break; }
+  done
+
+  echo
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] 完成"
 } >> "$LOGFILE" 2>&1
