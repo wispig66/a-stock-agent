@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from pathlib import Path
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "code"))
@@ -38,6 +39,6 @@ def test_tg_inbound_table_and_indexes(tmp_path):
     try:
         conn.execute("INSERT INTO tg_inbound(timestamp,update_id,chat_id,user_msg_id,raw_text) "
                      "VALUES('2026-05-15T10:00:01', 1, 'c', 2, 'y')")
-        assert False, "应触发 UNIQUE 冲突"
+        pytest.fail("应触发 UNIQUE 冲突")
     except sqlite3.IntegrityError:
         pass

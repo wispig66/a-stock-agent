@@ -39,7 +39,6 @@ def main() -> None:
         return
     with connect(db_path) as conn:
         conn.executescript(DDL)
-        conn.commit()
     print(f"✓ tg_inbound 表 + 3 索引已就绪：{db_path}")
 
 
