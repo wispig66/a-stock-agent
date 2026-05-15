@@ -20,7 +20,6 @@ def db(tmp_path, monkeypatch):
     conn.execute("INSERT INTO limit_up(date,code,concept) VALUES('2026-05-14','300750','储能')")
     conn.commit()
     monkeypatch.setattr(sector_pack, "DB", p)
-    monkeypatch.setattr(event_pack, "DB", p)
     return p
 
 

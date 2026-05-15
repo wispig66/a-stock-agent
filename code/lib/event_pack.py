@@ -7,13 +7,9 @@
 """
 from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 from typing import Callable, Literal, Optional
 
 from lib import sector_pack
-
-ROOT = Path(__file__).resolve().parents[2]
-DB = ROOT / "data" / "daily.db"
 
 WEB_TIMEOUT_SEC = 45
 
