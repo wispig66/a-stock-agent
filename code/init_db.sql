@@ -78,6 +78,22 @@ CREATE TABLE IF NOT EXISTS push_log (
 CREATE INDEX IF NOT EXISTS idx_push_log_ts ON push_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_push_log_source ON push_log(source);
 
+-- 用户实盘交易流水：TG /buy /sell 命令落库，用于复盘进出场决策
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,                -- ISO 8601 成交时间（允许 @HH:MM 指定当日分钟）
+    code TEXT NOT NULL,              -- 6 位股票代码
+    side TEXT NOT NULL CHECK(side IN ('buy','sell')),
+    price REAL NOT NULL,             -- 成交价
+    qty INTEGER NOT NULL,            -- 股数（已 = 手数 × 100）
+    reason TEXT,                     -- 8 个枚举之一
+    source_msg_id INTEGER,           -- TG reply 关联的 push_log.msg_id
+    note TEXT,                       -- 自由文本（可选）
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_trades_code_ts ON trades(code, ts);
+CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);
+
 -- 同花顺热点强势股 + 题材归因（盘后 15:30+ 才有当日数据；盘前跑用 D-1）
 CREATE TABLE IF NOT EXISTS ths_hot_reason (
     date TEXT NOT NULL,

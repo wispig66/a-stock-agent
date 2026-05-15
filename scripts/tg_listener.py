@@ -11,10 +11,11 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -182,10 +183,212 @@ def _reject(code: str, reason: str) -> str:
     return f"❌ {code}\n原因：{reason}"
 
 
-def handle(text: str, chat_id, today: Optional[str] = None) -> None:
+# ============================================================
+# 交易流水：/buy /sell 命令解析 + 落库
+# ============================================================
+
+BUY_REASONS = ("二板接力", "龙头补涨", "火箭跟", "自主")
+SELL_REASONS = ("止盈", "破位", "跳水", "换股")
+TRADES_DB = ROOT / "data" / "daily.db"
+
+HELP_TEXT = (
+    "📒 交易流水命令\n"
+    "\n"
+    "格式：\n"
+    "  /buy  <代码> <价格> <手数> [理由] [@HH:MM]\n"
+    "  /sell <代码> <价格> <手数> [理由] [@HH:MM]\n"
+    "\n"
+    "例子：\n"
+    "  /buy 600519 12.34 10 二板接力\n"
+    "  /sell 600519 15.0 5 止盈 @09:35\n"
+    "\n"
+    "📌 关联推送：长按某条系统卡片 → 回复 /buy …，"
+    "自动记录是哪条推送触发的。\n"
+    "\n"
+    "买入理由（4 选 1，可省）：\n"
+    f"  {' / '.join(BUY_REASONS)}\n"
+    "卖出理由（4 选 1，可省）：\n"
+    f"  {' / '.join(SELL_REASONS)}\n"
+    "\n"
+    "📐 数量用手数（1 手 = 100 股）。\n"
+    "⏰ @HH:MM 指定当日成交时间，省略则用 TG 收到时间。\n"
+    "\n"
+    "其它：直接发 6 位代码或股票名 → 单股分析。"
+)
+
+
+def _trade_usage(side: str) -> str:
+    """空 /buy 或 /sell 时返回该 side 的简要说明。"""
+    reasons = BUY_REASONS if side == "buy" else SELL_REASONS
+    side_cn = "买入" if side == "buy" else "卖出"
+    example = (
+        "/buy 600519 12.34 10 二板接力"
+        if side == "buy"
+        else "/sell 600519 15.0 5 止盈 @09:35"
+    )
+    return (
+        f"📒 {side_cn}流水\n"
+        f"格式：/{side} <代码> <价格> <手数> [理由] [@HH:MM]\n"
+        f"例子：{example}\n"
+        f"理由：{' / '.join(reasons)}\n"
+        f"（手数 = 股数 ÷ 100；详细见 /help）"
+    )
+
+
+def parse_trade_command(text: str) -> Optional[dict]:
+    """解析 /buy /sell 命令。
+
+    格式：/buy <代码> <价格> <手数> [理由] [@HH:MM]
+    返回 dict {side, code, price, qty, reason, ts_override}，
+    或 None（非 trade 命令）。校验失败抛 ValueError。
+    """
+    parts = text.strip().split()
+    if not parts:
+        return None
+    cmd = parts[0].lower()
+    if cmd not in ("/buy", "/sell"):
+        return None
+    side = cmd[1:]
+
+    tokens = list(parts[1:])
+    ts_override: Optional[str] = None
+    for i, tok in enumerate(tokens):
+        if tok.startswith("@"):
+            hhmm = tok[1:]
+            try:
+                hh, mm = hhmm.split(":")
+                if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
+                    raise ValueError
+            except Exception:
+                raise ValueError(f"时间格式错（用 @HH:MM）：{tok}")
+            ts_override = hhmm
+            tokens = tokens[:i] + tokens[i + 1:]
+            break
+
+    if len(tokens) < 3:
+        raise ValueError(_trade_usage(side))
+
+    code, price_s, qty_s = tokens[0], tokens[1], tokens[2]
+    reason = " ".join(tokens[3:]).strip() if len(tokens) > 3 else None
+
+    if not (len(code) == 6 and code.isdigit()):
+        raise ValueError(f"代码必须 6 位数字，当前：{code}\n例：/{side} 600519 12.34 10")
+    try:
+        price = float(price_s)
+    except ValueError:
+        raise ValueError(f"价格不是数字：{price_s}\n例：/{side} {code} 12.34 10")
+    if price <= 0:
+        raise ValueError(f"价格必须 > 0：{price}")
+    try:
+        lots = int(qty_s)
+    except ValueError:
+        raise ValueError(
+            f"手数必须是正整数（1 手 = 100 股）：{qty_s}\n"
+            f"例：/{side} {code} {price_s} 10"
+        )
+    if lots <= 0:
+        raise ValueError(f"手数必须 > 0：{lots}")
+
+    valid = BUY_REASONS if side == "buy" else SELL_REASONS
+    if reason and reason not in valid:
+        side_cn = "买入" if side == "buy" else "卖出"
+        raise ValueError(
+            f"{side_cn}理由不识别：{reason}\n"
+            f"可选 4 个：{' / '.join(valid)}\n"
+            f"（理由可省，省略也行）"
+        )
+
+    return {
+        "side": side,
+        "code": code,
+        "price": price,
+        "qty": lots * 100,
+        "reason": reason,
+        "ts_override": ts_override,
+    }
+
+
+def _build_ts(ts_override: Optional[str], now: Optional[datetime] = None) -> str:
+    """根据 @HH:MM 覆盖当前时间，否则用 now。返回 ISO 8601 秒精度。"""
+    n = now or datetime.now()
+    if ts_override:
+        hh, mm = ts_override.split(":")
+        n = n.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    return n.isoformat(timespec="seconds")
+
+
+def record_trade(parsed: dict, source_msg_id: Optional[int],
+                 db_path: Optional[Path] = None,
+                 now: Optional[datetime] = None) -> int:
+    """写一条 trades，返回 row id。"""
+    ts = _build_ts(parsed["ts_override"], now=now)
+    path = db_path or TRADES_DB
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        cur = conn.execute(
+            "INSERT INTO trades(ts, code, side, price, qty, reason, "
+            "source_msg_id, note) VALUES(?,?,?,?,?,?,?,?)",
+            (ts, parsed["code"], parsed["side"], parsed["price"],
+             parsed["qty"], parsed["reason"], source_msg_id, None),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def handle_trade(parsed: dict, source_msg_id: Optional[int]) -> str:
+    """落库 + 返回给用户看的确认文本。"""
+    row_id = record_trade(parsed, source_msg_id)
+    side_cn = "买入" if parsed["side"] == "buy" else "卖出"
+    lots = parsed["qty"] // 100
+    parts = [
+        f"✅ #{row_id} {side_cn} {parsed['code']}",
+        f"价 {parsed['price']} × {lots} 手（{parsed['qty']} 股）",
+    ]
+    if parsed["reason"]:
+        parts.append(f"理由：{parsed['reason']}")
+    if parsed["ts_override"]:
+        parts.append(f"成交时间：{parsed['ts_override']}")
+    if source_msg_id:
+        parts.append(f"关联推送 msg_id={source_msg_id}")
+    return "\n".join(parts)
+
+
+def handle(text: str, chat_id, today: Optional[str] = None,
+           reply_to_msg_id: Optional[int] = None) -> None:
     """处理一条入站消息。出口只有 silent / push_reply / 流式 edit。"""
     if str(chat_id) != str(ALLOWED_CHAT_ID):
         return
+
+    # 1. /help：用法说明
+    stripped = text.lstrip()
+    low = stripped.lower()
+    if low in ("/help", "/start", "/?", "help", "帮助"):
+        push_reply(HELP_TEXT)
+        return
+
+    # 2. /buy /sell 交易流水命令，优先尝试
+    if low.startswith(("/buy", "/sell")):
+        # 纯 /buy 或 /sell 无参 → 直接给该 side 的帮助
+        bare = low.split()
+        if len(bare) == 1 and bare[0] in ("/buy", "/sell"):
+            push_reply(_trade_usage(bare[0][1:]))
+            return
+        try:
+            parsed = parse_trade_command(text)
+        except ValueError as e:
+            push_reply(f"❌ {e}")
+            return
+        if parsed is not None:
+            try:
+                ack = handle_trade(parsed, reply_to_msg_id)
+            except Exception as e:
+                push_reply(f"⚠️ 落库失败：{e}")
+                return
+            push_reply(ack)
+            return
 
     kind, val = query.parse_input(text)
     if kind == "unknown":
@@ -344,10 +547,11 @@ def main() -> None:
                 msg = u.get("message") or u.get("edited_message") or {}
                 text = (msg.get("text") or "").strip()
                 chat_id = (msg.get("chat") or {}).get("id")
+                reply_to = (msg.get("reply_to_message") or {}).get("message_id")
                 if not text or chat_id is None:
                     continue
                 try:
-                    handle(text, chat_id)
+                    handle(text, chat_id, reply_to_msg_id=reply_to)
                 except Exception as e:
                     print(f"[tg_listener] handle 异常: {e}", file=sys.stderr)
         except Exception as e:

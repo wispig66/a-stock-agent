@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 .venv/
 data/*.db
+data/*.db-*
 data/minute/*.parquet
 data/snapshots/*.parquet
 data/fact_pack/*.md

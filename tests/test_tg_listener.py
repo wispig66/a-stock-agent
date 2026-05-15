@@ -143,3 +143,224 @@ def test_handle_chinese_no_hit(tmp_path, monkeypatch):
     p.assert_called_once()
     assert "未找到" in p.call_args.args[0]
     r.assert_not_called()
+
+
+# ============================================================
+# /buy /sell 交易流水命令
+# ============================================================
+
+import pytest  # noqa: E402
+from datetime import datetime  # noqa: E402
+
+
+def test_parse_buy_minimal():
+    p = tl.parse_trade_command("/buy 600519 12.34 10 自主")
+    assert p == {"side": "buy", "code": "600519", "price": 12.34,
+                 "qty": 1000, "reason": "自主", "ts_override": None}
+
+
+def test_parse_sell_with_time_override():
+    p = tl.parse_trade_command("/sell 600519 15.0 5 止盈 @09:35")
+    assert p["side"] == "sell"
+    assert p["ts_override"] == "09:35"
+    assert p["qty"] == 500
+    assert p["reason"] == "止盈"
+
+
+def test_parse_no_reason_allowed():
+    p = tl.parse_trade_command("/buy 600519 12.34 10")
+    assert p["reason"] is None
+
+
+def test_parse_uppercase_command():
+    p = tl.parse_trade_command("/BUY 600519 12.34 10")
+    assert p["side"] == "buy"
+
+
+def test_parse_non_trade_returns_none():
+    assert tl.parse_trade_command("600519") is None
+    assert tl.parse_trade_command("茅台") is None
+    assert tl.parse_trade_command("") is None
+
+
+def test_parse_bad_code():
+    with pytest.raises(ValueError, match="代码"):
+        tl.parse_trade_command("/buy 60519 12.34 10")
+
+
+def test_parse_bad_price():
+    with pytest.raises(ValueError, match="价格"):
+        tl.parse_trade_command("/buy 600519 abc 10")
+    with pytest.raises(ValueError, match="价格"):
+        tl.parse_trade_command("/buy 600519 0 10")
+
+
+def test_parse_bad_qty():
+    with pytest.raises(ValueError, match="手数"):
+        tl.parse_trade_command("/buy 600519 12.34 0")
+    with pytest.raises(ValueError, match="手数"):
+        tl.parse_trade_command("/buy 600519 12.34 abc")
+
+
+def test_parse_invalid_reason_buy():
+    with pytest.raises(ValueError, match="理由"):
+        tl.parse_trade_command("/buy 600519 12.34 10 止盈")  # 止盈是 sell 理由
+
+
+def test_parse_invalid_reason_sell():
+    with pytest.raises(ValueError, match="理由"):
+        tl.parse_trade_command("/sell 600519 12.34 10 二板接力")
+
+
+def test_parse_bad_time_format():
+    with pytest.raises(ValueError, match="时间"):
+        tl.parse_trade_command("/buy 600519 12.34 10 自主 @9999")
+    with pytest.raises(ValueError, match="时间"):
+        tl.parse_trade_command("/buy 600519 12.34 10 自主 @25:00")
+
+
+def test_parse_too_few_args():
+    with pytest.raises(ValueError, match="格式"):
+        tl.parse_trade_command("/buy 600519 12.34")
+
+
+def test_build_ts_with_override():
+    now = datetime(2026, 5, 14, 14, 0, 0)
+    assert tl._build_ts("09:35", now=now).startswith("2026-05-14T09:35:00")
+
+
+def test_build_ts_no_override():
+    now = datetime(2026, 5, 14, 14, 30, 45)
+    assert tl._build_ts(None, now=now) == "2026-05-14T14:30:45"
+
+
+def _ensure_trades_table(db_path):
+    conn = sqlite3.connect(db_path)
+    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.commit()
+    conn.close()
+
+
+def test_record_trade_writes_row(tmp_path):
+    db = tmp_path / "t.db"
+    _ensure_trades_table(db)
+    parsed = tl.parse_trade_command("/buy 600519 12.34 10 自主 @09:35")
+    rid = tl.record_trade(parsed, source_msg_id=42, db_path=db,
+                          now=datetime(2026, 5, 14, 14, 0, 0))
+    assert rid >= 1
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT ts, code, side, price, qty, reason, source_msg_id "
+        "FROM trades WHERE id=?", (rid,)).fetchone()
+    conn.close()
+    assert row[0].startswith("2026-05-14T09:35")
+    assert row[1] == "600519"
+    assert row[2] == "buy"
+    assert row[3] == 12.34
+    assert row[4] == 1000
+    assert row[5] == "自主"
+    assert row[6] == 42
+
+
+def test_record_trade_no_source(tmp_path):
+    db = tmp_path / "t.db"
+    _ensure_trades_table(db)
+    parsed = tl.parse_trade_command("/sell 600519 15 5 止盈")
+    rid = tl.record_trade(parsed, source_msg_id=None, db_path=db)
+    conn = sqlite3.connect(db)
+    src = conn.execute(
+        "SELECT source_msg_id FROM trades WHERE id=?", (rid,)).fetchone()[0]
+    conn.close()
+    assert src is None
+
+
+def test_handle_buy_command_writes_and_replies(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    db = tmp_path / "t.db"
+    monkeypatch.setattr(tl, "TRADES_DB", db)
+    with patch.object(tl, "push_reply") as p, \
+         patch.object(tl, "run_skill_streaming") as r:
+        tl.handle("/buy 600519 12.34 10 自主", chat_id="999",
+                  reply_to_msg_id=271)
+    p.assert_called_once()
+    ack = p.call_args.args[0]
+    assert "买入" in ack and "600519" in ack and "msg_id=271" in ack
+    r.assert_not_called()
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT code, side, qty, reason, source_msg_id FROM trades"
+    ).fetchone()
+    conn.close()
+    assert row == ("600519", "buy", 1000, "自主", 271)
+
+
+def test_handle_invalid_trade_replies_error(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    db = tmp_path / "t.db"
+    monkeypatch.setattr(tl, "TRADES_DB", db)
+    with patch.object(tl, "push_reply") as p, \
+         patch.object(tl, "run_skill_streaming") as r:
+        tl.handle("/buy 600519 12.34 10 错理由", chat_id="999")
+    p.assert_called_once()
+    assert "❌" in p.call_args.args[0] and "理由" in p.call_args.args[0]
+    r.assert_not_called()
+    # 库里不应有行
+    conn = sqlite3.connect(db)
+    n = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    conn.close()
+    assert n == 0
+
+
+def test_handle_help_command(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    with patch.object(tl, "push_reply") as p, \
+         patch.object(tl, "run_skill_streaming") as r:
+        tl.handle("/help", chat_id="999")
+    p.assert_called_once()
+    msg = p.call_args.args[0]
+    assert "/buy" in msg and "/sell" in msg and "二板接力" in msg
+    r.assert_not_called()
+
+
+def test_handle_bare_buy_shows_usage(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    with patch.object(tl, "push_reply") as p, \
+         patch.object(tl, "run_skill_streaming") as r:
+        tl.handle("/buy", chat_id="999")
+    p.assert_called_once()
+    msg = p.call_args.args[0]
+    assert "买入" in msg and "二板接力" in msg
+    r.assert_not_called()
+
+
+def test_handle_bare_sell_shows_usage(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    with patch.object(tl, "push_reply") as p, \
+         patch.object(tl, "run_skill_streaming") as r:
+        tl.handle("/sell", chat_id="999")
+    msg = p.call_args.args[0]
+    assert "卖出" in msg and "止盈" in msg
+    r.assert_not_called()
+
+
+def test_handle_bad_reason_lists_options(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    db = tmp_path / "t.db"
+    monkeypatch.setattr(tl, "TRADES_DB", db)
+    with patch.object(tl, "push_reply") as p:
+        tl.handle("/buy 600519 12.34 10 瞎写", chat_id="999")
+    msg = p.call_args.args[0]
+    # 错误提示里必须列全 4 个买入理由
+    for r in tl.BUY_REASONS:
+        assert r in msg
+
+
+def test_handle_trade_does_not_block_query(tmp_path, monkeypatch):
+    """非 /buy /sell 开头，走原 query 流程。"""
+    _setup(monkeypatch, tmp_path)
+    with patch.object(tl, "_tg_send", return_value=1), \
+         patch.object(tl, "_tg_edit"), \
+         patch.object(tl, "run_skill_streaming",
+                      return_value="📊 fake") as r:
+        tl.handle("600519", chat_id="999")
+    r.assert_called_once()
