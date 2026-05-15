@@ -151,6 +151,127 @@ def fetch_ths_hot(date: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def fetch_overnight_news(date: str) -> pd.DataFrame:
+    """抓 D-1 15:00 → 现在 的隔夜消息面，三源合并去重。
+
+    源：
+    - 财联社全球（短线导向，无 URL）
+    - 东财全球（带 URL，量大）
+    - 新浪全球（备用）
+
+    输出列：发布时间(datetime) / 来源 / 标题 / URL
+    """
+    # 时间窗口：D-1 15:00 起
+    d_iso = f"{date[:4]}-{date[4:6]}-{date[6:]}"
+    start_dt = datetime.strptime(f"{d_iso} 15:00:00", "%Y-%m-%d %H:%M:%S")
+
+    rows: list[dict] = []
+
+    # 1) 财联社
+    try:
+        df = ak.stock_info_global_cls(symbol="全部")
+        for _, r in df.iterrows():
+            try:
+                dt = datetime.strptime(f"{r['发布日期']} {r['发布时间']}", "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+            if dt < start_dt:
+                continue
+            rows.append({
+                "发布时间": dt,
+                "来源": "CLS",
+                "标题": str(r["标题"]).strip(),
+                "URL": "",
+            })
+    except Exception as e:
+        log(f"  CLS 隔夜消息失败: {type(e).__name__}: {e}")
+
+    # 2) 东财
+    try:
+        df = ak.stock_info_global_em()
+        for _, r in df.iterrows():
+            try:
+                dt = datetime.strptime(str(r["发布时间"]), "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+            if dt < start_dt:
+                continue
+            rows.append({
+                "发布时间": dt,
+                "来源": "EM",
+                "标题": str(r["标题"]).strip(),
+                "URL": str(r.get("链接", "")).strip(),
+            })
+    except Exception as e:
+        log(f"  EM 隔夜消息失败: {type(e).__name__}: {e}")
+
+    # 3) 新浪（备用，只在前两源都为空时启用）
+    if not rows:
+        try:
+            df = ak.stock_info_global_sina()
+            for _, r in df.iterrows():
+                try:
+                    dt = datetime.strptime(str(r["时间"]), "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+                if dt < start_dt:
+                    continue
+                # 新浪 内容字段含 markdown 链接和正文，截前 80 字做标题
+                content = str(r["内容"]).strip().replace("\n", " ")
+                rows.append({
+                    "发布时间": dt,
+                    "来源": "SINA",
+                    "标题": content[:80] + ("..." if len(content) > 80 else ""),
+                    "URL": "",
+                })
+        except Exception as e:
+            log(f"  SINA 隔夜消息失败: {type(e).__name__}: {e}")
+
+    if not rows:
+        return pd.DataFrame(columns=["发布时间", "来源", "标题", "URL"])
+
+    out = pd.DataFrame(rows)
+    # 去重：同标题保留最早发布的（首发优先）
+    out = out.sort_values("发布时间").drop_duplicates(subset=["标题"], keep="first")
+    return out.sort_values("发布时间", ascending=False).reset_index(drop=True)
+
+
+# ============ 消息面命中匹配 ============
+
+# A 股短线主线题材关键词（命中即标记，用于消息面归因）
+NEWS_KEYWORDS = {
+    "半导体": ["半导体", "芯片", "晶圆", "光刻", "存储", "EDA", "封测", "中芯", "长鑫", "长存"],
+    "电子特气": ["电子特气", "氟化", "硅光", "三氟化氮", "六氟化"],
+    "AI算力/CPO": ["CPO", "光模块", "算力", "AI", "GPU", "大模型", "光通信"],
+    "机器人": ["机器人", "Optimus", "人形", "灵巧手", "减速器"],
+    "新能源": ["光伏", "锂电", "储能", "电池", "钙钛矿", "硅料", "组件"],
+    "碳化硅/第三代": ["碳化硅", "SiC", "氮化镓", "GaN", "第三代半导体"],
+    "军工/低空": ["军工", "国防", "无人机", "低空", "eVTOL", "导弹"],
+    "医药/创新药": ["创新药", "ADC", "GLP-1", "减肥药", "CXO", "医保"],
+    "汽车/智驾": ["新能源车", "智能驾驶", "智驾", "Robotaxi", "L3", "L4", "华为车"],
+    "消费/白酒": ["白酒", "茅台", "消费券", "免税"],
+    "宏观/政策": ["央行", "降准", "降息", "MLF", "政策", "国务院", "证监会", "PMI", "CPI"],
+    "外围/美股": ["美股", "纳斯达克", "标普", "道指", "美联储", "FOMC", "美债", "美元", "黄金"],
+    "黑色/有色": ["稀土", "钨", "锂矿", "铜", "黄金", "白银"],
+}
+
+
+def tag_news_themes(news_df: pd.DataFrame) -> pd.DataFrame:
+    """给每条消息打题材标签（多标签）。返回新列 命中题材。"""
+    if news_df.empty:
+        return news_df
+    out = news_df.copy()
+    tags = []
+    for title in out["标题"]:
+        hit = []
+        for theme, kws in NEWS_KEYWORDS.items():
+            if any(kw in title for kw in kws):
+                hit.append(theme)
+        tags.append(" + ".join(hit) if hit else "")
+    out["命中题材"] = tags
+    return out
+
+
 def historical_sentiment(days: int = 10) -> pd.DataFrame:
     if not DB.exists():
         return pd.DataFrame()
@@ -355,6 +476,59 @@ def render_core_pack(date: str) -> str:
         for _, r in sent.iterrows():
             lines.append(f"| {r['date']} | {r['limit_up_count']} | {r['limit_down_count']} | {r['max_consec']} | {r.get('promotion_rate','-')} | {r.get('blast_rate','-')} | {r.get('phase','-')} |")
     lines.append("")
+
+    # ========== 七、隔夜消息面 ==========
+    lines.append("## 七、隔夜消息面（D-1 15:00 → 现在）")
+    lines.append("")
+    news = fetch_overnight_news(date)
+    if news.empty:
+        lines.append("- 抓取为空（三源都未返回；可能网络问题或时段过早）")
+    else:
+        news = tag_news_themes(news)
+        # 7.1 命中题材的消息（核心）
+        hit = news[news["命中题材"] != ""].head(40)
+        lines.append(f"_共抓取 {len(news)} 条；其中命中题材 {len(news[news['命中题材'] != ''])} 条，下列展示前 40_")
+        lines.append("")
+        if not hit.empty:
+            lines.append("### 7.1 命中题材消息（按时间倒序）")
+            lines.append("")
+            for _, r in hit.iterrows():
+                t = r["发布时间"].strftime("%m-%d %H:%M")
+                src = r["来源"]
+                title = r["标题"]
+                themes = r["命中题材"]
+                url_part = f"  [{r['URL']}]({r['URL']})" if r["URL"] else ""
+                lines.append(f"- **[{t} · {src}]** {title}  → 命中：**{themes}**{url_part}")
+            lines.append("")
+
+        # 7.2 题材命中频次（让 LLM 一眼看主导方向）
+        from collections import Counter
+        theme_counter: Counter = Counter()
+        for tags in news["命中题材"]:
+            if tags:
+                for t in tags.split(" + "):
+                    theme_counter[t] += 1
+        if theme_counter:
+            lines.append("### 7.2 隔夜消息题材命中频次")
+            lines.append("")
+            lines.append("| 题材 | 命中条数 |")
+            lines.append("|------|---------|")
+            for theme, cnt in theme_counter.most_common(10):
+                lines.append(f"| {theme} | {cnt} |")
+            lines.append("")
+
+        # 7.3 未命中关键词的消息（前 10 条，避免漏新主线）
+        miss = news[news["命中题材"] == ""].head(10)
+        if not miss.empty:
+            lines.append("### 7.3 未命中关键词的消息（前 10 条，可能藏新主线）")
+            lines.append("")
+            for _, r in miss.iterrows():
+                t = r["发布时间"].strftime("%m-%d %H:%M")
+                src = r["来源"]
+                title = r["标题"]
+                url_part = f"  [{r['URL']}]({r['URL']})" if r["URL"] else ""
+                lines.append(f"- [{t} · {src}] {title}{url_part}")
+            lines.append("")
 
     lines.append("---")
     lines.append(f"_生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}_")

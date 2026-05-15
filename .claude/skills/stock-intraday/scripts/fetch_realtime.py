@@ -41,8 +41,17 @@ def section(title: str):
 
 
 def load_today_watchlist() -> list[dict]:
-    """从 push_log 取今日 stock-premarket 最新一条，正则提取代码 + 名称 + 派别 + 买卖纪律。"""
+    """从 push_log 取今日 stock-premarket 最新一条，正则提取代码 + 名称 + 派别 + 买卖纪律。
+
+    Fallback 链：
+    1. push_log 今日 stock-premarket（已推送）
+    2. data/last_card.md（mtime=今天，已写卡未推送，比如 push 链路慢）
+    3. 都没有 → 返回空，并打 PREMARKET_MISSING 标记给上游 SKILL 走兜底文案
+    """
     today = datetime.now().strftime("%Y-%m-%d")
+    text: str | None = None
+    source_hint = ""
+
     with db_connect(DB) as conn:
         row = conn.execute(
             """SELECT text FROM push_log
@@ -50,10 +59,24 @@ def load_today_watchlist() -> list[dict]:
                  AND date(timestamp)=date('now','localtime')
                ORDER BY id DESC LIMIT 1""",
         ).fetchone()
-    if not row:
-        log(f"[warn] {today} 无 stock-premarket 推送记录")
+    if row:
+        text = row[0]
+        source_hint = "push_log"
+    else:
+        # Fallback：data/last_card.md 如果是今天写的就用
+        last_card = ROOT / "data" / "last_card.md"
+        if last_card.exists():
+            mtime = datetime.fromtimestamp(last_card.stat().st_mtime).strftime("%Y-%m-%d")
+            if mtime == today:
+                text = last_card.read_text(encoding="utf-8")
+                source_hint = "last_card.md (未推送)"
+                log(f"[info] push_log 无今日 premarket，回退用 last_card.md (mtime={mtime})")
+
+    if text is None:
+        log(f"[warn] PREMARKET_MISSING {today} 无 stock-premarket 推送记录、无 last_card.md")
         return []
-    text = row[0]
+
+    log(f"[info] watchlist 数据来源：{source_hint}")
 
     # 解析逻辑：在派别标题（【派别 X · ...】）下方扫描"N. <6位代码> <名称>"
     items: list[dict] = []

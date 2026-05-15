@@ -24,6 +24,29 @@ done
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] 启动 stock-premarket skill"
   echo "=========================================="
 
+  # 幂等检查：今日已成功推送过 → 跳过（支持 launchd 多次触发补跑）
+  ALREADY_PUSHED=$(/opt/homebrew/bin/uv run --no-sync python -c "
+import sqlite3, sys
+try:
+    c = sqlite3.connect('data/daily.db')
+    n = c.execute(\"SELECT COUNT(*) FROM push_log WHERE source='stock-premarket' AND date(timestamp)=date('now','localtime')\").fetchone()[0]
+    print(n)
+except Exception:
+    print(0)
+" 2>/dev/null)
+  if [ "$ALREADY_PUSHED" -gt 0 ] 2>/dev/null; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ 今日 premarket 已推送（push_log 命中 $ALREADY_PUSHED 条），跳过补跑"
+    exit 0
+  fi
+
+  # 网络可用性检查：通勤无网时直接 exit 99，避免 SKILL hang 1h+ 把 LLM session 卡死
+  # 探测 telegram + eastmoney 任一可达即视为有网
+  if ! curl -sSf --max-time 3 -o /dev/null https://api.telegram.org \
+     && ! curl -sSf --max-time 3 -o /dev/null https://push2.eastmoney.com; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ 网络不通（telegram/eastmoney 3s 超时），放弃本次运行（等下次补跑触发）"
+    exit 99
+  fi
+
   "$CLAUDE_BIN" -p "使用 stock-premarket skill 生成今日 A 股盘前观察池并推送到 Telegram。完成后只返回简要总结。" \
     --permission-mode bypassPermissions \
     --output-format text \
