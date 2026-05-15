@@ -8,14 +8,12 @@ lexicon 是已知板块名集合，由调用方从 ths_hot_reason/limit_up.conce
 分离词库提取与分类逻辑，便于单测桩注入。
 """
 from __future__ import annotations
-import json
 import re
 from typing import Callable, Optional
 
 _CODE_RE = re.compile(r"^\d{6}\b")
 _EXPLICIT_RE = re.compile(r"^(sector|stock|event)\s*=\s*(.*)$", re.IGNORECASE)
 _EVENT_KW = ("政策", "发布会", "批了", "签了", "中标", "刚发", "宣布", "发布", "出台")
-_SECTOR_TAIL = ("怎么样", "如何", "能不能", "值不值", "还能", "上车", "细分")
 _LLM_CONF_THRESHOLD = 0.6
 
 
