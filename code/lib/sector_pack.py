@@ -20,16 +20,14 @@
 from __future__ import annotations
 import re
 import sqlite3
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from pathlib import Path
 
+from db import connect
+
 ROOT = Path(__file__).resolve().parents[2]
 DB = ROOT / "data" / "daily.db"
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from db import connect
 
 # 内置同义词：用户口语 → 题材库标准名
 _BUILTIN_SYNONYMS = {
