@@ -20,6 +20,7 @@
 from __future__ import annotations
 import re
 import sqlite3
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from pathlib import Path
@@ -27,11 +28,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DB = ROOT / "data" / "daily.db"
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from db import connect
+
 # 内置同义词：用户口语 → 题材库标准名
 _BUILTIN_SYNONYMS = {
     "AI": "人工智能",
     "AI算力": "算力",
-    "光伏": "光伏",
     "新能源车": "新能源汽车",
 }
 
@@ -77,7 +80,7 @@ def _load_lexicon() -> set[str]:
         return set()
     lex: set[str] = set()
     since = (date.today() - timedelta(days=30)).isoformat()
-    with sqlite3.connect(DB) as conn:
+    with connect(DB) as conn:
         for (r,) in conn.execute(
             "SELECT DISTINCT reason FROM ths_hot_reason WHERE date >= ?", (since,)
         ):
