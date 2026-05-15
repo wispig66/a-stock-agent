@@ -2,6 +2,34 @@
 
 记录较大版本变更。小修复直接看 git log。
 
+## [Unreleased] 2026-05-15
+
+### TG 随时分析助手 · stock-ask (2026-05-15)
+
+新增「在 Telegram 发 `/ask <text>` 或 `/ask+ <text>` → 自动识别意图 + 输出板块/事件分析卡片」入口。补足 stock-query 单股之外的"随手丢一个东西问问"场景（板块名、政策事件、模糊描述都能进）。
+
+**新增**
+- `.claude/skills/stock-ask/SKILL.md` — 路由 + 板块卡 + 事件卡 + 模糊兜底
+- `code/lib/intent.py` — 四层意图分类（显式覆盖 → 规则 → LLM → 模糊安全网）+ `build_sector_lexicon()` 从 `ths_hot_reason` / `limit_up.concept` 构建板块词库
+- `code/lib/sector_pack.py` — `fuzzy_match` / `_load_lexicon` / `classify_stage`（启动期/主升期/高潮期/退潮期）/ `pick_top_n`（追高过滤 + 评分公式）/ `build_sector_pack`（4 面板 ThreadPool 并发）
+- `code/lib/event_pack.py` — `calibrate`（题材库三档 ✓/△/✗）+ `build_event_pack`（normal/deep 双模式，deep 含 web 实时搜索补强 + 静默降级）
+- `scripts/tg_listener.py` 扩展 — `/ask` / `/ask+` 解析、按模式分档超时（normal 180s / deep 300s）、入向 `tg_inbound` 落库 wrapper（log_inbound_start / update_parsed / finish）、`run_skill_streaming_generic` 通用流式跑 skill
+- `scripts/set_tg_commands.py` — 注册 `/ask` 到 BotFather 菜单
+- `scripts/migrate_tg_inbound.py` — 一次性 DB migration
+- `data/daily.db` 新增 `tg_inbound` 表（update_id UNIQUE 去重 / parsed_payload JSON / response_msg_id 关联 / handler_status / duration_ms）+ 3 索引
+- `tests/test_intent_classify.py`、`tests/test_sector_pack.py`、`tests/test_sector_pack_panels.py`、`tests/test_event_pack.py`、`tests/test_tg_inbound_schema.py`、`tests/test_tg_inbound_log.py`、`tests/test_stock_ask_e2e.py` — 30+ 新增 TDD 用例（全套 134 PASS）
+
+**设计 & 计划**
+- `docs/superpowers/specs/2026-05-15-stock-ask-design.md` — design spec
+- `docs/superpowers/plans/2026-05-15-stock-ask.md` — 9 task 实施计划
+
+**关键设计取舍**
+- 个股意图 fallthrough 到现有 `stock-query`，不重复造轮子
+- 题材库校准防 LLM 瞎猜：A 股交易员真实题材分类落到 `ths_hot_reason` + `limit_up.concept` + 实时榜
+- 散户不做空：风险板块仅列名提醒
+- 全量入向审计：所有 TG 命令落 `tg_inbound`（含 update_id 去重，重复推送被跳过）
+- 不破坏现有 5 个 skill 的任何文件，纯增量
+
 ## [Unreleased] 2026-05-14
 
 ### Added

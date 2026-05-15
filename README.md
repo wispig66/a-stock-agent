@@ -105,6 +105,25 @@ bash scripts/stop_tg_listener.sh     # 停
 
 **注意（macOS TCC/FDA）**：launchd 模板 `launchd/com.user.stocktglistener.plist` 已入库，但项目在 `~/Desktop` 下时 launchd 拉起的 `uv` 进程会在 `getcwd` 阻塞（Desktop 是受 TCC 保护的目录，背景守护进程拿不到 Full Disk Access）。若你把项目搬到 `~/code` 之类无 TCC 限制的目录，`bash scripts/install_launchd.sh` 即可挂载常驻；否则用上面的 `start_tg_listener.sh` 在交互式 shell 里拉起（终端 inheritance 自带 TCC 权限）。
 
+### TG 随时分析 · stock-ask（全天候）
+
+在 Telegram 发 `/ask <text>` 或 `/ask+ <text>` 触发随时分析，自动识别意图（个股 / 板块 / 事件 / 模糊），并发拉 4 面板（情绪 / 消息 / 基本面 / 技术面），输出"值不值得参与 + 推荐标的 + 买点"卡片。
+
+- **触发**：
+  - `/ask 600519` → 个股，fallthrough 到 stock-query
+  - `/ask 光伏怎么样` → 板块卡（阶段 + 龙头 + Top 3-5 跟随股 + 买点/止损）
+  - `/ask 国常会批了储能补贴` → 事件卡（受益板块 ✓/△ 标注 + 直接推荐标的）
+  - `/ask+ <text>` → deep 模式，叠加 web 实时搜索补强（超时 300s vs normal 180s）
+  - `/ask sector=光伏` / `/ask stock=600519` / `/ask event=<text>` → 显式覆盖意图分类
+- **意图分类**：四层 cascade —— 显式覆盖 → 规则匹配（6 位代码 / 已知板块名 / 事件关键词）→ LLM 兜底 → 模糊安全网（返回候选 A/B/C）
+- **题材库校准**：事件意图先 LLM 猜受益板块，再用 `ths_hot_reason` 近 30 日 + `limit_up.concept` 历史校准，标 ✓ 完全命中 / △ 近似匹配 / ✗ 未验证。全 ✗ 时降档但仍出卡
+- **审计落库**：所有入向 TG 命令落 `tg_inbound` 表（update_id 去重 / parsed_payload JSON / response_msg_id / handler_status / duration_ms），用于后续胜率回溯
+- **不做空建议**：风险板块仅列名提醒，散户无融券权限
+
+新增模块：`code/lib/intent.py`（意图分类）、`code/lib/sector_pack.py`（板块四面板 + Top N + 阶段）、`code/lib/event_pack.py`（事件归类 + 校准 + normal/deep）、`.claude/skills/stock-ask/SKILL.md`（路由 + 卡片模板）。
+
+设计 spec：`docs/superpowers/specs/2026-05-15-stock-ask-design.md`。
+
 ### 数据扩展层
 
 抽取自 [simonlin1212/a-stock-data](https://github.com/simonlin1212/a-stock-data)（Apache 2.0）的 5 个端点，封装在 `.claude/skills/stock-premarket/scripts/extras.py`：
