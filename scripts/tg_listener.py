@@ -15,7 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -70,7 +70,7 @@ def skill_timeout_for(mode: str) -> int:
 
 def log_inbound_start(*, update_id: int, chat_id, user_msg_id: int, raw_text: str) -> Optional[int]:
     """写入 tg_inbound 一行，返回 inbound_id。update_id 重复 → None（去重）。"""
-    ts = datetime.utcnow().isoformat()
+    ts = datetime.now(timezone.utc).isoformat()
     try:
         with connect(DB_PATH) as conn:
             cur = conn.execute(
@@ -493,6 +493,9 @@ def handle(text: str, chat_id, today: Optional[str] = None,
            update_id: Optional[int] = None,
            user_msg_id: Optional[int] = None) -> None:
     """处理一条入站消息。出口只有 silent / push_reply / 流式 edit。"""
+    if str(chat_id) != str(ALLOWED_CHAT_ID):
+        return
+
     started = time.time()
     inbound_id = None
     if update_id is not None:
@@ -504,13 +507,10 @@ def handle(text: str, chat_id, today: Optional[str] = None,
             return  # 已处理过的 update_id，跳过
 
     def _finish(status: str, response_msg_id: Optional[int] = None, error: Optional[str] = None):
-        if inbound_id:
+        if inbound_id is not None:
             log_inbound_finish(inbound_id, response_msg_id=response_msg_id,
                                status=status, duration_ms=int((time.time()-started)*1000),
                                error=error)
-
-    if str(chat_id) != str(ALLOWED_CHAT_ID):
-        return
 
     # 1. /help：用法说明
     stripped = text.lstrip()
@@ -527,7 +527,7 @@ def handle(text: str, chat_id, today: Optional[str] = None,
             push_reply("❌ /ask 后面要带 query，例如 /ask 光伏怎么样")
             _finish("rejected", error="/ask 无 payload")
             return
-        if inbound_id:
+        if inbound_id is not None:
             log_inbound_update_parsed(
                 inbound_id,
                 parsed_command="/ask+" if parsed["mode"] == "deep" else "/ask",
