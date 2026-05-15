@@ -94,6 +94,26 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE INDEX IF NOT EXISTS idx_trades_code_ts ON trades(code, ts);
 CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);
 
+-- TG 入向消息全量审计：每条用户命令落一条，handler 完成后回填状态
+CREATE TABLE IF NOT EXISTS tg_inbound (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,             -- ISO 8601 收到时间
+    update_id INTEGER UNIQUE,            -- TG update_id 去重
+    chat_id TEXT NOT NULL,
+    user_msg_id INTEGER NOT NULL,        -- TG message_id（用户那条）
+    raw_text TEXT NOT NULL,              -- 原始命令文本
+    parsed_command TEXT,                 -- '/ask' '/ask+' '/buy' 'free_text' 等
+    parsed_intent TEXT,                  -- /ask 类：sector/stock/event/ambiguous
+    parsed_payload TEXT,                 -- JSON: 提取的 sector/code/event_text
+    response_msg_id INTEGER,             -- 关联 push_log.msg_id
+    handler_status TEXT,                 -- ok/rejected/timeout/error
+    handler_error TEXT,
+    duration_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_tg_inbound_ts ON tg_inbound(timestamp);
+CREATE INDEX IF NOT EXISTS idx_tg_inbound_chat ON tg_inbound(chat_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_tg_inbound_command ON tg_inbound(parsed_command);
+
 -- 同花顺热点强势股 + 题材归因（盘后 15:30+ 才有当日数据；盘前跑用 D-1）
 CREATE TABLE IF NOT EXISTS ths_hot_reason (
     date TEXT NOT NULL,
