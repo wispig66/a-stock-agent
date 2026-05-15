@@ -16,6 +16,7 @@ if not TG_TOKEN:
     sys.exit(2)
 
 COMMANDS = [
+    {"command": "ask",  "description": "随时分析：板块/个股/事件。深度版用 /ask+ <text>"},
     {"command": "buy",  "description": "记买入：/buy 代码 价格 手数 [理由] [@HH:MM]"},
     {"command": "sell", "description": "记卖出：/sell 代码 价格 手数 [理由] [@HH:MM]"},
     {"command": "help", "description": "用法说明 + 8 个理由标签速查"},
