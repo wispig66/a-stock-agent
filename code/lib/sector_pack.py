@@ -108,22 +108,89 @@ def _nearest(needle: str, lex: set[str], *, k: int = 3) -> list[str]:
 # ────────── 四面板（每个都是独立 try/except） ──────────
 
 def _fetch_sentiment_panel(sector: str) -> dict:
-    """板块涨跌幅、5/10 日累计、涨停股数、龙头连板。
-    实现：query.fetch_concept_strength + limit_up 表统计。
-    （生产实现见 Task 3b；单测会 monkeypatch 桩。）"""
-    raise NotImplementedError("生产环境实现 (Task 3b)；单测打桩")
+    """近 5 日命中该题材的涨停记录数 + 候选骨架。
+    候选骨架的 ret_5d/main_inflow/dist_high_20d 由实时接口层填充——
+    本函数只提供 code/name/is_st 等不联网字段。"""
+    since = (date.today() - timedelta(days=5)).isoformat()
+    with sqlite3.connect(DB) as conn:
+        lu_rows = conn.execute(
+            "SELECT date, code, name FROM limit_up WHERE date >= ? AND concept LIKE ?",
+            (since, f"%{sector}%"),
+        ).fetchall()
+        limit_up_count = len(lu_rows)
+        codes = {c for _, c, _ in lu_rows}
+        candidates = []
+        if codes:
+            placeholders = ",".join("?" * len(codes))
+            for code, name, is_st in conn.execute(
+                f"SELECT code, name, is_st FROM stock_basic WHERE code IN ({placeholders})",
+                tuple(codes),
+            ):
+                candidates.append({
+                    "code": code, "name": name, "is_st": bool(is_st),
+                    "ret_5d": 0, "main_inflow_3d": 0, "dist_high_20d_pct": 99,
+                    "limit_up_lock": False,
+                })
+    return {
+        "limit_up_count": limit_up_count,
+        "leader_consecutive": 0,
+        "ret_5d_pct": 0,
+        "ret_3d_pct": 0,
+        "candidates": candidates,
+    }
+
 
 def _fetch_news_panel(sector: str) -> dict:
-    """ths_hot_reason 近 10 日 + news 近 7 日命中该题材的 Top 5。"""
-    raise NotImplementedError("生产环境实现 (Task 3b)；单测打桩")
+    """ths_hot_reason 近 10 日命中该题材的 reason Top 5，每条标利好/中性/利空。
+    tone 由卡片合成层 (SKILL.md) 用 LLM 补；本函数固定 '中性'。"""
+    since = (date.today() - timedelta(days=10)).isoformat()
+    with sqlite3.connect(DB) as conn:
+        rows = conn.execute(
+            "SELECT date, reason FROM ths_hot_reason WHERE date >= ? AND reason LIKE ? "
+            "ORDER BY date DESC LIMIT 5",
+            (since, f"%{sector}%"),
+        ).fetchall()
+    return {
+        "top_news": [
+            {"date": d, "title": r, "tone": "中性"}
+            for d, r in rows
+        ],
+    }
+
 
 def _fetch_fundamental_panel(sector: str) -> dict:
-    """成分股数 / 平均 PE / 所属一级行业 / 长期主线判定。"""
-    raise NotImplementedError("生产环境实现 (Task 3b)；单测打桩")
+    """该题材近 30 日出现过的不同股票数 + 所属一级行业（取众数）。
+    注：stock_basic 暂无 industry 列，gracefully 降级为 '未分类'。"""
+    from collections import Counter
+    since = (date.today() - timedelta(days=30)).isoformat()
+    with sqlite3.connect(DB) as conn:
+        codes = {c for (c,) in conn.execute(
+            "SELECT DISTINCT code FROM limit_up WHERE date >= ? AND concept LIKE ?",
+            (since, f"%{sector}%"),
+        )}
+        industries: list[str] = []
+        if codes:
+            # Check if industry column exists before querying it
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(stock_basic)")}
+            if "industry" in cols:
+                placeholders = ",".join("?" * len(codes))
+                for (ind,) in conn.execute(
+                    f"SELECT industry FROM stock_basic WHERE code IN ({placeholders}) AND industry IS NOT NULL",
+                    tuple(codes),
+                ):
+                    industries.append(ind)
+    industry = Counter(industries).most_common(1)[0][0] if industries else "未分类"
+    return {
+        "member_count": len(codes),
+        "industry": industry,
+        "is_long_main_line": sector in {"AI", "人工智能", "新能源", "新能源汽车", "半导体", "光伏"},
+    }
+
 
 def _fetch_technical_panel(sector: str) -> dict:
-    """龙头票 MA / 板块指数 60 日位置 / 量比。"""
-    raise NotImplementedError("生产环境实现 (Task 3b)；单测打桩")
+    """龙头票 MA / 板块指数 60 日位置 / 量比。
+    本地无板块指数表 → 占位返回，由实时层（query.fetch_concept_strength）补。"""
+    return {"ma_position": "未知", "high_low_60d": "中位", "volume_ratio": 1.0}
 
 
 def _safe_call(label: str, fn, *args) -> dict:
