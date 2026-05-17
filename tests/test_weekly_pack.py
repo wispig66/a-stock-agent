@@ -82,3 +82,66 @@ def test_build_weekly_data_pack_empty_week(tmp_path, monkeypatch):
     assert pack["weekly_trades"] == []
     assert pack["top_gainers"] == []
     assert pack["trading_days_in_week"] == 0  # 无 daily_kline → 0
+
+
+def test_render_long_form_sections(seeded_db):
+    from lib.weekly_pack import build_weekly_data_pack, render_long_form
+
+    pack = build_weekly_data_pack(end_date=date(2026, 5, 17))
+    parts = {
+        "part1_narrative": "本周情绪退潮，算力主线高位震荡。",
+        "part2_narrative": "下周关注算力延续 + 创新药。",
+        "themes": [
+            {
+                "name": "算力硬件",
+                "stance": "延续",
+                "leaders": ["300308"],
+                "catalysts": [{"date": "2026-05-22", "event": "英伟达财报"}],
+                "risks": ["美债收益率上行"],
+                "match_score": "high",
+            }
+        ],
+        "discipline_notes": "龙头股加速期不追，缓涨期可埋伏。",
+        "web_status": "ok",
+    }
+    md = render_long_form(pack, parts)
+
+    assert "# W20 周复盘" in md
+    assert "## Part 1 本周复盘" in md
+    assert "## Part 2 下周方向" in md
+    assert "## 下周方向 (machine-readable)" in md
+    assert "themes:" in md
+    assert "算力硬件" in md
+    assert "match_score: high" in md
+
+
+def test_parse_machine_readable_roundtrip(seeded_db, tmp_path):
+    from lib.weekly_pack import (
+        build_weekly_data_pack, render_long_form, parse_machine_readable,
+    )
+    pack = build_weekly_data_pack(end_date=date(2026, 5, 17))
+    parts = {
+        "part1_narrative": "x",
+        "part2_narrative": "y",
+        "themes": [{"name": "算力", "stance": "延续",
+                    "leaders": ["300308"], "catalysts": [],
+                    "risks": [], "match_score": "high"}],
+        "discipline_notes": "z",
+        "web_status": "ok",
+    }
+    md = render_long_form(pack, parts)
+    out = tmp_path / "w20.md"
+    out.write_text(md)
+
+    parsed = parse_machine_readable(out)
+    assert parsed is not None
+    assert parsed["week"] == "2026-W20"
+    assert parsed["themes"][0]["name"] == "算力"
+    assert parsed["web_status"] == "ok"
+
+
+def test_parse_machine_readable_missing(tmp_path):
+    from lib.weekly_pack import parse_machine_readable
+    p = tmp_path / "nope.md"
+    p.write_text("# 普通 markdown，没有 yaml 块\n")
+    assert parse_machine_readable(p) is None

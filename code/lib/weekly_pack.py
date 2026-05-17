@@ -7,10 +7,16 @@
 """
 from __future__ import annotations
 import os
+import re
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+
+try:
+    import yaml  # PyYAML
+except ImportError as e:
+    raise ImportError("weekly_pack 依赖 PyYAML：uv add pyyaml") from e
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB = ROOT / "data" / "daily.db"
@@ -144,3 +150,80 @@ def build_weekly_data_pack(end_date: date) -> dict:
             pack["anomaly_files"].append(str(p))
 
     return pack
+
+
+_YAML_FENCE_RE = re.compile(
+    r"## 下周方向 \(machine-readable\)\s*\n```yaml\n(.*?)\n```",
+    re.DOTALL,
+)
+
+
+def render_long_form(pack: dict, parts: dict) -> str:
+    """渲染 data/weekly_review/YYYY-WW.md 长文。
+
+    parts 由 skill 阶段（claude）合成：
+      part1_narrative, part2_narrative, themes, discipline_notes, web_status
+    """
+    week_num = pack["week_label"].split("-W")[1]
+    generated_at = (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat(
+        timespec="seconds"
+    )
+
+    machine = {
+        "week": pack["week_label"],
+        "generated_at": generated_at,
+        "sentiment_stage": _infer_stage(pack),
+        "themes": parts["themes"],
+        "discipline_notes": parts.get("discipline_notes", ""),
+        "web_status": parts.get("web_status", "ok"),
+    }
+    yaml_block = yaml.safe_dump(
+        machine, allow_unicode=True, sort_keys=False, default_flow_style=False
+    )
+
+    return (
+        f"# W{week_num} 周复盘 ({pack['monday']} ~ {pack['friday']})\n\n"
+        f"_交易日：{pack['trading_days_in_week']}/5_\n\n"
+        f"## Part 1 本周复盘\n\n{parts['part1_narrative']}\n\n"
+        f"## Part 2 下周方向\n\n{parts['part2_narrative']}\n\n"
+        f"## 下周方向 (machine-readable)\n\n"
+        f"```yaml\n{yaml_block}```\n\n"
+        f"## 数据附录\n\n"
+        f"{_render_appendix(pack)}\n"
+    )
+
+
+def _infer_stage(pack: dict) -> str:
+    if not pack["sentiment_series"]:
+        return "数据缺失"
+    return pack["sentiment_series"][-1].get("phase") or "未知"
+
+
+def _render_appendix(pack: dict) -> str:
+    lines = ["### 板块/个股周涨幅 Top"]
+    for g in pack["top_gainers"][:10]:
+        lines.append(f"- {g['code']}: {g['week_pct']:+.2f}%")
+    lines.append("\n### 连板梯队")
+    for d in pack["limit_up_ladder"]:
+        lines.append(f"- {d['date']}: 涨停 {d['lu']} 家, 最高连板 {d['max_consec']}")
+    if pack["weekly_trades"]:
+        lines.append("\n### 个人交易明细")
+        for t in pack["weekly_trades"]:
+            lines.append(
+                f"- {t['ts']} {t['side']} {t['code']} @ {t['price']} × {t['qty']} ({t['reason'] or '-'})"
+            )
+    return "\n".join(lines)
+
+
+def parse_machine_readable(path: Path) -> Optional[dict]:
+    """从落地长文中解析 machine-readable YAML 块。失败/缺失返回 None。"""
+    if not path.exists():
+        return None
+    text = path.read_text()
+    m = _YAML_FENCE_RE.search(text)
+    if not m:
+        return None
+    try:
+        return yaml.safe_load(m.group(1))
+    except yaml.YAMLError:
+        return None
