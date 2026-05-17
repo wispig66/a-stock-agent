@@ -71,12 +71,7 @@ def build_weekly_data_pack(end_date: date) -> dict:
             week_days_str,
         ).fetchall()
         pack["sentiment_series"] = [dict(r) for r in rows]
-        # trading_days_in_week 以 daily_kline 实际有数据的日子为准
-        kline_days = conn.execute(
-            f"SELECT COUNT(DISTINCT date) AS n FROM daily_kline WHERE date IN ({placeholders})",
-            week_days_str,
-        ).fetchone()
-        pack["trading_days_in_week"] = kline_days["n"] if kline_days else 0
+        pack["trading_days_in_week"] = len(rows)
 
         # top gainers (按周累计涨幅 Top 20)
         rows = conn.execute(
