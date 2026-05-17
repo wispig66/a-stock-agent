@@ -30,6 +30,43 @@ uv run .claude/skills/stock-premarket/scripts/fetch_data.py
 
 **所有价格、家数、连板数、净买入金额必须直接引用 fact pack 数据，禁止虚构或重算。**
 
+## Step 1.5 · 读最近一份周复盘（先验种子）
+
+继承 L7 stock-weekly 的下周方向，作为今日观察池的先验：
+
+```bash
+ls -1 data/weekly_review/*.md 2>/dev/null | sort | tail -1
+```
+
+若有结果：用 Python 解析其 machine-readable YAML 块：
+
+```python
+from pathlib import Path
+from lib.weekly_pack import parse_machine_readable
+import glob
+files = sorted(glob.glob("data/weekly_review/*.md"))
+parsed = parse_machine_readable(Path(files[-1])) if files else None
+```
+
+`parsed` 结构（若非 None）：
+- `week` ISO 标签
+- `sentiment_stage` 上周末判定
+- `themes[]` 每条含 `name / stance / leaders / catalysts / risks / match_score`
+- `discipline_notes` 操作纪律提醒
+- `web_status` ok / degraded
+
+**如何使用**：
+
+1. 把 `themes[].leaders` 作为今日观察池的 **先验种子**（候选股池）
+2. 每只 `themes[].leaders` 的股票若被纳入今日观察池，标注来源 `（来自周复盘 W{week}）`
+3. 今日 fact pack 的盘前异动股若与 `themes[].leaders` 交叉，标注 `（周复盘 + 今日异动 双重信号）`
+4. 若 `parsed["themes"][i].catalysts` 里有今日日期的催化事件，在卡片头部 banner 提示
+5. 若发现 L7 某主线已被周内消息证伪（例如周一开盘前的重大反向消息），在卡片末尾追加 `⚠ 周复盘主题「X」可能已破位，原因：...`
+
+**降级**：`files == []` 或 `parsed is None` → 跳过此 Step，正常走原流程，不报错。
+
+继承 [[feedback-news-awareness]]：先验种子只是候选，最终拍板必须叠加今日盘前消息。
+
 ## Step 2 · 抓今日新闻面（24h 窗口，叠加 fact pack 第七节）
 
 fact pack 第七节已经把 CLS+EM 财经直播抓完（200+ 条、带 URL、带题材标签）。Step 2 在此基础上**补充结构化检索**：
