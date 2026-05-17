@@ -124,6 +124,19 @@ bash scripts/stop_tg_listener.sh     # 停
 
 设计 spec：`docs/superpowers/specs/2026-05-15-stock-ask-design.md`。
 
+### 周复盘 · stock-weekly（周日 21:00 自动）
+
+每周日晚 21:00，launchd 触发 `scripts/weekly_loop.py` 生成本周复盘 + 下周方向：
+
+- **Part 1 本周复盘** — 情绪周期 / 主线 / 资金 / 情绪指标 / 题材轮动 / 个人交易回顾（6 节叙事）
+- **Part 2 下周方向** — 2-3 条主线 + 代表股 + 关键催化 + 风险（不给买点，买点交给周一 L1）
+- **输出** — TG 摘要卡 + 落地长文 `data/weekly_review/YYYY-WW.md`（含 machine-readable YAML 块）
+- **L1 接入** — 周一开始 L1 stock-premarket 自动读最近一份周复盘 YAML，作为观察池先验种子
+
+手动触发：`uv run scripts/weekly_loop.py --force`
+
+新增模块：`code/lib/weekly_pack.py`（数据聚合 + 长文渲染 + YAML 读写）、`.claude/skills/stock-weekly/`（SKILL.md + aggregate.py）、`scripts/weekly_loop.py`（launchd 入口）、`launchd/com.user.stockweekly.plist`。
+
 ### 数据扩展层
 
 抽取自 [simonlin1212/a-stock-data](https://github.com/simonlin1212/a-stock-data)（Apache 2.0）的 5 个端点，封装在 `.claude/skills/stock-premarket/scripts/extras.py`：

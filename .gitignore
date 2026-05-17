@@ -16,6 +16,7 @@ data/anomaly_raw/
 data/watch_raw/
 data/holdings_snapshot/
 data/anomaly_findings/
+data/weekly_review/
 logs/*.log
 .DS_Store
 holdings.yaml.lock

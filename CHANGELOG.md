@@ -2,6 +2,16 @@
 
 记录较大版本变更。小修复直接看 git log。
 
+## [Unreleased] 2026-05-17
+
+### 周复盘 · stock-weekly (2026-05-17)
+
+新增 L7 望远镜层。每周日 21:00 launchd 触发，输出 Part 1 本周复盘（6 节叙事 + 个人交易回顾）+ Part 2 下周方向（2-3 条主线 + 代表股 + 催化 + 风险，不给买点），落地长文 `data/weekly_review/YYYY-WW.md`。长文含 machine-readable YAML 块，L1 stock-premarket 加 Step 1.5 自动读取作为观察池先验种子。
+
+新增模块：`code/lib/weekly_pack.py`、`.claude/skills/stock-weekly/`（SKILL.md + aggregate.py）、`scripts/weekly_loop.py`、`launchd/com.user.stockweekly.plist`。
+
+设计 spec：`docs/superpowers/specs/2026-05-17-stock-weekly-design.md`。
+
 ## [Unreleased] 2026-05-15
 
 ### TG 随时分析助手 · stock-ask (2026-05-15)
