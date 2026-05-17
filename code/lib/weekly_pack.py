@@ -2,7 +2,7 @@
 
 主入口：
   build_weekly_data_pack(end_date) -> dict       本地数据聚合
-  render_long_form(pack, web_pack, parts) -> str 长文渲染
+  render_long_form(pack, parts) -> str             长文渲染
   parse_machine_readable(path) -> dict | None    L1 消费用解析
 """
 from __future__ import annotations
@@ -153,7 +153,7 @@ def build_weekly_data_pack(end_date: date) -> dict:
 
 
 _YAML_FENCE_RE = re.compile(
-    r"## 下周方向 \(machine-readable\)\s*\n```yaml\n(.*?)\n```",
+    r"## 下周方向 \(machine-readable\)\s*\n+```ya?ml\s*\n(.*?)\n```",
     re.DOTALL,
 )
 
@@ -165,7 +165,7 @@ def render_long_form(pack: dict, parts: dict) -> str:
       part1_narrative, part2_narrative, themes, discipline_notes, web_status
     """
     week_num = pack["week_label"].split("-W")[1]
-    generated_at = (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat(
+    generated_at = datetime.now(timezone(timedelta(hours=8))).isoformat(
         timespec="seconds"
     )
 
@@ -219,7 +219,7 @@ def parse_machine_readable(path: Path) -> Optional[dict]:
     """从落地长文中解析 machine-readable YAML 块。失败/缺失返回 None。"""
     if not path.exists():
         return None
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     m = _YAML_FENCE_RE.search(text)
     if not m:
         return None
