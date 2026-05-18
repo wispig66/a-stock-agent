@@ -40,10 +40,32 @@ date '+%H:%M %u'
 
 周末 / 节假日（date %u 返回 6/7 或 akshare 判断非交易日）直接拒绝。
 
+# 输出契约（最重要，违反 = 整体失败）
+
+**所有数据必须有来源支撑**（[[feedback-data-must-be-sourced]]）。
+
+`fetch_realtime.py` stdout 末尾会输出一段 `=== ALLOWED === { ... } === /ALLOWED ===` JSON，
+这是**该次卡片唯一允许引用的事实清单**。你写的卡片里：
+
+- 任何 6 位股票代码 → 必须在 `ALLOWED.codes` keys
+- 任何中文股票名（stock_basic 5200 条匹配） → 必须在 `ALLOWED.codes` values
+- "N 板/N 连板" → 必须等于 `ALLOWED.lianban[code]`
+- "±X.X%" → 必须在 `ALLOWED.pct[code] ± 0.5%`
+- "涨停 N 只 / 炸板 N 只" → 必须精确等于 `ALLOWED.summary.limit_up / .broken`
+
+**禁止**：引用 fact pack 之外的股票（如从你的训练数据印象/holdings.example.yaml 编出来）。
+**禁止**：把数据"凑整"到容差外（例：实际 +2.60% 写成 +3.62% 是反向虚构）。
+**禁止**：编造连板数（fact pack 没有的 code 不要写"X 板"）。
+
+推送脚本 `push.py` 会自动跑校验器，违规会被审计日志记录（v1 warn 模式不拦截但留证据；
+v2 enforce 模式直接拒推）。**写卡前自己对照 ALLOWED 一遍**，不要等审计来抓。
+
+你的**唯一最终 assistant 消息**必须是卡片本身（以 ⏰/🌤️ 开头）；不要"任务完成"等元状态文字。
+
 ## Step 1A · 纪律提醒分支数据拉取（09:30 / 09:45）
 
 ```bash
-uv run .claude/skills/stock-intraday/scripts/fetch_realtime.py
+.venv/bin/python .claude/skills/stock-intraday/scripts/fetch_realtime.py
 ```
 
 输出包含：
@@ -74,8 +96,8 @@ uv run .claude/skills/stock-intraday/scripts/fetch_realtime.py
 在 Step 1A 之上额外拉：
 
 ```bash
-uv run .claude/skills/stock-intraday/scripts/fetch_realtime.py --halfday  # 11:30 用
-uv run .claude/skills/stock-intraday/scripts/fetch_realtime.py --endday  # 14:30 用
+.venv/bin/python .claude/skills/stock-intraday/scripts/fetch_realtime.py --halfday  # 11:30 用
+.venv/bin/python .claude/skills/stock-intraday/scripts/fetch_realtime.py --endday  # 14:30 用
 ```
 
 额外输出：
@@ -262,7 +284,7 @@ uv run .claude/skills/stock-intraday/scripts/fetch_realtime.py --endday  # 14:30
 
 1. Write 卡片到 `data/last_intraday_card.md`
 2. ```bash
-   uv run .claude/skills/stock-premarket/scripts/push.py --file data/last_intraday_card.md --source stock-intraday
+   .venv/bin/python .claude/skills/stock-premarket/scripts/push.py --file data/last_intraday_card.md --source stock-intraday
    ```
 
 ## Step 5 · 终端简要返回

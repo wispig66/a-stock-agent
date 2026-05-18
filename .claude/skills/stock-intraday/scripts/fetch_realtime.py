@@ -269,6 +269,88 @@ def fetch_concept_hot() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _build_allowed(
+    *, watchlist: list[dict], holdings: list[dict], spot,
+    zt, zb, cc, now: datetime, label: str,
+) -> dict:
+    """聚合本次 fact pack 的全部允许引用事实。卡片里任何不在此清单的数据点 → 违规。"""
+    codes: dict[str, str] = {}
+    lianban: dict[str, int] = {}
+    pct: dict[str, float] = {}
+    concepts: list[str] = []
+
+    for w in watchlist:
+        codes[str(w["code"])] = str(w["name"])
+    for h in holdings:
+        codes[str(h["code"])] = str(h["name"])
+
+    if spot is not None and not spot.empty:
+        for _, r in spot.iterrows():
+            code = str(r.get("代码") or r.get("code") or "")
+            name = str(r.get("名称") or r.get("name") or "")
+            if not code or len(code) != 6:
+                continue
+            codes[code] = name or codes.get(code, name)
+            try:
+                pct[code] = round(float(r.get("涨跌幅")), 2)
+            except (TypeError, ValueError):
+                pass
+
+    if zt is not None and not zt.empty:
+        for _, r in zt.iterrows():
+            code = str(r.get("代码") or "")
+            name = str(r.get("名称") or "")
+            if not code or len(code) != 6:
+                continue
+            codes[code] = name or codes.get(code, name)
+            try:
+                lianban[code] = int(r.get("连板数"))
+            except (TypeError, ValueError):
+                pass
+            try:
+                pct[code] = round(float(r.get("涨跌幅")), 2)
+            except (TypeError, ValueError):
+                pass
+
+    if zb is not None and not zb.empty:
+        for _, r in zb.iterrows():
+            code = str(r.get("代码") or "")
+            name = str(r.get("名称") or "")
+            if not code or len(code) != 6:
+                continue
+            codes[code] = name or codes.get(code, name)
+            try:
+                pct[code] = round(float(r.get("涨跌幅")), 2)
+            except (TypeError, ValueError):
+                pass
+
+    if cc is not None and not cc.empty:
+        if "概念名称" in cc.columns:
+            concepts = [str(x) for x in cc["概念名称"].tolist()[:30]]
+
+    summary: dict[str, int | str] = {
+        "date": now.strftime("%Y-%m-%d"),
+    }
+    if zt is not None and not zt.empty:
+        summary["limit_up"] = int(len(zt))
+    if zb is not None and not zb.empty:
+        summary["broken"] = int(len(zb))
+
+    return {
+        "schema_version": "1",
+        "skill": "stock-intraday",
+        "label": label,
+        "snapshot_at": now.replace(microsecond=0).isoformat(),
+        "codes": codes,
+        "lianban": lianban,
+        "pct": pct,
+        "summary": summary,
+        "concepts": concepts,
+        "news": [],  # v1: 模型仍用 WebFetch 抓，v2 搬进来
+        "global_markets": {},  # 同上
+    }
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--halfday", action="store_true", help="11:30 半日分支")
@@ -309,6 +391,10 @@ def main():
     else:
         print(spot.to_string(index=False))
 
+    zt = pd.DataFrame()
+    zb = pd.DataFrame()
+    cc = pd.DataFrame()
+    label = "纪律分支"
     if args.halfday or args.endday:
         label = "半日（11:30）" if args.halfday else "全日（14:30）"
         section(f"四、{label}涨停结构")
@@ -343,6 +429,21 @@ def main():
             print(cc[cols].to_string(index=False))
 
     print("\n=== fetch_realtime done ===")
+
+    # ALLOWED 段：卡片校验的唯一事实清单（见 docs/allowed_schema.md）
+    import json
+    allowed = _build_allowed(
+        watchlist=watchlist, holdings=holdings, spot=spot,
+        zt=zt, zb=zb, cc=cc, now=now, label=label,
+    )
+    print("\n=== ALLOWED ===")
+    print(json.dumps(allowed, ensure_ascii=False, indent=2))
+    print("=== /ALLOWED ===")
+
+    # 同时落盘，供 push.py 校验时读取
+    out = ROOT / "data" / "allowed_latest_stock-intraday.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(allowed, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
