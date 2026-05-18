@@ -16,10 +16,32 @@ L4 盘后复盘。**两个核心职责**：
 
 每次调用按序执行下面 4 步。
 
+# 输出契约（最重要，违反 = 整体失败）
+
+**所有数据必须有来源支撑**（[[feedback-data-must-be-sourced]]）。
+
+`fetch_postmarket.py` stdout 末尾会输出一段 `=== ALLOWED === { ... } === /ALLOWED ===` JSON，
+这是**该次卡片唯一允许引用的事实清单**：
+
+- 任何 6 位股票代码 → 必须在 `ALLOWED.codes` keys
+- 任何中文股票名（stock_basic 5200 条匹配） → 必须在 `ALLOWED.codes` values
+- "N 板/N 连板" → 必须等于 `ALLOWED.lianban[code]`
+- "±X.X%" → 必须在 `ALLOWED.pct[code] ± 0.5%`
+- "涨停 N 只 / 跌停 N 只 / 炸板 N 只" → 精确等于 `ALLOWED.summary.{limit_up, limit_down, broken}`
+- "最高 N 连板" → 等于 `ALLOWED.summary.max_consec`
+
+**禁止**：从训练数据印象/holdings.example.yaml 编出 fact pack 之外的股票（如"大唐发电 6 连板炸板"
+当日实际 -0.25%）。**禁止**：把数值"凑整"到容差外（如实际 +2.60% 写成 +3.62%）。
+
+推送脚本 `push.py` 自动跑校验器，违规会被审计日志记录（v1 warn 模式不拦截；v2 enforce 模式直接
+拒推）。**写卡前自己对照 ALLOWED 一遍**。
+
+你的**唯一最终 assistant 消息**必须是卡片本身（以 📖 / 🌆 等卡片开头符开头）；不要"任务完成"等元状态文字。
+
 ## Step 1 · 拉今日完整数据 + 写库
 
 ```bash
-uv run .claude/skills/stock-postmarket/scripts/fetch_postmarket.py
+.venv/bin/python .claude/skills/stock-postmarket/scripts/fetch_postmarket.py
 ```
 
 这一步同时做三件事：
@@ -36,7 +58,7 @@ uv run .claude/skills/stock-postmarket/scripts/fetch_postmarket.py
 执行命令获取连亏状态 JSON：
 
 ```bash
-uv run python .claude/skills/stock-postmarket/scripts/update_loss_streak.py
+.venv/bin/python .claude/skills/stock-postmarket/scripts/update_loss_streak.py
 ```
 
 返回字段：
@@ -52,7 +74,7 @@ uv run python .claude/skills/stock-postmarket/scripts/update_loss_streak.py
 自动解析今日盘前推送 + 拉今日行情 + 命中判定，**一条命令出表**：
 
 ```bash
-uv run code/review.py review
+.venv/bin/python code/review.py review
 ```
 
 输出 markdown 表 + 命中率统计（触发率 / 收红率 / 假突破率 / 止损命中率），直接粘进卡片 Step 4 的复盘段。
@@ -304,7 +326,7 @@ fact pack: data/fact_pack/[YYYYMMDD]_postmarket.md
 
 1. Write 卡片到 `data/last_postmarket_card.md`
 2. ```bash
-   uv run .claude/skills/stock-premarket/scripts/push.py --file data/last_postmarket_card.md --source stock-postmarket
+   .venv/bin/python .claude/skills/stock-premarket/scripts/push.py --file data/last_postmarket_card.md --source stock-postmarket
    ```
 
 ## Step 5 · 终端简要返回

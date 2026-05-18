@@ -317,6 +317,80 @@ def render_pack(date: str, sent: dict, zt: pd.DataFrame, zd: pd.DataFrame,
 
 
 # ============================================================
+# ALLOWED 段（卡片校验唯一事实源；见 docs/allowed_schema.md）
+# ============================================================
+
+def build_allowed(*, iso: str, sent: dict, zt: pd.DataFrame, zd: pd.DataFrame,
+                  zb: pd.DataFrame, hot: pd.DataFrame, lhb: dict) -> dict:
+    codes: dict[str, str] = {}
+    lianban: dict[str, int] = {}
+    pct: dict[str, float] = {}
+    concepts: list[str] = []
+
+    def _add(df: pd.DataFrame, take_lianban: bool = False):
+        if df is None or df.empty:
+            return
+        for _, r in df.iterrows():
+            code = str(r.get("代码") or "")
+            name = str(r.get("名称") or "")
+            if not code or len(code) != 6:
+                continue
+            codes[code] = name or codes.get(code, name)
+            try:
+                pct[code] = round(float(r.get("涨跌幅")), 2)
+            except (TypeError, ValueError):
+                pass
+            if take_lianban:
+                try:
+                    lianban[code] = int(r.get("连板数"))
+                except (TypeError, ValueError):
+                    pass
+
+    _add(zt, take_lianban=True)
+    _add(zd)
+    _add(zb)
+
+    if hot is not None and not hot.empty:
+        for _, r in hot.iterrows():
+            code = str(r.get("代码") or "")
+            name = str(r.get("名称") or "")
+            if code and len(code) == 6:
+                codes[code] = name or codes.get(code, name)
+            reason = str(r.get("题材归因", "") or "").strip()
+            for t in (x.strip() for x in reason.split("+") if x.strip()):
+                if t not in concepts:
+                    concepts.append(t)
+
+    for s in (lhb or {}).get("stocks") or []:
+        code = str(s.get("code") or "")
+        name = str(s.get("name") or "")
+        if code and len(code) == 6:
+            codes[code] = name or codes.get(code, name)
+
+    summary = {
+        "date": iso,
+        "limit_up": int(sent.get("limit_up_count") or 0),
+        "limit_down": int(sent.get("limit_down_count") or 0),
+        "broken": int(len(zb)) if zb is not None and not zb.empty else 0,
+        "max_consec": int(sent.get("max_consec") or 0),
+        "phase": str(sent.get("phase") or ""),
+    }
+
+    return {
+        "schema_version": "1",
+        "skill": "stock-postmarket",
+        "snapshot_at": datetime.now().replace(microsecond=0).isoformat(),
+        "codes": codes,
+        "lianban": lianban,
+        "pct": pct,
+        "summary": summary,
+        "concepts": concepts[:30],
+        "news": [],
+        "global_markets": {},
+    }
+
+
+# ============================================================
 # 入口
 # ============================================================
 
@@ -366,6 +440,17 @@ def main():
     out.write_text(pack, encoding="utf-8")
     log(f"已写 {out}")
     print(pack)
+
+    # ALLOWED 段：卡片校验事实源
+    import json as _json
+    allowed = build_allowed(iso=iso, sent=sent, zt=zt, zd=zd, zb=zb, hot=hot, lhb=lhb)
+    print("\n=== ALLOWED ===")
+    print(_json.dumps(allowed, ensure_ascii=False, indent=2))
+    print("=== /ALLOWED ===")
+    allowed_file = PROJECT_ROOT / "data" / "allowed_latest_stock-postmarket.json"
+    allowed_file.parent.mkdir(parents=True, exist_ok=True)
+    allowed_file.write_text(_json.dumps(allowed, ensure_ascii=False, indent=2))
+    log(f"已写 {allowed_file}")
 
 
 if __name__ == "__main__":
