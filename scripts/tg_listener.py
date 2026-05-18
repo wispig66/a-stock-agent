@@ -29,6 +29,17 @@ from lib import query  # noqa: E402
 from notify import push_md, md_to_tg_html  # noqa: E402
 from db import connect  # noqa: E402
 
+def _find_claude_bin() -> str:
+    for p in (Path.home() / ".local/bin/claude",
+              Path.home() / ".claude/local/claude",
+              Path("/usr/local/bin/claude"),
+              Path("/opt/homebrew/bin/claude")):
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    return "claude"
+
+CLAUDE_BIN = _find_claude_bin()
+
 _ASK_RE = re.compile(r"^/ask(\+)?(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)
 
 ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID") or os.environ.get("TG_CHAT_ID", "")
@@ -174,7 +185,7 @@ def run_skill_streaming(code: str, mode: str,
     """
     prompt = (f"请使用 stock-query skill 分析这只股票，严格按 SKILL.md "
               f"模板输出卡片，不要任何额外文字：code={code} mode={mode}")
-    cmd = ["claude", "-p", "--permission-mode", "bypassPermissions",
+    cmd = [CLAUDE_BIN, "-p", "--permission-mode", "bypassPermissions",
            "--output-format", "stream-json",
            "--include-partial-messages",
            "--verbose"]
@@ -247,7 +258,7 @@ def run_skill_streaming_generic(*, prompt: str, timeout: int,
                                 on_tool: Callable[[str], None]) -> str:
     """通用流式跑 claude -p。返回最终卡片文本。
     与 run_skill_streaming 的差异：prompt + timeout 都是入参，不依赖模块级 SKILL_TIMEOUT。"""
-    cmd = ["claude", "-p", "--permission-mode", "bypassPermissions",
+    cmd = [CLAUDE_BIN, "-p", "--permission-mode", "bypassPermissions",
            "--output-format", "stream-json",
            "--include-partial-messages",
            "--verbose"]
