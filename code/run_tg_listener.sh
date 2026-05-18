@@ -14,7 +14,7 @@ mkdir -p "$LOGDIR"
 # 固定文件名（不带日期），由外部 rotate 切日；常驻进程跨午夜也能正确 append
 LOG="$LOGDIR/tg_listener.log"
 
-for candidate in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv"; do
+for candidate in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv" "$HOME/anaconda3/bin/uv"; do
   if [ -x "$candidate" ]; then
     UV_BIN="$candidate"
     break

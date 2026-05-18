@@ -10,7 +10,7 @@ mkdir -p "$LOGDIR"
 LOG="$LOGDIR/watch_loop_$(date +%Y%m%d).log"
 
 # uv 可执行路径（launchd 无 PATH，必须绝对）
-for candidate in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv"; do
+for candidate in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv" "$HOME/anaconda3/bin/uv"; do
   if [ -x "$candidate" ]; then
     UV_BIN="$candidate"
     break
