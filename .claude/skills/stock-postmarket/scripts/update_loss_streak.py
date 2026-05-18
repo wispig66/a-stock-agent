@@ -36,27 +36,47 @@ def main() -> int:
             {"code": h.code, "name": h.name, "cost": h.cost, "shares": h.shares}
             for h in holdings
         ]
-        price_fn = risk.fetch_spot_price_fn()
         today = date.today()
-        pnl_pct = loss_streak.compute_daily_pnl(
-            holdings_dicts, price_fn=price_fn, total_capital=cfg["total_capital"]
-        )
+
+        # 空仓直接 0 pnl，不需要行情源
+        if not holdings_dicts:
+            prices, price_source = {}, "skip_empty_holdings"
+            price_fn = lambda c: None
+            pnl_pct = 0.0
+            price_failed = False
+        else:
+            codes = [h["code"] for h in holdings_dicts]
+            prices, price_source = risk.fetch_prices_for_codes(codes)
+            price_failed = (price_source == "none")
+            price_fn = lambda c: prices.get(str(c).zfill(6))
+            pnl_pct = loss_streak.compute_daily_pnl(
+                holdings_dicts, price_fn=price_fn, total_capital=cfg["total_capital"]
+            )
+
         state = loss_streak.load_state()
-        new_history = loss_streak.update_pnl_history(
-            state.get("daily_pnl", []), today, pnl_pct, cfg
-        )
-        streak = loss_streak.count_loss_streak(new_history, today)
-        loss_streak.save_state({"daily_pnl": new_history})
+        if price_failed:
+            # 行情全部失败：保留昨日 history 不写今日，避免按 cost 兜底误判为"0 浮盈"
+            new_history = state.get("daily_pnl", [])
+            streak = loss_streak.count_loss_streak(new_history, today)
+            is_loss_today = False
+        else:
+            new_history = loss_streak.update_pnl_history(
+                state.get("daily_pnl", []), today, pnl_pct, cfg
+            )
+            streak = loss_streak.count_loss_streak(new_history, today)
+            loss_streak.save_state({"daily_pnl": new_history})
+            is_loss_today = new_history[-1]["is_loss"] if new_history else False
 
         warn_threshold = int(cfg.get("loss_streak_warn_threshold", 2))
-        is_loss_today = new_history[-1]["is_loss"] if new_history else False
 
         out = {
             "today_pnl_pct": pnl_pct,
             "is_loss_today": is_loss_today,
             "loss_streak": streak,
-            "warn_active": streak >= warn_threshold,
+            "warn_active": (not price_failed) and streak >= warn_threshold,
             "recent_pnl": new_history[-5:],
+            "price_source": price_source,
+            "price_source_failed": price_failed,
         }
         print(json.dumps(out, ensure_ascii=False))
         return 0

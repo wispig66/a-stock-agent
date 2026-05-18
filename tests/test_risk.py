@@ -11,6 +11,55 @@ sys.path.insert(0, str(ROOT / "code"))
 from lib import risk  # noqa: E402
 
 
+def test_code_with_market_prefix():
+    assert risk._code_with_market_prefix("600000") == "sh600000"
+    assert risk._code_with_market_prefix("000001") == "sz000001"
+    assert risk._code_with_market_prefix("300033") == "sz300033"
+    assert risk._code_with_market_prefix("688409") == "sh688409"
+    assert risk._code_with_market_prefix("832145") == "bj832145"
+
+
+def test_fetch_prices_for_codes_all_sources_fail(monkeypatch):
+    """sina + tencent + akshare 全失败 → source='none'，不要按 cost 兜底。"""
+    def boom(*a, **kw):
+        raise RuntimeError("network down")
+    monkeypatch.setattr(risk, "_fetch_prices_sina", boom)
+    monkeypatch.setattr(risk, "_fetch_prices_tencent", boom)
+    import builtins
+    real_import = builtins.__import__
+    def fake_import(name, *a, **kw):
+        if name == "akshare":
+            raise ImportError("blocked for test")
+        return real_import(name, *a, **kw)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    prices, src = risk.fetch_prices_for_codes(["600000"])
+    assert src == "none"
+    assert prices == {}
+
+
+def test_fetch_prices_for_codes_sina_success(monkeypatch):
+    """sina 拿到数据 → 直接返回，不再走 tencent/akshare。"""
+    def sina_ok(codes):
+        return {c: 10.0 for c in codes}
+    def tencent_panic(*a, **kw):
+        raise AssertionError("tencent 不应被调用")
+    monkeypatch.setattr(risk, "_fetch_prices_sina", sina_ok)
+    monkeypatch.setattr(risk, "_fetch_prices_tencent", tencent_panic)
+    prices, src = risk.fetch_prices_for_codes(["600000", "000001"])
+    assert src == "sina"
+    assert prices == {"600000": 10.0, "000001": 10.0}
+
+
+def test_fetch_prices_for_codes_sina_fail_tencent_ok(monkeypatch):
+    monkeypatch.setattr(risk, "_fetch_prices_sina",
+                        lambda c: (_ for _ in ()).throw(RuntimeError("sina down")))
+    monkeypatch.setattr(risk, "_fetch_prices_tencent",
+                        lambda c: {x: 20.0 for x in c})
+    prices, src = risk.fetch_prices_for_codes(["600000"])
+    assert src == "tencent"
+    assert prices == {"600000": 20.0}
+
+
 def test_load_risk_config_missing(tmp_path, monkeypatch, capsys):
     """配置缺失时返回默认值并 stderr warning。"""
     monkeypatch.setattr(risk, "CONFIG_FILE", tmp_path / "nope.yaml")

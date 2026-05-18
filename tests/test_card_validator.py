@@ -149,6 +149,78 @@ def test_summary_count_exact():
     assert ok2
 
 
+def test_future_tense_lianban_not_flagged():
+    """'001259 6 板能否 7 板' — '7 板'是预测，不应当作事实断言。
+
+    5/18 事故：盘后卡片里"6 板能否 7 板""断 5 板""跨级 4 板"被全部抓成 lianban_mismatch。
+    """
+    card = "001259 利仁科技 6 板能否 7 板，封死则带动情绪；断 5 板则梯队彻底崩"
+    allowed = {
+        "codes": {"001259": "利仁科技"},
+        "lianban": {"001259": 6},
+    }
+    ok, v = validate_card(card, allowed)
+    # 应通过：'6 板'命中真值，'7 板'是预测，'5 板'前有'断'
+    lianban_violations = [x for x in v if x.kind == "lianban_mismatch"]
+    assert not lianban_violations, f"未来时/差值上下文不应触发 lianban_mismatch: {lianban_violations}"
+
+
+def test_future_tense_pct_not_flagged():
+    """'000988 能否高开 +2%' — '+2%'是预测，不应当作今日涨幅。"""
+    card = "000988 华工科技 明日能否高开 +2% 以上且不破昨收"
+    allowed = {
+        "codes": {"000988": "华工科技"},
+        "pct": {"000988": 10.00},
+    }
+    ok, v = validate_card(card, allowed)
+    pct_violations = [x for x in v if x.kind == "pct_mismatch"]
+    assert not pct_violations, f"未来时上下文不应触发 pct_mismatch: {pct_violations}"
+
+
+def test_news_entity_name_not_flagged():
+    """'鸿博股份子公司英博数科债务逾期' — 新闻里出现的公司不应被当作虚构股名。"""
+    card = "17:23 鸿博股份子公司英博数科债务逾期，公司承担连带责任 → 算力租赁分支利空"
+    allowed = {"codes": {"000988": "华工科技"}}  # 鸿博股份不在
+    ok, v = validate_card(card, allowed, stock_name_dict={
+        "华工科技": "000988", "鸿博股份": "002229",
+    })
+    name_violations = [x for x in v if x.kind == "unknown_name"]
+    assert not name_violations, f"新闻实体不应触发 unknown_name: {name_violations}"
+
+
+def test_lianban_name_anchor_overrides_prior_code():
+    """'... 001259 利仁科技 ... 4 板京能电力孤军' — 应锚到 600578(京能=4板) 而非 001259。"""
+    card = "最高 6 板 001259 利仁科技独苗；🟡 电力：4 板京能电力孤军"
+    allowed = {
+        "codes": {"001259": "利仁科技", "600578": "京能电力"},
+        "lianban": {"001259": 6, "600578": 4},
+    }
+    ok, v = validate_card(card, allowed)
+    assert ok, f"name-anchor 应让 4 板绑到 600578(=4)，不报错: {v}"
+
+
+def test_lianban_aggregate_distribution_skipped():
+    """'4 板只剩 2 只' — 是梯队分布聚合，不应当作单股 4 板事实。"""
+    card = "001259 利仁科技 6 板独苗；4 板只剩 2 只；中间 5 板真空"
+    allowed = {
+        "codes": {"001259": "利仁科技"},
+        "lianban": {"001259": 6},
+    }
+    ok, v = validate_card(card, allowed)
+    assert ok, f"聚合分布表述不应触发: {v}"
+
+
+def test_data_source_vendor_name_not_flagged():
+    """'同花顺 reason 标签' — 数据源名同名个股(300033)，不应被当作虚构。"""
+    card = "同花顺 reason 标签商业航天 10 次居首"
+    allowed = {"codes": {"000988": "华工科技"}}
+    ok, v = validate_card(card, allowed, stock_name_dict={
+        "华工科技": "000988", "同花顺": "300033",
+    })
+    name_violations = [x for x in v if x.kind == "unknown_name"]
+    assert not name_violations
+
+
 def test_unknown_code_in_holding_section():
     """卡里出现 ALLOWED 外的代码 → 抓住。"""
     card = "🎯 持仓：601991 大唐发电 6 连板 +10%"

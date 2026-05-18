@@ -25,7 +25,26 @@ _COMMON_NON_STOCK_WORDS = frozenset({
     "申万一级", "申万二级", "中信一级",
     "市场情绪", "市场怎么走", "题材延续", "高度梯队", "外围利空",
     "今日空仓", "明早竞价", "明日预案",
+    # 数据源/平台名（同名个股存在，但卡片绝大多数为数据源指代）
+    "同花顺", "东方财富", "财联社", "韭研公社",
 })
+
+# 未来时/预测/条件/差值上下文关键词。出现在 N 板 / N% 之前时不当作事实断言。
+# 5/18 事故：'明日能否 7 板'、'高开 +2%'、'断 5 板' 全被当作连板/涨幅事实
+_PREDICTION_PREFIX_RE = re.compile(
+    r"(能否|是否|若|如果|假设|明日|明早|次日|隔日|盯|看|守|破|冲击|挑战|"
+    r"超过|低于|不破|再现|再上|跨|断|跳|中间|真空|梯队|出现首只?|首只?|"
+    r"高开|低开|预计|或|大致|约|偏离|目标|至少|至多)"
+)
+
+# 新闻实体上下文关键词。出现在股名 ±50 字内时跳过 unknown_name 校验
+# （新闻里提及公司不等于该股是今日操作标的，不应被当作"未在 ALLOWED 中的虚构"）
+_NEWS_CONTEXT_RE = re.compile(
+    r"(复牌|逾期|重组|收购|中标|签约|订单|控股|子公司|连带责任|撤销|退市|"
+    r"质押|减持|解禁|股权|公告|披露|连带|担保|裁员|分红|配股|增发|回购|"
+    r"诉讼|被罚|立案|调查|警示|交付|签约|获批|获奖|入选|涉嫌|财报|"
+    r"营收|净利|Q[1-4]|半年报|年报|一季报|三季报|业绩预告|业绩快报)"
+)
 
 _CODE_RE = re.compile(r"(?<![\d.])\b(\d{6})\b(?!\.\d)")  # 6 位数字，前后非小数点上下文
 _PCT_RE = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*%")
@@ -152,22 +171,60 @@ def validate_card(
             if name in allowed_names:
                 continue
             idx = text.index(name)
-            ctx = text[max(0, idx - 30):idx + len(name) + 30]
+            ctx = text[max(0, idx - 50):idx + len(name) + 50]
+            # 跳过新闻实体引用（公司在快讯里出现，不是今日操作标的）
+            if _NEWS_CONTEXT_RE.search(ctx):
+                continue
             violations.append(Violation(
                 kind="unknown_name", target=name,
                 expected=f"未在 ALLOWED.codes 中（对应代码 {code}）", detail=ctx,
             ))
 
-    # 规则 3：连板数对齐（"N 板"绑定到前向最近的 code）
+    # 规则 3：连板数对齐（"N 板"优先绑定后向名字，回退到前向最近 code）
     lianban_map: dict[str, int] = {str(k): int(v) for k, v in (allowed.get("lianban") or {}).items()}
-    for code, raw_val, pos in _associate_tokens_with_codes(
-            text, _LIANBAN_RE, set(allowed_codes.keys())):
+    name_to_code: dict[str, str] = {n: c for c, n in allowed_codes.items()}
+    for m in _LIANBAN_RE.finditer(text):
+        pos = m.start()
         try:
-            got = int(raw_val)
+            got = int(m.group(1))
         except ValueError:
             continue
+        # 跳过未来时/差值/条件上下文（'能否 7 板'/'断 5 板'/'若再现 N 板'）
+        ctx_pre = text[max(0, pos - 30):pos]
+        if _PREDICTION_PREFIX_RE.search(ctx_pre):
+            continue
+        # 跳过聚合/分布上下文（'4 板只剩 2 只'/'连板分布：3 板 1 只'）
+        ctx_post = text[m.end():m.end() + 12]
+        if re.search(r"(只剩|还剩|还有|分布|梯队|真空|中间|共有|总计|\d+\s*只)", ctx_post):
+            continue
+        # 优先：N 板 之后 6 字内若紧跟 ALLOWED 中股名，用该股名锚定（'4 板京能电力'）
+        code = None
+        post_window = text[m.end():m.end() + 8]
+        for nm, c in name_to_code.items():
+            if nm and post_window.startswith(nm[:2]) and nm in text[m.end():m.end() + 8 + len(nm)]:
+                code = c
+                break
+        # 回退：前向最近 code（距离 ≤ 60，且中间无其他 code）
+        if code is None:
+            code_positions = [(mm.start(), mm.group(1)) for mm in _CODE_RE.finditer(text)
+                              if mm.group(1) in allowed_codes]
+            best = None
+            best_dist = 61
+            for cpos, c in code_positions:
+                if cpos >= pos:
+                    continue
+                d = pos - cpos
+                if d < best_dist:
+                    best = (c, cpos)
+                    best_dist = d
+            if best is None:
+                continue
+            code, cpos = best
+            between = [c for cp, c in code_positions if cpos < cp < pos]
+            if between:
+                continue
         if code not in lianban_map:
-            continue  # 该 code 不在连板表里（非涨停股），跳过
+            continue
         if got != lianban_map[code]:
             ctx = text[max(0, pos - 40):pos + 40]
             violations.append(Violation(
@@ -188,6 +245,9 @@ def validate_card(
         # 排除买点/止损/封单等不是当日涨跌幅的 % 上下文
         ctx_pre = text[max(0, pos - 30):pos]
         if re.search(r"(买点|止损|止盈|封单|换手|量比|占|权重|目标)", ctx_pre):
+            continue
+        # 跳过未来时/预测上下文（'高开 +2%'/'能否 ±N%'/'若再涨 N%'）
+        if _PREDICTION_PREFIX_RE.search(ctx_pre):
             continue
         if abs(got - pct_map[code]) > PCT_TOLERANCE:
             ctx = text[max(0, pos - 40):pos + 40]

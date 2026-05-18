@@ -91,6 +91,8 @@ L4 盘后复盘。**两个核心职责**：
 
 若 review.py 报"未找到今日 premarket 推送"或"解析出 0 只"，回退手动：先 `sqlite3 data/daily.db "SELECT text FROM push_log WHERE source='stock-premarket' ORDER BY id DESC LIMIT 1"` 看推送，再用 akshare `stock_zh_a_spot_em()` 手查代码。回退后必须把失败样本贴给开发者改正则。
 
+> ⚠️ push_log 表的时间列是 `timestamp` ISO 8601 字符串（**不是** `ts` / `created_at`）；若想按今日过滤用 `WHERE date(timestamp)='YYYY-MM-DD'`，而不是 `date(ts,'localtime')` —— 后者直接报错。schema 完整字段见 `code/init_db.sql` 或 `.schema push_log`。
+
 ## Step 2.5 · 当日 + 晚间消息扫描
 
 **继承 [[feedback-news-awareness]]**：题材延续判断不能纯凭涨停/龙虎榜数据，必须叠加消息面。盘后这步覆盖两个窗口：

@@ -133,7 +133,11 @@ def make_price_fn_from_df(df) -> Callable[[str], float | None]:
 
 
 def fetch_spot_price_fn() -> Callable[[str], float | None]:
-    """拉一次全市场实时价，返回 price_fn。失败返回 always-None 函数。"""
+    """拉一次全市场实时价，返回 price_fn。失败返回 always-None 函数。
+
+    仅用于需要全市场快照的场景（如盘前扫板）；持仓盘点请用
+    fetch_prices_for_codes()，它只查目标 codes 且不依赖代理。
+    """
     try:
         import akshare as ak  # type: ignore
         df = ak.stock_zh_a_spot_em()
@@ -141,3 +145,110 @@ def fetch_spot_price_fn() -> Callable[[str], float | None]:
     except Exception as e:
         print(f"[risk] stock_zh_a_spot_em 失败: {e}，全部走 cost 兜底", file=sys.stderr)
         return lambda c: None
+
+
+def _code_with_market_prefix(code: str) -> str:
+    """000001 → sz000001 / 600000 → sh600000 / 688xxx → sh688xxx / 8/4 → bj"""
+    c = str(code).zfill(6)
+    if c.startswith(("60", "68", "90", "11", "13", "5")):
+        return f"sh{c}"
+    if c.startswith(("00", "30", "20", "15", "16", "18")):
+        return f"sz{c}"
+    if c.startswith(("8", "4", "92")):
+        return f"bj{c}"
+    return f"sh{c}"  # 兜底
+
+
+def _fetch_prices_sina(codes: list[str]) -> dict[str, float]:
+    """新浪行情：hq.sinajs.cn/list=sh600000,sz000001
+    返回 {code: price}。失败/缺失抛异常或返回部分字典。
+    """
+    import requests
+    if not codes:
+        return {}
+    syms = ",".join(_code_with_market_prefix(c) for c in codes)
+    url = f"https://hq.sinajs.cn/list={syms}"
+    headers = {"Referer": "https://finance.sina.com.cn"}
+    r = requests.get(url, headers=headers, timeout=6)
+    r.encoding = "gbk"
+    out: dict[str, float] = {}
+    for line in r.text.splitlines():
+        # var hq_str_sh600000="浦发银行,15.20,15.10,15.30,..."
+        if "=\"" not in line or "\"" not in line:
+            continue
+        head, _, rest = line.partition("=\"")
+        sym = head.rsplit("_", 1)[-1]
+        code = sym[2:] if sym[:2] in ("sh", "sz", "bj") else sym
+        fields = rest.strip("\";").split(",")
+        if len(fields) < 4:
+            continue
+        try:
+            price = float(fields[3])  # 当前价（盘后为收盘价）
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            out[code] = price
+    return out
+
+
+def _fetch_prices_tencent(codes: list[str]) -> dict[str, float]:
+    """腾讯行情：qt.gtimg.cn/q=sh600000,sz000001
+    返回 {code: price}。失败/缺失抛异常或返回部分字典。
+    """
+    import requests
+    if not codes:
+        return {}
+    syms = ",".join(_code_with_market_prefix(c) for c in codes)
+    url = f"https://qt.gtimg.cn/q={syms}"
+    r = requests.get(url, timeout=6)
+    r.encoding = "gbk"
+    out: dict[str, float] = {}
+    for line in r.text.splitlines():
+        # v_sh600000="1~浦发银行~600000~15.20~..."
+        if "=\"" not in line:
+            continue
+        head, _, rest = line.partition("=\"")
+        sym = head.lstrip("v_").strip()
+        code = sym[2:] if sym[:2] in ("sh", "sz", "bj") else sym
+        fields = rest.strip("\";").split("~")
+        if len(fields) < 4:
+            continue
+        try:
+            price = float(fields[3])
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            out[code] = price
+    return out
+
+
+def fetch_prices_for_codes(codes: list[str]) -> tuple[dict[str, float], str]:
+    """按需查特定 code 列表的实时价。
+
+    返回 (prices, source)。source 取值：
+      - "sina" / "tencent" / "akshare" — 至少拿到一条
+      - "none" — 所有源都失败 → 调用方应跳过判定而非 cost 兜底
+
+    源优先级：sina（直连不走代理） → tencent（直连备用） → akshare（最后兜底）。
+    """
+    codes = [str(c).zfill(6) for c in codes if c]
+    if not codes:
+        return {}, "none"
+    for name, fn in (("sina", _fetch_prices_sina), ("tencent", _fetch_prices_tencent)):
+        try:
+            prices = fn(codes)
+            if prices:
+                return prices, name
+        except Exception as e:
+            print(f"[risk] {name} 行情失败: {e}", file=sys.stderr)
+    # 最后兜底 akshare（可能被代理拦）
+    try:
+        import akshare as ak  # type: ignore
+        df = ak.stock_zh_a_spot_em()
+        full = make_price_fn_from_df(df)
+        prices = {c: full(c) for c in codes if full(c) is not None}
+        if prices:
+            return prices, "akshare"
+    except Exception as e:
+        print(f"[risk] akshare 兜底失败: {e}", file=sys.stderr)
+    return {}, "none"

@@ -225,11 +225,144 @@ def _float(x):
 
 
 # ============================================================
+# 高度梯队断层判定（5/18 教训：梯队断层是次日加速失败的领先指标）
+# ============================================================
+
+def compute_ladder_gap(zt: pd.DataFrame) -> dict:
+    """判断连板梯队是否断层。
+
+    断层定义：≥2 板梯队中存在跨级（如 6→4 跳过 5），最大跨级 ≥ 2。
+
+    返回 {ladder_gap, max_gap_size, missing_steps, top_consec_dist}。
+    """
+    if zt is None or zt.empty or "连板数" not in zt.columns:
+        return {"ladder_gap": False, "max_gap_size": 0, "missing_steps": [],
+                "top_consec_dist": {}}
+    dist = zt["连板数"].value_counts().to_dict()
+    levels = sorted(int(k) for k in dist if int(k) >= 2)
+    if len(levels) < 2:
+        return {"ladder_gap": False, "max_gap_size": 0, "missing_steps": [],
+                "top_consec_dist": {str(k): int(v) for k, v in dist.items()}}
+    max_gap = 0
+    missing: list[int] = []
+    for a, b in zip(levels, levels[1:]):
+        gap = b - a
+        if gap > max_gap:
+            max_gap = gap
+        if gap > 1:
+            missing.extend(range(a + 1, b))
+    return {
+        "ladder_gap": max_gap >= 2,
+        "max_gap_size": int(max_gap),
+        "missing_steps": missing,
+        "top_consec_dist": {str(k): int(v) for k, v in dist.items()},
+    }
+
+
+# ============================================================
+# 隔夜外围（盘后写卡时最关心：美股收盘 + 期指夜盘 + 大宗/汇率）
+# ============================================================
+
+def fetch_global_markets() -> dict:
+    """从新浪 hq.sinajs.cn 抓隔夜外围一组数据。
+
+    源稳定不走代理；任一失败返回空 {}（卡片只写"未抓到"，不阻塞 L4）。
+
+    返回字段（pct 已转 % 数值）：
+      us_dji / us_ixic / us_spx        # 三大指数（昨夜收盘）
+      futures_nq / futures_es           # 纳指/标普期指（夜盘实时）
+      cmd_oil / cmd_gold                # WTI 原油 / 黄金期货
+      fx_usdcnh                         # 美元/离岸人民币
+    """
+    import requests
+    syms = "gb_$dji,gb_$ixic,gb_$inx,hf_NQ,hf_ES,hf_CL,hf_GC,fx_susdcnh"
+    try:
+        r = requests.get(
+            f"https://hq.sinajs.cn/list={syms}",
+            headers={"Referer": "https://finance.sina.com.cn"},
+            timeout=6,
+        )
+        r.encoding = "gbk"
+        text = r.text
+    except Exception as e:
+        log(f"global_markets 抓取失败: {e}")
+        return {}
+
+    # 新浪不同前缀字段位不同，分别解析
+    def _parse_line(line: str) -> tuple[str, list[str]] | None:
+        if "=\"" not in line:
+            return None
+        head, _, rest = line.partition("=\"")
+        sym = head.rsplit("_", 1)[-1].lstrip("$").lower()
+        fields = rest.strip("\";").split(",")
+        return sym, fields
+
+    out: dict[str, dict] = {}
+    label_map = {
+        "dji": ("us_dji", "DJI 道指"),
+        "ixic": ("us_ixic", "纳指"),
+        "inx": ("us_spx", "标普 500"),
+        "nq": ("futures_nq", "纳指期指"),
+        "es": ("futures_es", "标普期指"),
+        "cl": ("cmd_oil", "WTI 原油"),
+        "gc": ("cmd_gold", "黄金期货"),
+        "susdcnh": ("fx_usdcnh", "美元/离岸人民币"),
+    }
+    for line in text.splitlines():
+        parsed = _parse_line(line)
+        if not parsed:
+            continue
+        sym, fields = parsed
+        if sym not in label_map:
+            continue
+        key, label = label_map[sym]
+        # gb_/hf_/fx_ 字段排布差异较大；用兜底：试取 price + change_pct
+        price = chg_pct = None
+        # gb_ : name, price, change, change_pct, ...
+        # hf_ : price, ..., pct?  ← 不稳定，按常见位置兜底试
+        # 优先策略：找两个 float-able 字段
+        floats = []
+        for f in fields:
+            try:
+                floats.append(float(f))
+            except (TypeError, ValueError):
+                continue
+        if not floats:
+            continue
+        if sym in ("dji", "ixic", "inx"):
+            # gb_ schema: [name, price, change_abs, change_pct, ...]
+            try:
+                price = float(fields[1]); chg_pct = float(fields[2])
+            except (IndexError, ValueError):
+                price = floats[0]
+        elif sym in ("nq", "es", "cl", "gc"):
+            # hf_ schema 大致：[bid, ask, ..., last, ..., open, high, low, prev_close]
+            # 用 last + prev_close 算 pct
+            try:
+                last = float(fields[3]); prev = float(fields[7]) if len(fields) > 7 else 0
+                price = last
+                if prev > 0:
+                    chg_pct = round((last - prev) / prev * 100, 2)
+            except (IndexError, ValueError):
+                price = floats[0]
+        elif sym == "susdcnh":
+            # fx_ schema: [time, bid, ask, ..., last]
+            try:
+                price = float(fields[1])
+            except (IndexError, ValueError):
+                price = floats[0]
+        out[key] = {"label": label, "price": price, "chg_pct": chg_pct}
+    return out
+
+
+# ============================================================
 # 渲染盘后 fact pack
 # ============================================================
 
 def render_pack(date: str, sent: dict, zt: pd.DataFrame, zd: pd.DataFrame,
-                zb: pd.DataFrame, hot: pd.DataFrame, lhb: dict) -> str:
+                zb: pd.DataFrame, hot: pd.DataFrame, lhb: dict,
+                ladder: dict | None = None,
+                global_markets: dict | None = None) -> str:
     iso = sent["date"]
     lines = [f"# 盘后 fact pack · {iso}", ""]
 
@@ -248,6 +381,10 @@ def render_pack(date: str, sent: dict, zt: pd.DataFrame, zd: pd.DataFrame,
         dist = "  ".join(f"{n}板 {c}只" for n, c
                          in zt["连板数"].value_counts().sort_index().items())
         lines.append(f"- 连板分布：{dist}")
+        if ladder and ladder.get("ladder_gap"):
+            miss = ladder.get("missing_steps") or []
+            miss_str = "/".join(str(x) + "板" for x in miss) or "—"
+            lines.append(f"- ⚠️ **梯队断层**：跨级 {ladder.get('max_gap_size', 0)} 板 · 缺位 {miss_str}")
         top = zt.sort_values("连板数", ascending=False).head(10)
         for _, r in top.iterrows():
             seal = r.get("封板资金", 0) / 1e8
@@ -311,6 +448,24 @@ def render_pack(date: str, sent: dict, zt: pd.DataFrame, zd: pd.DataFrame,
                          f"| {r['max_consec']} | {r['promotion_rate'] or '-'} "
                          f"| {r['blast_rate'] or '-'} | {r['phase']} |")
     lines.append("")
+    lines.append("## 七、隔夜外围")
+    lines.append("")
+    gm = global_markets or {}
+    if not gm:
+        lines.append("- 抓取失败或暂无数据")
+    else:
+        order = ["us_dji", "us_ixic", "us_spx", "futures_nq", "futures_es",
+                 "cmd_oil", "cmd_gold", "fx_usdcnh"]
+        for k in order:
+            v = gm.get(k)
+            if not v:
+                continue
+            price = v.get("price")
+            chg = v.get("chg_pct")
+            chg_str = f" ({chg:+.2f}%)" if chg is not None else ""
+            price_str = f"{price:.2f}" if price is not None else "?"
+            lines.append(f"- {v.get('label', k)}：{price_str}{chg_str}")
+    lines.append("")
     lines.append("---")
     lines.append(f"_生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}_")
     return "\n".join(lines)
@@ -321,7 +476,9 @@ def render_pack(date: str, sent: dict, zt: pd.DataFrame, zd: pd.DataFrame,
 # ============================================================
 
 def build_allowed(*, iso: str, sent: dict, zt: pd.DataFrame, zd: pd.DataFrame,
-                  zb: pd.DataFrame, hot: pd.DataFrame, lhb: dict) -> dict:
+                  zb: pd.DataFrame, hot: pd.DataFrame, lhb: dict,
+                  ladder: dict | None = None,
+                  global_markets: dict | None = None) -> dict:
     codes: dict[str, str] = {}
     lianban: dict[str, int] = {}
     pct: dict[str, float] = {}
@@ -367,6 +524,7 @@ def build_allowed(*, iso: str, sent: dict, zt: pd.DataFrame, zd: pd.DataFrame,
         if code and len(code) == 6:
             codes[code] = name or codes.get(code, name)
 
+    ladder = ladder or {}
     summary = {
         "date": iso,
         "limit_up": int(sent.get("limit_up_count") or 0),
@@ -374,6 +532,9 @@ def build_allowed(*, iso: str, sent: dict, zt: pd.DataFrame, zd: pd.DataFrame,
         "broken": int(len(zb)) if zb is not None and not zb.empty else 0,
         "max_consec": int(sent.get("max_consec") or 0),
         "phase": str(sent.get("phase") or ""),
+        "ladder_gap": bool(ladder.get("ladder_gap", False)),
+        "ladder_max_gap_size": int(ladder.get("max_gap_size", 0)),
+        "ladder_missing_steps": list(ladder.get("missing_steps", [])),
     }
 
     return {
@@ -386,7 +547,7 @@ def build_allowed(*, iso: str, sent: dict, zt: pd.DataFrame, zd: pd.DataFrame,
         "summary": summary,
         "concepts": concepts[:30],
         "news": [],
-        "global_markets": {},
+        "global_markets": global_markets or {},
     }
 
 
@@ -431,11 +592,18 @@ def main():
         except Exception as e:
             log(f"龙虎榜失败: {e}")
 
+    # 梯队断层 + 隔夜外围（5/18 加入）
+    ladder = compute_ladder_gap(zt)
+    log(f"ladder_gap={ladder['ladder_gap']} max_gap={ladder['max_gap_size']}")
+    global_markets = fetch_global_markets()
+    log(f"global_markets {len(global_markets)} 项")
+
     if not args.dry:
         upsert_sentiment(sent)
         upsert_ths_hot(iso, hot)
 
-    pack = render_pack(date, sent, zt, zd, zb, hot, lhb)
+    pack = render_pack(date, sent, zt, zd, zb, hot, lhb,
+                       ladder=ladder, global_markets=global_markets)
     out = OUT_DIR / f"{date}_postmarket.md"
     out.write_text(pack, encoding="utf-8")
     log(f"已写 {out}")
@@ -443,7 +611,8 @@ def main():
 
     # ALLOWED 段：卡片校验事实源
     import json as _json
-    allowed = build_allowed(iso=iso, sent=sent, zt=zt, zd=zd, zb=zb, hot=hot, lhb=lhb)
+    allowed = build_allowed(iso=iso, sent=sent, zt=zt, zd=zd, zb=zb, hot=hot, lhb=lhb,
+                            ladder=ladder, global_markets=global_markets)
     print("\n=== ALLOWED ===")
     print(_json.dumps(allowed, ensure_ascii=False, indent=2))
     print("=== /ALLOWED ===")
