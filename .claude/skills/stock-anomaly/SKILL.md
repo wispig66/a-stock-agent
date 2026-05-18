@@ -20,16 +20,35 @@ metadata:
 - 用户喊："看看现在场内有什么异动" / "新主线候选" / "哪个方向在冒头"
 - 盘中任意时段（非固定时点）；若 anomaly_loop 没在跑，先提示用户启动 `bash code/run_anomaly_loop.sh`
 
-## Step 1 · 拉最近 30 分钟 anomaly_loop 推送
+# 输出契约（最重要，违反 = 整体失败）
+
+**所有数据必须有来源支撑**（[[feedback-data-must-be-sourced]]）。
+
+Step 1 `build_fact_pack.py` 末尾输出 `=== ALLOWED === { ... } === /ALLOWED ===` JSON，是该次卡片**唯一允许引用的事实**：
+
+- 6 位股票代码 → 必须在 `ALLOWED.codes` keys
+- 中文股票名（stock_basic 5200 条匹配）→ 必须在 `ALLOWED.codes` values
+- 题材名 → 应在 `ALLOWED.concepts`（v1 不强校验，但写卡时优先用此清单）
+- 异动总数 / 类型分布 → 来自 `ALLOWED.summary.type_counts`
+
+**禁止**：从印象里编不在 anomaly 推送 / ths_hot_reason 里的股票。Step 4 卡片的"龙头"、"代表股"必须从 ALLOWED.codes 中挑。
+
+推送脚本 `push.py`（替代了旧的 `code/notify.py` 直推路径）自动跑校验器。**写卡前对照 ALLOWED 一遍**。
+
+最终 assistant 消息必须是卡片本身；不要"任务完成/已推送"。
+
+## Step 1 · 拉最近 30 分钟异动 + 题材数据（一个命令）
 
 ```bash
-sqlite3 data/daily.db "SELECT timestamp, text FROM push_log
-  WHERE source='stock-anomaly'
-    AND datetime(timestamp) >= datetime('now', 'localtime', '-30 minutes')
-  ORDER BY id ASC;"
+.venv/bin/python .claude/skills/stock-anomaly/scripts/build_fact_pack.py --window-min 30
 ```
 
-若返回 0 条：先问用户 anomaly_loop 是否在跑（`pgrep -f anomaly_loop`），未跑则提示 `bash code/run_anomaly_loop.sh` 启动后再重跑。
+stdout 包含：
+- 一、最近 N 分钟 anomaly_loop 推送清单
+- 二、ths_hot_reason 最新一天（同花顺 reason tag）
+- 三、`=== ALLOWED === ... === /ALLOWED ===` JSON（**唯一允许引用的事实**）
+
+若"一"返回 0 条：先问用户 anomaly_loop 是否在跑（`pgrep -f anomaly_loop`），未跑则提示 `bash code/run_anomaly_loop.sh` 启动后再重跑。
 
 ## Step 2 · 聚类成结构化清单
 
@@ -44,11 +63,7 @@ sqlite3 data/daily.db "SELECT timestamp, text FROM push_log
 
 **3a · 本地：同花顺 reason tag 交叉验证**（零网络成本，先做）
 
-```bash
-sqlite3 data/daily.db "SELECT name, code, reason FROM ths_hot_reason
-  WHERE date = (SELECT max(date) FROM ths_hot_reason)
-  ORDER BY change_pct DESC LIMIT 30;"
-```
+Step 1 build_fact_pack 已拉同花顺 reason tag（Step 1 输出的"二、ths_hot_reason 最新"段）。**不要再单独跑 SQL**——直接用 Step 1 的数据。
 
 把异动聚类出的 Top 3 题材去匹配 reason tag：命中的标 🔥（reason 驱动验证），未命中的标 🆕（纯异动冒头、无 D-1 验证、降一档信号强度）。
 
@@ -126,8 +141,13 @@ L1 SKILL.md Step 1 已被改为：若 `data/anomaly_findings/<前一交易日>.m
 **5b · Telegram 推送**
 
 ```bash
-uv run code/notify.py --source stock-anomaly-summary < /tmp/anomaly_card.md
+.venv/bin/python .claude/skills/stock-premarket/scripts/push.py \
+    --file data/anomaly_findings/YYYYMMDD.md --source stock-anomaly-summary
 ```
+
+`push.py` 会自动跑 card_validator（对照 `data/allowed_latest_stock-anomaly.json`）；
+warn 模式留审计日志，enforce 模式拒推。
+**不要**用 `code/notify.py` 直推（绕过校验）。
 
 ## 纪律
 
