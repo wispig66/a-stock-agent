@@ -1,0 +1,161 @@
+"""theme_emergence_loop 核心逻辑 smoke test。
+
+不打 akshare、不读真实 DB（除 load_whitelist 会读 daily.db 的 ths_hot_reason）。
+"""
+from __future__ import annotations
+import sqlite3
+import sys
+from datetime import datetime
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "code"))
+
+from theme_emergence_loop import (  # noqa: E402
+    PageHinkley, Whitelist, map_to_concept, pick_candidates,
+    load_whitelist, _norm_seal_time,
+)
+
+
+# ─── PageHinkley ───
+def test_ph_detects_burst():
+    """空窗 30 tick 后突然连续 10 tick 每 tick 5 个事件 → 应触发 drift。"""
+    ph = PageHinkley(lamb=10, delta=0.05, min_samples=20)
+    for _ in range(30):
+        ph.update(0.0)
+    assert not ph.drift_detected, "空窗期不应触发"
+    triggered_at = None
+    for i in range(10):
+        ph.update(5.0)
+        if ph.drift_detected and triggered_at is None:
+            triggered_at = i
+    assert triggered_at is not None
+    assert triggered_at < 5
+
+
+def test_ph_no_false_positive_on_noise():
+    ph = PageHinkley(lamb=10, delta=0.05, min_samples=20)
+    import random
+    random.seed(42)
+    triggered = False
+    for _ in range(500):
+        x = 1.0 if random.random() < 0.10 else 0.0
+        ph.update(x)
+        if ph.drift_detected:
+            triggered = True
+    assert not triggered
+
+
+def test_ph_state_restore_uses_x_mean():
+    """x_mean 必须恢复，否则 update 增量公式会误差大。"""
+    ph1 = PageHinkley(lamb=10, delta=0.05, min_samples=20)
+    for _ in range(100):
+        ph1.update(2.0)
+    s = ph1.snapshot()
+    assert s["x_mean"] > 1.9  # 均值应接近 2
+
+    ph2 = PageHinkley(lamb=10, delta=0.05, min_samples=20)
+    ph2.restore(s)
+    assert abs(ph2.x_mean - s["x_mean"]) < 1e-9
+
+
+# ─── _norm_seal_time（P0-2 回归） ───
+def test_norm_seal_time_hhmmss_format():
+    assert _norm_seal_time("092500") == "09:25:00"
+    assert _norm_seal_time("103015") == "10:30:15"
+
+
+def test_norm_seal_time_already_normalized_passthrough():
+    assert _norm_seal_time("09:25:00") == "09:25:00"
+
+
+def test_norm_seal_time_empty():
+    assert _norm_seal_time("") == ""
+    assert _norm_seal_time(None) == ""
+
+
+def test_norm_seal_time_datetime_object():
+    """akshare 偶尔返回 datetime.time"""
+    from datetime import time as dtime
+    assert _norm_seal_time(dtime(9, 25, 0)) == "09:25:00"
+
+
+# ─── Concept whitelist ───
+def test_whitelist_member_first():
+    wl = load_whitelist()
+    assert map_to_concept("301666", "大普微", "", wl) == "存储芯片"
+
+
+def test_whitelist_keyword_fallback_on_name():
+    wl = load_whitelist()
+    tag = map_to_concept("999999", "未知人形机器人公司", "", wl)
+    assert tag == "人形机器人"
+
+
+def test_whitelist_no_match_returns_none():
+    wl = load_whitelist()
+    assert map_to_concept("999999", "完全无关名字", "无关概念", wl) is None
+
+
+def test_whitelist_uses_concept_cache():
+    """code 不在 members 也不在 name 关键词，但在 concept_cache 里能匹配"""
+    # 手工构造 cache
+    wl = Whitelist(themes={"存储芯片": {"keywords": ["存储", "HBM"]}},
+                   code_idx={}, kw_idx=[("存储", "存储芯片"), ("HBM", "存储芯片")],
+                   concept_cache={"301379": "高带宽存储 HBM 概念"})
+    # name 里没有关键词，但 cache 命中
+    assert map_to_concept("301379", "天山电子", "", wl) == "存储芯片"
+
+
+# ─── pick_candidates 决策树 ───
+def test_pick_candidates_before_1030_leader_is_A_派():
+    signals = {
+        "first_leader": {"code": "301666", "name": "大普微",
+                         "limit_up_count": 1, "open_count": 0},
+        "members": [
+            {"code": "301666", "name": "大普微",
+             "limit_up_count": 1, "open_count": 0},
+            {"code": "301308", "name": "江波龙",
+             "limit_up_count": 1, "open_count": 0},
+        ],
+    }
+    now = datetime(2026, 5, 18, 10, 15)
+    cands = pick_candidates("2026-05-18", "存储芯片", signals, now)
+    assert len(cands) >= 1
+    leader = next(c for c in cands if c["role"] == "leader")
+    assert leader["discipline_type"] == "A"
+    assert leader["action_window"] == "before_1030"
+
+
+def test_pick_candidates_after_1400_returns_empty():
+    """P2-4：≥14:00 不追新主线（追高风险大）"""
+    signals = {
+        "first_leader": {"code": "301666", "name": "大普微",
+                         "limit_up_count": 1, "open_count": 0},
+        "members": [
+            {"code": "301666", "name": "大普微",
+             "limit_up_count": 1, "open_count": 0},
+            {"code": "301308", "name": "江波龙",
+             "limit_up_count": 1, "open_count": 0},
+        ],
+    }
+    now = datetime(2026, 5, 18, 14, 30)
+    cands = pick_candidates("2026-05-18", "存储芯片", signals, now)
+    assert cands == [], "after_1400 应返回空列表，不追新主线"
+
+
+def test_pick_candidates_excludes_blown_followers():
+    signals = {
+        "first_leader": {"code": "301666", "name": "大普微",
+                         "limit_up_count": 1, "open_count": 0},
+        "members": [
+            {"code": "301666", "name": "大普微",
+             "limit_up_count": 1, "open_count": 0},
+            {"code": "002074", "name": "国轩高科",
+             "limit_up_count": 1, "open_count": 3},
+        ],
+    }
+    now = datetime(2026, 5, 18, 10, 15)
+    cands = pick_candidates("2026-05-18", "存储芯片", signals, now)
+    codes = [c["code"] for c in cands]
+    assert "002074" not in codes

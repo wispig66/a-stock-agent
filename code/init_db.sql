@@ -170,3 +170,74 @@ CREATE TABLE IF NOT EXISTS stock_basic (
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_basic_board ON stock_basic(board);
+
+
+-- ──────────────────────────────────────────────────────────────
+-- theme_emergence_loop（Layer 1：盘中新主线浮现识别）
+-- ──────────────────────────────────────────────────────────────
+
+-- 主线浮现审计日志（每次 T1/T2 触发都写一条）
+CREATE TABLE IF NOT EXISTS theme_emergence_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    detected_at     TEXT NOT NULL,         -- ISO 8601 触发时间
+    trade_date      TEXT NOT NULL,         -- YYYY-MM-DD
+    concept_tag     TEXT NOT NULL,         -- 一级题材名
+    signal_level    TEXT NOT NULL,         -- T1 / T2
+    signals_hit     TEXT NOT NULL,         -- JSON {"PH":true,"cluster3":true,...}
+    cluster_count   INTEGER,               -- 30min 滑窗内同题材涨停家数
+    first_leader    TEXT,                  -- 首封龙头 code
+    first_seal_time TEXT,                  -- HH:MM:SS
+    ph_value        REAL,                  -- 触发时 PH 数值
+    notes           TEXT,
+    push_msg_id     INTEGER                -- 关联 push_log.id
+);
+CREATE INDEX IF NOT EXISTS idx_tel_date_tag ON theme_emergence_log(trade_date, concept_tag);
+
+-- 动态观察池（Layer 2 intraday/postmarket 读这张）
+CREATE TABLE IF NOT EXISTS watchlist_dynamic (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date      TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    concept_tag     TEXT NOT NULL,
+    code            TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    role            TEXT NOT NULL,         -- leader / follower
+    entry_price     REAL,
+    stop_price      REAL,
+    target_pct      REAL,
+    discipline_type TEXT NOT NULL,         -- A / B / D
+    action_window   TEXT NOT NULL,         -- before_1030 / 1030_1400 / after_1400
+    status          TEXT DEFAULT 'pending',-- pending/triggered/expired/skipped
+    source_emergence_id INTEGER,
+    UNIQUE(trade_date, code, concept_tag)
+);
+CREATE INDEX IF NOT EXISTS idx_wld_date ON watchlist_dynamic(trade_date);
+CREATE INDEX IF NOT EXISTS idx_wld_concept ON watchlist_dynamic(trade_date, concept_tag);
+
+-- 实时涨停池快照（簇集计数 + 首板时间数据源）
+CREATE TABLE IF NOT EXISTS intraday_limit_up_snapshot (
+    snapshot_ts     TEXT NOT NULL,
+    trade_date      TEXT NOT NULL,
+    code            TEXT NOT NULL,
+    name            TEXT,
+    limit_up_count  INTEGER,
+    first_seal_time TEXT,
+    open_count      INTEGER,
+    seal_amount     REAL,
+    concept_top1    TEXT,
+    PRIMARY KEY (snapshot_ts, code)
+);
+CREATE INDEX IF NOT EXISTS idx_ilu_date_concept ON intraday_limit_up_snapshot(trade_date, concept_top1);
+
+-- PH detector 当日状态快照（故障重启恢复用）
+-- x_mean 必须持久化：update() 增量公式 (x - x_mean)/n 重启后用错均值会假触发
+CREATE TABLE IF NOT EXISTS ph_state_snapshot (
+    trade_date      TEXT NOT NULL,
+    concept_tag     TEXT NOT NULL,
+    last_update     TEXT NOT NULL,
+    m_t             REAL,
+    min_m_t         REAL,
+    n_samples       INTEGER,
+    x_mean          REAL DEFAULT 0,
+    PRIMARY KEY (trade_date, concept_tag)
+);
