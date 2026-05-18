@@ -18,8 +18,10 @@ description: 单股深度分析。给定一个 A 股代码（主板/创业板）
 ## Step 1 · 跑 pipeline 拿 fact pack（一个命令）
 
 ```bash
-uv run scripts/stock_query_pipeline.py --code <CODE> --mode <MODE>
+.venv/bin/python scripts/stock_query_pipeline.py --code <CODE> --mode <MODE>
 ```
+
+**只用这条命令**。不要 `which uv` / `command -v uv` / 探路径——`.venv/bin/python` 在项目根目录下永远存在（`scripts/setup.sh` 保证）。失败 → 直接 3d 错误卡。
 
 stdout 是 JSON。预期 3-10 秒返回。字段说明：
 
@@ -139,6 +141,17 @@ stdout 是 JSON。预期 3-10 秒返回。字段说明：
 ```
 ❌ {error_msg}
 ```
+
+# 输出契约（最重要，违反 = 整体失败）
+
+你的**唯一最终 assistant 消息**必须是 Step 3 的卡片内容本身（3a/3b/3c/3d 之一）。
+
+- ✅ 允许：以 `📊` 开头的业务卡，或以 `❌`/`⚠️` 开头的状态卡
+- ❌ 禁止："卡片已输出完毕" / "pipeline 已执行" / "已完成" / "结果如下" 等任何元状态汇报
+- ❌ 禁止：解释你跑了什么命令、用了什么工具、走了什么分支
+- ❌ 禁止：在卡片前/后加任何引导句或总结句
+
+最后一条 assistant 消息**就是**用户在 TG 看到的全部内容。它必须能直接贴进 TG 当成卡片。
 
 # 强约束清单
 
