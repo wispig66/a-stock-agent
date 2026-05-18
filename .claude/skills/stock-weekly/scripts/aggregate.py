@@ -20,6 +20,90 @@ sys.path.insert(0, str(ROOT / "code"))
 
 from lib.weekly_pack import build_weekly_data_pack  # noqa: E402
 
+import sqlite3
+from datetime import datetime as _dt
+
+DB = ROOT / "data" / "daily.db"
+
+
+def _stock_name(code: str) -> str:
+    try:
+        with sqlite3.connect(DB) as conn:
+            row = conn.execute(
+                "SELECT name FROM stock_basic WHERE code=?", (code,)
+            ).fetchone()
+        return row[0] if row else ""
+    except Exception:
+        return ""
+
+
+def build_allowed(pack: dict) -> dict:
+    """聚合周复盘 fact pack 全部允许引用事实。"""
+    codes: dict[str, str] = {}
+    pct: dict[str, float] = {}
+    concepts: list[str] = []
+
+    # top_gainers: week_pct
+    for g in pack.get("top_gainers") or []:
+        code = str(g.get("code") or "")
+        if not code or len(code) != 6:
+            continue
+        codes.setdefault(code, _stock_name(code))
+        try:
+            pct[code] = round(float(g.get("week_pct")), 2)
+        except (TypeError, ValueError):
+            pass
+
+    # ths_hot_reasons: code/name + reason 拆 concepts
+    for r in pack.get("ths_hot_reasons") or []:
+        code = str(r.get("code") or "")
+        name = str(r.get("name") or "")
+        if code and len(code) == 6:
+            codes[code] = name or codes.get(code, name)
+        reason = str(r.get("reason", "") or "").strip()
+        for t in (x.strip() for x in reason.split("+") if x.strip()):
+            if t not in concepts:
+                concepts.append(t)
+
+    # weekly_trades: 用户本人交易
+    for t in pack.get("weekly_trades") or []:
+        code = str(t.get("code") or "")
+        if code and len(code) == 6:
+            codes.setdefault(code, _stock_name(code))
+
+    # 周情绪 series（不直接进卡片数字，但允许引用）
+    summary = {
+        "week_label": pack.get("week_label"),
+        "monday": str(pack.get("monday")),
+        "friday": str(pack.get("friday")),
+        "trading_days": pack.get("trading_days_in_week"),
+        "date": str(pack.get("friday")),  # 用周五日期作 snapshot 日
+    }
+    series = pack.get("sentiment_series") or []
+    if series:
+        try:
+            summary["max_consec_week"] = max(
+                int(s.get("max_consec") or 0) for s in series
+            )
+            summary["max_limit_up_week"] = max(
+                int(s.get("limit_up_count") or 0) for s in series
+            )
+        except Exception:
+            pass
+
+    return {
+        "schema_version": "1",
+        "skill": "stock-weekly",
+        "snapshot_at": _dt.now().replace(microsecond=0).isoformat(),
+        "codes": codes,
+        "lianban": {},  # 周报不用单日连板，全周变化太大
+        "pct": pct,  # 周涨跌幅，容差仍 ±0.5%
+        "summary": summary,
+        "concepts": concepts[:50],
+        "news": [],
+        "global_markets": {},
+    }
+
 
 def render_fact_pack(pack: dict) -> str:
     lines = [
@@ -77,6 +161,15 @@ def main() -> int:
     end = date.fromisoformat(args.end_date) if args.end_date else date.today()
     pack = build_weekly_data_pack(end_date=end)
     print(render_fact_pack(pack))
+
+    # ALLOWED 段
+    allowed = build_allowed(pack)
+    print("\n=== ALLOWED ===")
+    print(json.dumps(allowed, ensure_ascii=False, indent=2))
+    print("=== /ALLOWED ===")
+    out_file = ROOT / "data" / "allowed_latest_stock-weekly.json"
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_text(json.dumps(allowed, ensure_ascii=False, indent=2))
     return 0
 
 

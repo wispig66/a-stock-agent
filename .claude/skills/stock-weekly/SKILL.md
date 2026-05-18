@@ -14,15 +14,34 @@ L7 望远镜层，周维度。**不给买点**（买点交给 L1 周一早上）
 
 # 工作流（5 步）
 
+# 输出契约（最重要，违反 = 整体失败）
+
+**所有数据必须有来源支撑**（[[feedback-data-must-be-sourced]]）。
+
+`aggregate.py` stdout 末尾输出 `=== ALLOWED === { ... } === /ALLOWED ===` JSON，
+是**该次周复盘卡片/长文唯一允许引用的事实清单**：
+
+- 6 位股票代码 → 必须在 `ALLOWED.codes` keys
+- 中文股票名（stock_basic 匹配）→ 必须在 `ALLOWED.codes` values
+- 周涨跌幅 "±X.X%" → 必须在 `ALLOWED.pct[code] ± 0.5%`（来自 top_gainers）
+- "最高 N 板 / 涨停 N 只" → 来自 `ALLOWED.summary.{max_consec_week, max_limit_up_week}`
+- 题材名 → 应在 `ALLOWED.concepts`（v1 不强校验）
+
+**禁止**：从训练数据印象编出本周未出现的股票/题材。Step 2 WebSearch 抓到的新闻条目可以直接引用 URL，但**不能**根据新闻编造个股 X 涨 Y%——任何具体股票/数字必须来自 Step 1 fact pack。
+
+`push.py` 自动跑校验器（warn 模式留日志；enforce 模式拒推）。
+
+最终 assistant 消息必须是卡片/长文本身；不要"任务完成/已生成"等元状态文字。
+
 ## Step 1 · 本地数据聚合
 
 ```bash
-uv run .claude/skills/stock-weekly/scripts/aggregate.py
+.venv/bin/python .claude/skills/stock-weekly/scripts/aggregate.py
 ```
 
-读完整 stdout。这是本周 fact pack（情绪曲线 / 周涨幅榜 / 同花顺题材 / 龙虎榜席位 / 个人交易 / 周内异动日报文件路径 + raw JSON）。
+读完整 stdout。这是本周 fact pack（情绪曲线 / 周涨幅榜 / 同花顺题材 / 龙虎榜席位 / 个人交易 / 周内异动日报文件路径 + raw JSON + ALLOWED）。
 
-raw JSON 末尾包含完整 pack，下游 Step 5 渲染长文时会复用。
+raw JSON 末尾包含完整 pack，下游 Step 5 渲染长文时会复用。ALLOWED 段是事实白名单（见上方"输出契约"）。
 
 ## Step 2 · Web 增量（周末消息）
 
@@ -102,7 +121,14 @@ print(f"WROTE: {out}")
 
 ### 5.2 TG 摘要卡（1500-2500 字）
 
-直接调 `scripts/tg_listener._tg_send`（python -c）或用 `notify.sh` 包装。
+Write 摘要卡到 `data/last_weekly_card.md`，然后用统一 push.py：
+
+```bash
+.venv/bin/python .claude/skills/stock-premarket/scripts/push.py \
+    --file data/last_weekly_card.md --source stock-weekly
+```
+
+`push.py` 会跑 card_validator 对照 `data/allowed_latest_stock-weekly.json`（warn 模式留审计日志，enforce 模式拒推）。**不要**直接调 `code/notify.py` 或 `_tg_send`（绕过校验）。
 
 模板：
 
