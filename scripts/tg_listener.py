@@ -28,6 +28,9 @@ sys.path.insert(0, str(ROOT / "code"))
 from lib import query  # noqa: E402
 from notify import push_md, md_to_tg_html  # noqa: E402
 from db import connect  # noqa: E402
+from logger import get_logger, new_req_id, set_req_id, get_req_id  # noqa: E402
+
+log = get_logger("tg_listener")
 
 def _find_claude_bin() -> str:
     for p in (Path.home() / ".local/bin/claude",
@@ -155,8 +158,8 @@ def push_reply(text: str) -> None:
     """非流式回 TG（拒绝卡 / 错误提示 用）。"""
     try:
         push_md(text, source="stock-query")
-    except Exception as e:
-        print(f"[tg_listener] push 失败: {e}", file=sys.stderr)
+    except Exception:
+        log.exception("push_reply 失败")
 
 
 # ============================================================
@@ -169,6 +172,7 @@ def held_codes() -> set[str]:
     try:
         data = yaml.safe_load(HOLDINGS_FILE.read_text()) or {}
     except Exception:
+        log.exception("holdings.yaml 解析失败")
         return set()
     return {str(h.get("code")).zfill(6) for h in (data.get("holdings") or [])
             if h.get("code")}
@@ -190,10 +194,13 @@ def run_skill_streaming(code: str, mode: str,
            "--include-partial-messages",
            "--verbose"]
 
+    log.info("skill_streaming(query) 启动 code=%s mode=%s timeout=%ss", code, mode, SKILL_TIMEOUT)
+    env = os.environ.copy()
+    env["STOCK_REQ_ID"] = get_req_id()
     proc = subprocess.Popen(
         cmd, cwd=str(ROOT),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, bufsize=1,
+        text=True, bufsize=1, env=env,
     )
     assert proc.stdin and proc.stdout
     proc.stdin.write(prompt)
@@ -207,6 +214,7 @@ def run_skill_streaming(code: str, mode: str,
         for raw in iter(proc.stdout.readline, ""):
             if time.time() - start > SKILL_TIMEOUT:
                 proc.kill()
+                log.error("skill_streaming(query) 超时 code=%s", code)
                 raise subprocess.TimeoutExpired(cmd, SKILL_TIMEOUT)
             line = raw.strip()
             if not line:
@@ -247,9 +255,12 @@ def run_skill_streaming(code: str, mode: str,
         proc.wait(timeout=5)
 
     if proc.returncode != 0:
-        err = proc.stderr.read()[:500] if proc.stderr else ""
-        raise RuntimeError(f"claude -p 退出码 {proc.returncode}: {err}")
-
+        err = proc.stderr.read() if proc.stderr else ""
+        log.error("skill_streaming(query) 退出码 %d code=%s\nstderr:\n%s",
+                  proc.returncode, code, err[-4000:])
+        raise RuntimeError(f"claude -p 退出码 {proc.returncode}: {err[:500]}")
+    log.info("skill_streaming(query) 完成 code=%s 用时 %.1fs len=%d",
+             code, time.time() - start, len(final_text or accumulated))
     return final_text or accumulated.strip()
 
 
@@ -263,10 +274,14 @@ def run_skill_streaming_generic(*, prompt: str, timeout: int,
            "--include-partial-messages",
            "--verbose"]
 
+    log.info("skill_streaming(generic) 启动 timeout=%ss prompt_head=%s",
+             timeout, prompt[:80].replace("\n", " "))
+    env = os.environ.copy()
+    env["STOCK_REQ_ID"] = get_req_id()
     proc = subprocess.Popen(
         cmd, cwd=str(ROOT),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, bufsize=1,
+        text=True, bufsize=1, env=env,
     )
     assert proc.stdin and proc.stdout
     proc.stdin.write(prompt)
@@ -280,6 +295,7 @@ def run_skill_streaming_generic(*, prompt: str, timeout: int,
         for raw in iter(proc.stdout.readline, ""):
             if time.time() - start > timeout:
                 proc.kill()
+                log.error("skill_streaming(generic) 超时 %ds", timeout)
                 raise subprocess.TimeoutExpired(cmd, timeout)
             line = raw.strip()
             if not line:
@@ -316,9 +332,12 @@ def run_skill_streaming_generic(*, prompt: str, timeout: int,
         proc.wait(timeout=5)
 
     if proc.returncode != 0:
-        err = proc.stderr.read()[:500] if proc.stderr else ""
-        raise RuntimeError(f"claude -p 退出码 {proc.returncode}: {err}")
-
+        err = proc.stderr.read() if proc.stderr else ""
+        log.error("skill_streaming(generic) 退出码 %d\nstderr:\n%s",
+                  proc.returncode, err[-4000:])
+        raise RuntimeError(f"claude -p 退出码 {proc.returncode}: {err[:500]}")
+    log.info("skill_streaming(generic) 完成 用时 %.1fs len=%d",
+             time.time() - start, len(final_text or accumulated))
     return final_text or accumulated.strip()
 
 
@@ -507,14 +526,17 @@ def handle(text: str, chat_id, today: Optional[str] = None,
     if str(chat_id) != str(ALLOWED_CHAT_ID):
         return
 
+    set_req_id(new_req_id())
     started = time.time()
     inbound_id = None
+    log.info("INBOUND update_id=%s chat=%s text=%s", update_id, chat_id, text[:100].replace("\n", " "))
     if update_id is not None:
         inbound_id = log_inbound_start(
             update_id=update_id, chat_id=chat_id,
             user_msg_id=user_msg_id or 0, raw_text=text,
         )
         if inbound_id is None:
+            log.info("DEDUP update_id=%s 已处理过，跳过", update_id)
             return  # 已处理过的 update_id，跳过
 
     def _finish(status: str, response_msg_id: Optional[int] = None, error: Optional[str] = None):
@@ -659,7 +681,7 @@ def handle(text: str, chat_id, today: Optional[str] = None,
     try:
         msg_id = _tg_send(initial)
     except Exception as e:
-        print(f"[tg_listener] 占位发送失败: {e}", file=sys.stderr)
+        log.exception("占位发送失败 code=%s", code)
         _finish("error", error=str(e))
         return
 
@@ -683,8 +705,8 @@ def handle(text: str, chat_id, today: Optional[str] = None,
         last_edit[0] = now
         try:
             _tg_edit(msg_id, text)
-        except Exception as e:
-            print(f"[tg_listener] edit 失败: {e}", file=sys.stderr)
+        except Exception:
+            log.exception("throttled edit 失败 code=%s", code)
 
     def on_tool(name: str) -> None:
         tools_done[0] += 1
@@ -718,9 +740,8 @@ def handle(text: str, chat_id, today: Optional[str] = None,
         try:
             _tg_edit(msg_id, md_to_tg_html(card) if card else "（空卡片）",
                      parse_mode="HTML")
-        except Exception as e:
-            print(f"[tg_listener] 最终 edit 失败 → 退化为新发: {e}",
-                  file=sys.stderr)
+        except Exception:
+            log.exception("最终 edit 失败 → 退化为新发 code=%s", code)
             push_reply(card)
         _finish("ok", response_msg_id=msg_id)
     except Exception:
@@ -761,10 +782,10 @@ def _get_updates(offset: int) -> list[dict]:
 
 def main() -> None:
     if not TG_TOKEN or not ALLOWED_CHAT_ID:
-        print("[tg_listener] TG_BOT_TOKEN / ALLOWED_CHAT_ID 未配置", file=sys.stderr)
+        log.critical("TG_BOT_TOKEN / ALLOWED_CHAT_ID 未配置，退出")
         sys.exit(2)
     offset = _load_offset()
-    print(f"[tg_listener] start, offset={offset}", flush=True)
+    log.info("启动 offset=%d", offset)
     backoff = 1
     while True:
         try:
@@ -782,10 +803,10 @@ def main() -> None:
                 try:
                     handle(text, chat_id, reply_to_msg_id=reply_to,
                            update_id=u["update_id"], user_msg_id=msg.get("message_id"))
-                except Exception as e:
-                    print(f"[tg_listener] handle 异常: {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"[tg_listener] loop 异常: {e}; 退避 {backoff}s", file=sys.stderr)
+                except Exception:
+                    log.exception("handle 异常 update_id=%s", u.get("update_id"))
+        except Exception:
+            log.exception("loop 异常 退避 %ds", backoff)
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
 

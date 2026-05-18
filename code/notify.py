@@ -62,7 +62,8 @@ def _log_to_db(source: str, text: str, msg_id: int | None, chunks: int,
                  1 if success else 0, error),
             )
     except Exception as e:
-        print(f"[notify] 入库失败: {e}", file=sys.stderr)
+        # 不能在这里调 logger（会触发 ERROR→TG，再调 notify.push 死循环）
+        print(f"[notify] 入库失败: {e}", file=sys.stderr, flush=True)
 
 
 # ============================================================

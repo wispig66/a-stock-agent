@@ -7,7 +7,7 @@
 触发条件（每只票同一类型一次会话只推一次）：
   · 💥 跌破止损：current ≤ holdings.stop_loss → 强推
   · 🚨 跌破观察池止损：current ≤ watchlist.stop_loss
-  · 🚀 触发观察池买点：current ≥ watchlist.buy AND 当前涨幅 < 9.8（未涨停）
+  · 🚀 触发观察池买点：watchlist.buy ≤ current ≤ watchlist.buy * 1.03 AND 当前涨幅 < 9.8（未涨停，超出 3% 视为已错过）
   · ✅ 封板：涨幅 ≥ 9.8（注意不是 10，主板涨停 10%，创业板 20%——这里只盯主板）
   · 💥 持仓异动放量：持仓股 |涨幅| ≥ 5 且 量比 ≥ 2
   · 💥 持仓砸盘：持仓股涨幅 ≤ -5
@@ -32,6 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fetch_realtime import load_today_watchlist, load_holdings, fetch_spot  # noqa: E402
 from notify import push  # noqa: E402
+from logger import get_logger, init_req_id_from_env  # noqa: E402
+
+init_req_id_from_env()
+log = get_logger("watch_loop")
 
 RAW_DIR = ROOT / "data" / "watch_raw"
 SNAPSHOT_DIR = ROOT / "data" / "holdings_snapshot"
@@ -124,7 +128,7 @@ def evaluate(
         sl = w.get("stop_loss")
         if sl and price <= sl:
             alerts.append(("watch_stop", f"🚨 观察池跌破止损 · {code} {name} [{w.get('genre')}] · 现价 {price} ≤ 止损 {sl} → 假突破已现，未持仓忽略，已持仓立即出"))
-        if buy and price >= buy and pct < 9.8:
+        if buy and price >= buy and price <= buy * 1.03 and pct < 9.8:
             alerts.append(("watch_trigger", f"🚀 观察池触发买点 · {code} {name} [{w.get('genre')}] · 现价 {price} ≥ 买点 {buy}（{pct}%）"))
         if pct >= 9.8:
             alerts.append(("watch_zt", f"✅ 观察池封板 · {code} {name} [{w.get('genre')}] · {pct}% 已涨停"))
@@ -152,7 +156,7 @@ def snapshot_holdings(now: datetime) -> None:
     dst = SNAPSHOT_DIR / f"{now.strftime('%Y%m%d')}.yaml"
     if src.exists() and not dst.exists():
         dst.write_bytes(src.read_bytes())
-        print(f"[watch_loop] holdings 快照 → {dst.name}", flush=True)
+        log.info("holdings 快照 → %s", dst.name)
 
 
 def append_raw(now: datetime, df) -> None:
@@ -180,10 +184,10 @@ def main():
     codes = list(set(watch_map) | set(hold_map))
 
     if not codes:
-        print("[watch_loop] 无观察池 + 持仓，退出")
+        log.info("无观察池 + 持仓，退出")
         return
 
-    print(f"[watch_loop] 监控 {len(codes)} 只票：观察池 {len(watch_map)} 持仓 {len(hold_map)}", flush=True)
+    log.info("监控 %d 只票：观察池 %d 持仓 %d", len(codes), len(watch_map), len(hold_map))
 
     sent: set[str] = set()
     round_idx = 0
@@ -192,32 +196,32 @@ def main():
         now = datetime.now()
         if not in_session(now):
             if args.once:
-                print("[watch_loop] 非交易时段 + --once，退出")
+                log.info("非交易时段 + --once，退出")
                 return
             if now.time() > dtime(15, 0):
-                print("[watch_loop] 已过 15:00，结束监控")
+                log.info("已过 15:00，结束监控")
                 return
-            print(f"[watch_loop] {now.strftime('%H:%M:%S')} 非交易时段，等待…", flush=True)
+            log.info("%s 非交易时段，等待…", now.strftime("%H:%M:%S"))
             time.sleep(args.interval)
             continue
 
         round_idx += 1
         try:
             df = fetch_spot(codes)
-        except Exception as e:
-            print(f"[watch_loop] round {round_idx} fetch 失败: {e}", flush=True)
+        except Exception:
+            log.exception("round %d fetch 失败", round_idx)
             if args.once:
                 return
             time.sleep(args.interval)
             continue
 
-        print(f"[watch_loop] round {round_idx} {now.strftime('%H:%M:%S')} got {len(df)} rows", flush=True)
+        log.info("round %d %s got %d rows", round_idx, now.strftime("%H:%M:%S"), len(df))
 
         if not args.no_raw:
             try:
                 append_raw(now, df)
-            except Exception as e:
-                print(f"[watch_loop] raw 落盘失败: {e}", flush=True)
+            except Exception:
+                log.exception("raw 落盘失败 round=%d", round_idx)
 
         for _, row in df.iterrows():
             for kind, msg in evaluate(row.to_dict(), watch_map, hold_map):
@@ -227,9 +231,9 @@ def main():
                 sent.add(key)
                 try:
                     r = push(f"⏱️ [{now.strftime('%H:%M')}] {msg}", source="stock-intraday-watch")
-                    print(f"[watch_loop] PUSH {key} msg_id={r['result']['message_id']}", flush=True)
-                except Exception as e:
-                    print(f"[watch_loop] push 失败 {key}: {e}", flush=True)
+                    log.info("PUSH %s msg_id=%s", key, r["result"]["message_id"])
+                except Exception:
+                    log.exception("push 失败 %s", key)
 
         if args.once:
             return
@@ -237,4 +241,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        log.critical("watch_loop 顶层崩溃", exc_info=True)
+        raise

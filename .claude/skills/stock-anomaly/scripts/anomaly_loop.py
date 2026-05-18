@@ -42,6 +42,10 @@ sys.path.insert(0, str(ROOT / ".claude" / "skills" / "stock-intraday" / "scripts
 
 from fetch_realtime import load_today_watchlist, load_holdings  # noqa: E402
 from notify import push  # noqa: E402
+from logger import get_logger, init_req_id_from_env  # noqa: E402
+
+init_req_id_from_env()
+log = get_logger("anomaly_loop")
 
 RAW_DIR = ROOT / "data" / "anomaly_raw"
 SNAPSHOT_DIR = ROOT / "data" / "holdings_snapshot"
@@ -104,7 +108,7 @@ def snapshot_holdings(now: datetime) -> None:
     dst = SNAPSHOT_DIR / f"{now.strftime('%Y%m%d')}.yaml"
     if src.exists() and not dst.exists():
         dst.write_bytes(src.read_bytes())
-        print(f"[anomaly_loop] holdings 快照 → {dst.name}", flush=True)
+        log.info("holdings 快照 → %s", dst.name)
 
 
 def append_raw(now: datetime, symbol: str, df) -> None:
@@ -133,9 +137,9 @@ def main():
 
     watched = {w["code"] for w in load_today_watchlist()} | {h["code"] for h in load_holdings()}
     if not watched:
-        print("[anomaly_loop] 持仓+观察池均为空，无监控目标，退出", flush=True)
+        log.info("持仓+观察池均为空，无监控目标，退出")
         return
-    print(f"[anomaly_loop] 监控持仓+观察池 {len(watched)} 只", flush=True)
+    log.info("监控持仓+观察池 %d 只", len(watched))
     snapshot_holdings(datetime.now())
 
     sent: set[tuple[str, str]] = set()
@@ -146,12 +150,12 @@ def main():
         now = datetime.now()
         if not in_session(now):
             if args.once:
-                print("[anomaly_loop] 非交易时段 + --once，退出")
+                log.info("非交易时段 + --once，退出")
                 return
             if now.time() > dtime(15, 0):
-                print("[anomaly_loop] 已过 15:00，结束监控")
+                log.info("已过 15:00，结束监控")
                 return
-            print(f"[anomaly_loop] {now.strftime('%H:%M:%S')} 非交易时段，等待…", flush=True)
+            log.info("%s 非交易时段，等待…", now.strftime("%H:%M:%S"))
             time.sleep(args.interval)
             continue
 
@@ -161,8 +165,8 @@ def main():
         for symbol, label in SYMBOLS.items():
             try:
                 df = fetch_anomaly(symbol)
-            except Exception as e:
-                print(f"[anomaly_loop] round {round_idx} {symbol} fetch 失败: {e}", flush=True)
+            except Exception:
+                log.exception("round %d %s fetch 失败", round_idx, symbol)
                 continue
             if df is None or df.empty:
                 continue
@@ -170,8 +174,8 @@ def main():
             if not args.no_raw:
                 try:
                     append_raw(now, symbol, df)
-                except Exception as e:
-                    print(f"[anomaly_loop] raw 落盘失败 {symbol}: {e}", flush=True)
+                except Exception:
+                    log.exception("raw 落盘失败 %s", symbol)
 
             new_max = last_max_time[symbol]
             for _, row in df.iterrows():
@@ -194,9 +198,9 @@ def main():
                     msg = format_alert(now, symbol, label, row.to_dict())
                     try:
                         r = push(msg, source="stock-anomaly")
-                        print(f"[anomaly_loop] PUSH {code} {symbol} msg_id={r['result']['message_id']}", flush=True)
-                    except Exception as e:
-                        print(f"[anomaly_loop] push 失败 {code} {symbol}: {e}", flush=True)
+                        log.info("PUSH %s %s msg_id=%s", code, symbol, r["result"]["message_id"])
+                    except Exception:
+                        log.exception("push 失败 %s %s", code, symbol)
                 if t > new_max:
                     new_max = t
             last_max_time[symbol] = new_max
@@ -205,11 +209,12 @@ def main():
             digest = format_rocket_digest(now, rocket_buffer)
             try:
                 r = push(digest, source="stock-anomaly")
-                print(f"[anomaly_loop] PUSH 火箭 digest ×{len(rocket_buffer)} msg_id={r['result']['message_id']}", flush=True)
-            except Exception as e:
-                print(f"[anomaly_loop] push 火箭 digest 失败: {e}", flush=True)
+                log.info("PUSH 火箭 digest x%d msg_id=%s",
+                         len(rocket_buffer), r["result"]["message_id"])
+            except Exception:
+                log.exception("push 火箭 digest 失败")
 
-        print(f"[anomaly_loop] round {round_idx} {now.strftime('%H:%M:%S')} 新增 {total_new} 条", flush=True)
+        log.info("round %d %s 新增 %d 条", round_idx, now.strftime("%H:%M:%S"), total_new)
 
         if args.once:
             return
@@ -217,4 +222,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        log.critical("anomaly_loop 顶层崩溃", exc_info=True)
+        raise
