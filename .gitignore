@@ -18,6 +18,7 @@ data/holdings_snapshot/
 data/anomaly_findings/
 data/weekly_review/
 data/ask_fact_pack/
+data/query_fact_pack/
 logs/*.log
 .DS_Store
 holdings.yaml.lock

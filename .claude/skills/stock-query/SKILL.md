@@ -5,64 +5,81 @@ description: 单股深度分析。给定一个 A 股代码（主板/创业板）
 
 # stock-query · 单股决策助手
 
-**调用方**：`scripts/tg_listener.py` 通过 `claude -p` headless 触发。
-**入参**：在 prompt 文本中以 `code=600519 mode=fresh` 形式传入。
+**调用方**：`scripts/tg_listener.py` 通过 `claude -p` headless 触发；也可被 stock-ask 通过 Skill 工具转发。
+**入参**：prompt 文本中以 `code=600519 mode=fresh` 形式传入。
 
-## 工作流（按序，不跳）
+# 工作流（按序，不跳）
 
-### Step 1 · 拉数据 fact pack
+> ⚠ 整个流程只有 3 步：跑 pipeline 拿 fact pack → 综合判断档位 → 出卡片。
+> 直接按下方步骤执行，**不要 Explore/Grep/Read 任何项目源码或 DB schema**。
+> 代码层异常（ImportError / 字段不存在）→ 立即 3d 错误卡。
+> 业务层数据缺失（pipeline 某字段 `ok=false`）→ 按降档规则继续出卡。
 
-```python
-import sys
-sys.path.insert(0, "code")
-from lib import query
+## Step 1 · 跑 pipeline 拿 fact pack（一个命令）
 
-CODE = "<从入参解析>"
-realtime = query.fetch_realtime(CODE)            # 必拿，失败直接报错回避
-kline    = query.fetch_kline(CODE, days=60)      # 60 日日线
-flow     = query.fetch_money_flow(CODE, days=5)  # 资金流
-concept  = query.fetch_concept_strength(CODE)    # 概念榜
-news     = query.fetch_recent_news(CODE, days=7) # 新闻
+```bash
+uv run scripts/stock_query_pipeline.py --code <CODE> --mode <MODE>
 ```
 
-任一**非 realtime** 拉取失败 → 标"该项数据缺失"，结论档位降一档（买入→观察，观察→回避）。
+stdout 是 JSON。预期 3-10 秒返回。字段说明：
 
-mode=holding 时额外读 `holdings.yaml` 当前票的成本价、仓位、buy_date、stop_loss。
+| 字段 | 形态 | 用法 |
+|---|---|---|
+| `code` / `name` / `mode` | str | 元数据（name 取自 realtime） |
+| `realtime.ok` + `data` | `{name, open, pre_close, close, high, low, vol, amount, date, time}` | 必拿。`ok=false` → 直接走 3d 错误卡 |
+| `kline.data` | `[{date, open, high, low, close, vol, ma5, ma10, ma20, ...}]` 60 天 | MA 位置 / 量比 / 距 20 日高 |
+| `concept.data` | `{concept_name, top_concepts: [{concept_name, pct_chg, leader_name, ...}]}` | 概念板块榜 Top 20（东财，可能 fail） |
+| `money_flow.data` | `[{date, main_in, small_in, medium_in, large_in, super_in}]` 5 天 | 近 3-5 日主力资金（东财，可能 fail） |
+| `news.data` | `[{title, url, date}]` 最多 10 条 | 个股近 7 日新闻（同花顺，少数情况空 []） |
+| `meta.data` | `{board, is_st}` | 本地 DB，几乎不会 fail |
+| `ths_hot_reasons.data` | `[{date, reason}]` 近 10 日 | 该票在 ths_hot 出现过的题材原文 |
+| `holding.data` | `{code, name, genre, cost, shares, buy_date, stop_loss, take_profit, unlock_date, is_locked, note}` 或 `null` | **仅 mode=holding**。`null` 说明 holdings.yaml 里没这只 |
 
-### Step 2 · 题材派六维判定
+**任何字段 `ok=false`**：取 `error` 字段汇报"该项数据缺失"，按 Step 2 降档规则处理，**不要重跑、不要 patch lib**。
 
-| 维度 | 怎么判 |
+## Step 2 · 综合判断（题材派六维 + 档位）
+
+直接读 fact pack 想清楚，**不要再调 LLM / WebSearch / 任何工具**。
+
+### 六维判定
+
+| 维度 | 怎么判（用哪些字段） |
 |---|---|
-| 题材归属 | 用 fact pack 概念榜 Top 20 + 近 10 日 ths_hot_reason 表（DB 已有）反查该票主题材；找不到归类→标"无明确主线" |
-| 题材位置 | 启动期：概念近 5 日累涨 5–15%、龙头刚加速；主升期：概念 5 日 >15% 且涨停股 ≥3；高潮期：龙头连板 ≥4 或概念单日 >5%；退潮期：概念近 3 日累跌或龙头炸板 |
-| 个股位置 | 比对概念龙头：相对涨幅 vs 龙头近 5 日差值 → 龙头/二线/边缘 |
-| 资金 | 近 3 日 main_in 累计正负、单日峰值 |
-| 技术 | 收盘 vs MA5/MA10/MA20；近 20 日相对高低位置；量比 |
-| 消息 | news 列表前 5 条标题，标"利好/利空/中性"，是否有公司公告突发 |
+| 题材归属 | `ths_hot_reasons.data` 取最近一条 reason 拆题材名；空 → 用 `concept.data.concept_name` 兜底；都空 → 标"无明确主线" |
+| 题材位置 | `concept.data.top_concepts` 里找到本票题材，看 pct_chg 与近期表现：启动期 5–15%、主升期 >15%、高潮期 单日 >5% 或龙头连板≥4、退潮期 近 3 日累跌 |
+| 个股位置 | 对比 `concept.data.top_concepts[*].leader_name` 与本票：龙头/二线/边缘（无概念数据则标"—"） |
+| 资金 | `money_flow.data` 近 3 日 `main_in` 累加；正/负 + 峰值 |
+| 技术 | `kline.data` 最后一行 close vs MA5/MA10/MA20；近 20 日相对高低位置；最后一日 vol / 前 5 日均量 = 量比 |
+| 消息 | `news.data` 前 5 条标题，标"利好/利空/中性"；找公司公告类（标题含"公告"/"中标"/"减持"/"业绩") |
 
-### Step 3 · 结论档位
+### 档位结论
 
 **fresh 分支**：
 - **买入**：题材在启动/主升 + 个股是龙头或紧跟龙头 + 资金净流入 + 技术不在高位（距 20 日高 ≥5%）
-- **观察**：方向对但任一维度不达标。**必须列出"什么信号出现升级为买入"**（≥2 条具体可观测信号）
-- **回避**：题材退潮 / 高位滞涨 / 资金持续 3 日净流出 / 技术破位 之一即触发
+- **观察**：方向对但任一维度不达标。**必须列出"什么信号升级为买入"**（≥2 条具体可观测信号）
+- **回避**：题材退潮 / 高位滞涨 / 资金持续 3 日净流出 / 技术破位，任一即触发
 
-**holding 分支**：
-- **加仓**：买入逻辑仍然成立且未到第一止盈
-- **持有**：维持原计划；同步更新止损是否该上移（盈利 >5% 时止损上移到成本价）
-- **减仓清仓**：原买入逻辑失效（题材退潮、资金转流出、跌破关键位）
+**holding 分支**（需 `holding.data` 非 null）：
+- **加仓**：买入逻辑仍然成立 + 未到第一止盈 + 未锁仓（`is_locked=false`）
+- **持有**：维持原计划；盈利 >5% 时建议止损上移到成本价
+- **减仓清仓**：原买入逻辑失效（题材退潮 / 资金转流出 / 跌破关键位）
 
-### Step 4 · 关键价位（每档都必给）
+### 数据缺失的降档规则（任一命中即降一档）
 
-- 买点：限价 或 触发条件（含价位）
-- 止损位：具体数字 + 依据（前低 / MA20 破位）
-- 止盈位：第一目标 / 第二目标（按概念龙头近期高点 + 个股压力位）
+- `concept.ok=false` 且无 `ths_hot_reasons`：题材判定不可信 → 买入降观察、观察降回避
+- `money_flow.ok=false`：资金面盲 → 买入降观察
+- `kline.ok=false`：技术面盲 → 不出买入档，最多观察
+- `news.data=[]`：消息项标"—"，不降档（很常见）
 
-### Step 5 · 输出卡片
+### 关键价位（每档都必给）
 
-**严格按下面模板输出（替换花括号占位符）。不要加额外段落、不要解释思考过程。**
+- **买点**：限价 或 触发条件（含价位）。从 `realtime.close` 或 `kline` 关键位推
+- **止损位**：具体数字 + 依据（前低 / MA20 破位 / 成本价上挪）
+- **止盈位**：第一目标 / 第二目标（按概念龙头近期高点 + 个股压力位）
 
-fresh 模板：
+## Step 3 · 出卡片
+
+### 3a fresh 模板
 
 ```
 📊 {NAME} {CODE}  [买入 / 观察 / 回避]
@@ -88,7 +105,7 @@ fresh 模板：
 ⚠️ 短线纪律：观察档≠可建仓，等信号    ← 仅观察档
 ```
 
-holding 模板：
+### 3b holding 模板
 
 ```
 📊 {NAME} {CODE}  [加仓 / 持有 / 减仓清仓]
@@ -110,7 +127,28 @@ holding 模板：
 ━━━━━━━━━━━━━━━━
 ```
 
-### 限制
-- 卡片单条 ≤ 800 字
-- 价位必须给数字（非区间），止盈最多两档
-- 任何数据缺失项标"—"不要编
+### 3c holding 模式但 holdings.yaml 里没这只
+
+```
+⚠️ {CODE} 不在 holdings.yaml 中
+建议用 mode=fresh 分析，或先 /buy 录入持仓
+```
+
+### 3d 错误卡（代码层异常 / realtime 失败）
+
+```
+❌ {error_msg}
+```
+
+# 强约束清单
+
+1. **禁止前置探索**：不要 Explore/Grep/Read 项目源码；Step 1 之外不要 import lib 或跑 SQL
+2. **代码层异常立即退出**：ImportError / 字段不存在 / pipeline 返回非 JSON → 3d 错误卡；不要换 import 路径、不要探 DB schema、不要 patch lib 源码
+3. **数据层 `ok=false` 走降档**：按 Step 2 降档规则继续出卡，不要重跑 fetch、不要换数据源、不要试着 curl
+4. **realtime 失败 = 整体失败**：`realtime.ok=false` 时直接 3d，不出业务卡
+5. **总耗时硬上限 60 秒**：触顶用已有信息出最稳妥档位卡（宁可"观察"也不空跑）
+6. 数据缺失项写"—"或省略行，不要瞎编
+7. 仅输出卡片，不要解释思考过程
+8. 严格使用模板格式（不要 markdown 表格，TG 不渲染）
+9. 卡片单条 ≤ 800 字
+10. 价位必须给数字（非区间），止盈最多两档
