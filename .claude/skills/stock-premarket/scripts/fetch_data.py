@@ -357,7 +357,8 @@ def reason_tag_agg(hot: pd.DataFrame, top_n: int = 8) -> pd.DataFrame:
 
 # ============ 渲染 ============
 
-def render_core_pack(date: str) -> str:
+def render_core_pack(date: str) -> tuple[str, dict]:
+    """渲染 markdown fact pack。返回 (markdown, data_bundle)，bundle 给 build_allowed 用。"""
     lines = [f"# 盘前 fact pack · {date}", ""]
 
     zt = fetch_zt_pool(date)
@@ -532,7 +533,95 @@ def render_core_pack(date: str) -> str:
 
     lines.append("---")
     lines.append(f"_生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}_")
-    return "\n".join(lines)
+    bundle = {
+        "zt": zt, "zb": zb, "lhb": lhb, "hot": hot, "news": news,
+        "date": date,
+    }
+    return "\n".join(lines), bundle
+
+
+def build_allowed(*, date: str, zt, zb, lhb, hot, news) -> dict:
+    """聚合盘前 fact pack 全部允许引用事实。"""
+    codes: dict[str, str] = {}
+    lianban: dict[str, int] = {}
+    pct: dict[str, float] = {}
+    concepts: list[str] = []
+    news_out: list[dict] = []
+
+    def _add(df, *, take_lianban=False):
+        if df is None or df.empty:
+            return
+        for _, r in df.iterrows():
+            code = str(r.get("代码") or "")
+            name = str(r.get("名称") or "")
+            if not code or len(code) != 6:
+                continue
+            codes[code] = name or codes.get(code, name)
+            for col in ("涨跌幅", "涨幅%"):
+                if col in df.columns:
+                    try:
+                        pct[code] = round(float(r.get(col)), 2)
+                        break
+                    except (TypeError, ValueError):
+                        continue
+            if take_lianban:
+                try:
+                    lianban[code] = int(r.get("连板数"))
+                except (TypeError, ValueError):
+                    pass
+
+    _add(zt, take_lianban=True)
+    _add(zb)
+    _add(lhb)
+    _add(hot)
+
+    # 题材
+    if hot is not None and not hot.empty and "题材归因" in hot.columns:
+        for _, r in hot.iterrows():
+            reason = str(r.get("题材归因", "") or "").strip()
+            for t in (x.strip() for x in reason.split("+") if x.strip()):
+                if t not in concepts:
+                    concepts.append(t)
+
+    # 隔夜消息 → news
+    if news is not None and not news.empty:
+        for _, r in news.iterrows():
+            t = r.get("发布时间")
+            try:
+                t_str = t.strftime("%Y-%m-%d %H:%M") if hasattr(t, "strftime") else str(t)
+            except Exception:
+                t_str = str(t)
+            news_out.append({
+                "title": str(r.get("标题") or "")[:200],
+                "url": str(r.get("URL") or ""),
+                "source": str(r.get("来源") or ""),
+                "time": t_str,
+                "hit_theme": str(r.get("命中题材") or ""),
+            })
+
+    summary = {"date": date}
+    if zt is not None and not zt.empty:
+        summary["limit_up"] = int(len(zt))
+        if "连板数" in zt.columns:
+            try:
+                summary["max_consec"] = int(zt["连板数"].max())
+            except Exception:
+                pass
+    if zb is not None and not zb.empty:
+        summary["broken"] = int(len(zb))
+
+    return {
+        "schema_version": "1",
+        "skill": "stock-premarket",
+        "snapshot_at": datetime.now().replace(microsecond=0).isoformat(),
+        "codes": codes,
+        "lianban": lianban,
+        "pct": pct,
+        "summary": summary,
+        "concepts": concepts[:30],
+        "news": news_out[:80],
+        "global_markets": {},
+    }
 
 
 def render_concept_detail(concept_name: str) -> str:
@@ -564,11 +653,22 @@ def main():
 
     date = args.date or last_trade_day()
     log(f"使用日期 {date}")
-    pack = render_core_pack(date)
+    pack, bundle = render_core_pack(date)
     out_path = OUT_DIR / f"{date}_premarket.md"
     out_path.write_text(pack, encoding="utf-8")
     log(f"已写入 {out_path}")
     print(pack)
+
+    # ALLOWED 段
+    import json as _json
+    allowed = build_allowed(**bundle)
+    print("\n=== ALLOWED ===")
+    print(_json.dumps(allowed, ensure_ascii=False, indent=2))
+    print("=== /ALLOWED ===")
+    allowed_file = ROOT / "data" / "allowed_latest_stock-premarket.json"
+    allowed_file.parent.mkdir(parents=True, exist_ok=True)
+    allowed_file.write_text(_json.dumps(allowed, ensure_ascii=False, indent=2))
+    log(f"已写 {allowed_file}")
 
 
 if __name__ == "__main__":
