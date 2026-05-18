@@ -184,6 +184,77 @@ def main() -> None:
     print(json.dumps(fact_pack, ensure_ascii=False, indent=2))
     log.info("pipeline 完成 用时 %.1fs file=%s", elapsed, out_file.name)
 
+    # ALLOWED 段：单股卡片校验事实清单
+    from datetime import datetime, date
+    codes: dict[str, str] = {code: name or ""}
+    pct: dict[str, float] = {}
+    concepts: list[str] = []
+
+    rt = results.get("realtime") or {}
+    if rt.get("ok"):
+        try:
+            d = rt["data"]
+            pct[code] = round((float(d["close"]) / float(d["pre_close"]) - 1) * 100, 2)
+        except (TypeError, ValueError, KeyError, ZeroDivisionError):
+            pass
+
+    # 概念榜里的其他股（龙头等）+ 题材名
+    conc = results.get("concept") or {}
+    if conc.get("ok"):
+        data = conc.get("data") or {}
+        for c in (data.get("top_concepts") or []):
+            cn = c.get("concept_name")
+            if cn and cn not in concepts:
+                concepts.append(cn)
+
+    # ths_hot_reasons 历史命中的题材名
+    thsr = results.get("ths_hot_reasons") or {}
+    for r in (thsr.get("data") or []):
+        reason = str(r.get("reason", "") or "").strip()
+        for t in (x.strip() for x in reason.split("+") if x.strip()):
+            if t not in concepts:
+                concepts.append(t)
+
+    # 新闻
+    news_out: list[dict] = []
+    nw = results.get("news") or {}
+    for n in (nw.get("data") or []):
+        news_out.append({
+            "title": str(n.get("title") or "")[:200],
+            "url": str(n.get("url") or ""),
+            "time": str(n.get("date") or ""),
+        })
+
+    holding_summary = None
+    h = results.get("holding") or {}
+    if h.get("ok") and h.get("data"):
+        hd = h["data"]
+        holding_summary = {"cost": hd.get("cost"), "shares": hd.get("shares"),
+                           "stop_loss": hd.get("stop_loss"),
+                           "take_profit": hd.get("take_profit"),
+                           "is_locked": hd.get("is_locked")}
+
+    allowed = {
+        "schema_version": "1",
+        "skill": "stock-query",
+        "snapshot_at": datetime.now().replace(microsecond=0).isoformat(),
+        "codes": codes,
+        "lianban": {},  # 单股不评连板
+        "pct": pct,
+        "summary": {
+            "date": date.today().isoformat(),
+            "code": code, "name": name, "mode": args.mode,
+            "holding": holding_summary,
+        },
+        "concepts": concepts[:30],
+        "news": news_out,
+        "global_markets": {},
+    }
+    allowed_file = ROOT / "data" / "allowed_latest_stock-query.json"
+    allowed_file.parent.mkdir(parents=True, exist_ok=True)
+    allowed_file.write_text(json.dumps(allowed, ensure_ascii=False, indent=2))
+    log.info("ALLOWED 已写 %s codes=%d concepts=%d", allowed_file.name, len(codes), len(concepts))
+
 
 if __name__ == "__main__":
     main()

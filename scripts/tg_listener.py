@@ -26,6 +26,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "code"))
 from lib import query  # noqa: E402
+from lib.card_validator import (  # noqa: E402
+    validate_card, load_stock_name_dict, format_violations,
+)
 from notify import push_md, md_to_tg_html  # noqa: E402
 from db import connect  # noqa: E402
 from logger import get_logger, new_req_id, set_req_id, get_req_id  # noqa: E402
@@ -64,6 +67,44 @@ _running = 0
 _waiting = 0
 
 DB_PATH = ROOT / "data" / "daily.db"
+
+CARD_VALIDATOR_MODE = os.environ.get("CARD_VALIDATOR_MODE", "warn").lower()
+
+
+def _validate_card_for_push(card_text: str, source: str) -> tuple[bool, list, Optional[Path]]:
+    """读 data/allowed_latest_<source>.json 校验 card_text。
+
+    返回 (ok, violations, log_file)。无 allowed 文件 = 跳过 (ok=True, [])。
+    违规会落审计 data/card_violations/<ts>_<source>.json。
+    """
+    if CARD_VALIDATOR_MODE == "off":
+        return (True, [], None)
+    allowed_file = ROOT / "data" / f"allowed_latest_{source}.json"
+    if not allowed_file.exists():
+        return (True, [], None)
+    try:
+        allowed = json.loads(allowed_file.read_text(encoding="utf-8"))
+        name_dict = load_stock_name_dict(DB_PATH) if DB_PATH.exists() else None
+        ok, violations = validate_card(card_text, allowed, stock_name_dict=name_dict)
+        if violations:
+            log_dir = ROOT / "data" / "card_violations"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / f"{int(time.time())}_{source}.json"
+            log_file.write_text(json.dumps({
+                "ts": datetime.now().isoformat(),
+                "source": source,
+                "mode": CARD_VALIDATOR_MODE,
+                "req_id": get_req_id(),
+                "card_text": card_text,
+                "violations": [v.to_dict() for v in violations],
+            }, ensure_ascii=False, indent=2))
+            log.warning("card_validator [%s] %s 处违规 -> %s",
+                        CARD_VALIDATOR_MODE, len(violations), log_file.name)
+            return (ok, violations, log_file)
+        return (True, [], None)
+    except Exception as e:
+        log.exception("card_validator 异常（fail-open）：%s", e)
+        return (True, [], None)
 
 
 def parse_ask_command(text: str) -> Optional[dict]:
@@ -592,11 +633,29 @@ def handle(text: str, chat_id, today: Optional[str] = None,
             card = run_skill_streaming_generic(
                 prompt=prompt, timeout=timeout, on_text=on_text, on_tool=on_tool,
             )
-            try:
-                _tg_edit(msg_id, md_to_tg_html(card) if card else "（空卡片）", parse_mode="HTML")
-            except Exception:
-                push_reply(card or "（空卡片）")
-            _finish("ok", response_msg_id=msg_id)
+            # 校验 + 渲染
+            ok, violations, log_file = _validate_card_for_push(card or "", "stock-ask")
+            if violations and CARD_VALIDATOR_MODE == "enforce":
+                warn_text = (
+                    "⚠️ <b>卡片被拦截（stock-ask）</b>\n"
+                    f"含 {len(violations)} 处数据未在 fact pack 中：\n\n"
+                    f"<pre>{format_violations(violations)}</pre>\n\n"
+                    f"审计日志：{log_file.name if log_file else '-'}"
+                )
+                _tg_edit(msg_id, warn_text, parse_mode="HTML")
+                _finish("blocked", response_msg_id=msg_id,
+                        error=f"card_validator blocked {len(violations)} violations")
+            else:
+                try:
+                    _tg_edit(msg_id, md_to_tg_html(card) if card else "（空卡片）", parse_mode="HTML")
+                except Exception:
+                    push_reply(card or "（空卡片）")
+                if violations:  # warn 模式：原卡推完后追一条提示
+                    _tg_send(
+                        f"⚠️ card_validator [warn] stock-ask {len(violations)} 处可疑数据\n"
+                        f"日志：data/card_violations/{log_file.name if log_file else '-'}"
+                    )
+                _finish("ok", response_msg_id=msg_id)
         except subprocess.TimeoutExpired:
             _tg_edit(msg_id, "❌ 分析超时，请重试或换 /ask+")
             _finish("timeout", response_msg_id=msg_id, error="subprocess timeout")
@@ -736,14 +795,32 @@ def handle(text: str, chat_id, today: Optional[str] = None,
                 return
             finally:
                 _running -= 1
-        # 最终卡片：HTML 渲染后落到同一条消息
-        try:
-            _tg_edit(msg_id, md_to_tg_html(card) if card else "（空卡片）",
-                     parse_mode="HTML")
-        except Exception:
-            log.exception("最终 edit 失败 → 退化为新发 code=%s", code)
-            push_reply(card)
-        _finish("ok", response_msg_id=msg_id)
+        # 校验
+        ok, violations, log_file = _validate_card_for_push(card or "", "stock-query")
+        if violations and CARD_VALIDATOR_MODE == "enforce":
+            warn_text = (
+                f"⚠️ <b>卡片被拦截（stock-query {code}）</b>\n"
+                f"含 {len(violations)} 处数据未在 fact pack 中：\n\n"
+                f"<pre>{format_violations(violations)}</pre>\n\n"
+                f"审计日志：{log_file.name if log_file else '-'}"
+            )
+            _tg_edit(msg_id, warn_text, parse_mode="HTML")
+            _finish("blocked", response_msg_id=msg_id,
+                    error=f"card_validator blocked {len(violations)} violations")
+        else:
+            # 最终卡片：HTML 渲染后落到同一条消息
+            try:
+                _tg_edit(msg_id, md_to_tg_html(card) if card else "（空卡片）",
+                         parse_mode="HTML")
+            except Exception:
+                log.exception("最终 edit 失败 → 退化为新发 code=%s", code)
+                push_reply(card)
+            if violations:
+                _tg_send(
+                    f"⚠️ card_validator [warn] stock-query {len(violations)} 处可疑数据\n"
+                    f"日志：data/card_violations/{log_file.name if log_file else '-'}"
+                )
+            _finish("ok", response_msg_id=msg_id)
     except Exception:
         _waiting = max(0, _waiting - 1)
         raise

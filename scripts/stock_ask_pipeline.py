@@ -200,6 +200,64 @@ def main() -> None:
     print(json.dumps(fact_pack, ensure_ascii=False, indent=2))
     log.info("pipeline 完成 用时 %.1fs file=%s", elapsed, out_file.name)
 
+    # ALLOWED 段：卡片校验事实清单
+    codes: dict[str, str] = {}
+    concepts: list[str] = []
+    news_out: list[dict] = []
+
+    sm = results.get("stock_match") or {}
+    if sm.get("matched") and sm.get("code"):
+        codes[str(sm["code"])] = str(sm.get("name") or "")
+    for c in (sm.get("candidates") or []):
+        if c.get("code"):
+            codes[str(c["code"])] = str(c.get("name") or "")
+
+    lex = results.get("lexicon") or {}
+    for s in (lex.get("nearest_sectors") or []):
+        if isinstance(s, str) and s not in concepts:
+            concepts.append(s)
+
+    dbf = results.get("db_frequency") or {}
+    for r in (dbf.get("sample_reasons") or []):
+        for t in (x.strip() for x in str(r).split("+") if x.strip()):
+            if t not in concepts:
+                concepts.append(t)
+    for r in (dbf.get("sample_concepts") or []):
+        if isinstance(r, str) and r not in concepts:
+            concepts.append(r)
+
+    ln = results.get("local_news") or {}
+    for n in (ln.get("news") or []):
+        news_out.append({
+            "title": str(n.get("title") or "")[:200],
+            "url": str(n.get("url") or ""),
+            "source": str(n.get("source") or ""),
+            "time": str(n.get("publish_time") or ""),
+        })
+
+    allowed = {
+        "schema_version": "1",
+        "skill": "stock-ask",
+        "snapshot_at": datetime.now().replace(microsecond=0).isoformat(),
+        "codes": codes,
+        "lianban": {},
+        "pct": {},
+        "summary": {
+            "date": date.today().isoformat(),
+            "query_text": text,
+            "mode": args.mode,
+            "rule_intent": lex.get("rule_intent"),
+            "ths_hot_hits": dbf.get("ths_hot_reason_hits", 0),
+        },
+        "concepts": concepts[:30],
+        "news": news_out,
+        "global_markets": {},
+    }
+    allowed_file = ROOT / "data" / "allowed_latest_stock-ask.json"
+    allowed_file.parent.mkdir(parents=True, exist_ok=True)
+    allowed_file.write_text(json.dumps(allowed, ensure_ascii=False, indent=2))
+    log.info("ALLOWED 已写 %s codes=%d concepts=%d", allowed_file.name, len(codes), len(concepts))
+
 
 if __name__ == "__main__":
     main()
