@@ -5,6 +5,9 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# card_validator 模式（见 docs/card_validator_enforce_switch.md）
+export CARD_VALIDATOR_MODE=warn
+
 LOGDIR="logs"
 mkdir -p "$LOGDIR"
 LOG="$LOGDIR/anomaly_loop_$(date +%Y%m%d).log"

@@ -12,6 +12,13 @@
         <string>cd {{PROJECT_ROOT}} &amp;&amp; uv run scripts/weekly_loop.py</string>
     </array>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- card_validator 模式（见 docs/card_validator_enforce_switch.md） -->
+        <key>CARD_VALIDATOR_MODE</key>
+        <string>warn</string>
+    </dict>
+
     <key>StartCalendarInterval</key>
     <array>
         <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>

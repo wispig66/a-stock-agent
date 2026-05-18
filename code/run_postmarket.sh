@@ -4,6 +4,9 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# card_validator 模式（见 docs/card_validator_enforce_switch.md）
+export CARD_VALIDATOR_MODE=warn
+
 LOG_DIR=logs
 mkdir -p $LOG_DIR
 TODAY=$(date +%Y-%m-%d)

@@ -4,6 +4,11 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# card_validator 模式：warn（仅日志，默认）/ enforce（拒推违规卡）/ off
+# 切 enforce 改下方 = 右侧。同步改 5 个 run_*.sh + launchd/com.user.stockweekly.plist
+# 详见 docs/card_validator_enforce_switch.md
+export CARD_VALIDATOR_MODE=warn
+
 LOGDIR="logs"
 mkdir -p "$LOGDIR"
 # 固定文件名（不带日期），由外部 rotate 切日；常驻进程跨午夜也能正确 append
