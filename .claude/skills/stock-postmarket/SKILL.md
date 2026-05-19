@@ -3,6 +3,16 @@ name: stock-postmarket
 description: A 股盘后复盘 + 明日预案。15:30 后跑：拉今日完整数据落库（让明日 L1 有 10 日基线）、复盘今日观察池命中情况、生成明日题材延续判断 + 风险提示，推送 Telegram。当用户在 15:30 之后要求"盘后"、"复盘"、"postmarket"、"今日总结"、"明日预案"、"明天怎么看"，或自然语言"A股短线 盘后"时调用此 skill。
 ---
 
+## Codex automation 契约
+
+本 skill 会被 Codex automation 无人值守触发。执行时必须产出下面列出的文件和推送副作用；不要只回复完成。如果任一步骤失败，必须说明具体失败步骤，并停止声称成功。
+
+- 必须写入 `data/last_postmarket_card.md`。
+- 必须通过 `.claude/skills/stock-premarket/scripts/push.py --source stock-postmarket` 推送。
+- 主流程完成后必须刷新 `stock_basic`，执行 `scripts/refresh_stock_basic.py`。
+- `refresh_stock_basic.py` 失败只报告为副作用失败，不掩盖盘后主流程结果。
+- 输出层级：文件内容是完整卡片，Telegram 推送是完整卡片，Codex automation 最终回复只给简要运行摘要。
+
 # 定位说明
 
 L4 盘后复盘。**两个核心职责**：
@@ -36,7 +46,7 @@ L4 盘后复盘。**两个核心职责**：
 推送脚本 `push.py` 自动跑校验器，违规会被审计日志记录（v1 warn 模式不拦截；v2 enforce 模式直接
 拒推）。**写卡前自己对照 ALLOWED 一遍**。
 
-你的**唯一最终 assistant 消息**必须是卡片本身（以 📖 / 🌆 等卡片开头符开头）；不要"任务完成"等元状态文字。
+写入文件和 Telegram 推送的内容必须是卡片本身（以 📖 / 🌆 等卡片开头符开头）；Codex automation 最终回复只给简要运行摘要，不要用“完成”替代文件写入和推送。
 
 ## Step 1 · 拉今日完整数据 + 写库
 
@@ -331,13 +341,21 @@ fact pack: data/fact_pack/[YYYYMMDD]_postmarket.md
    .venv/bin/python .claude/skills/stock-premarket/scripts/push.py --file data/last_postmarket_card.md --source stock-postmarket
    ```
 
+**副作用刷新**：
+
+推送完成后刷新 `stock_basic`，给 TG 单股查询使用。刷新失败只报告为副作用失败，不掩盖盘后主流程结果。
+
+```bash
+uv run --no-sync scripts/refresh_stock_basic.py
+```
+
 ## Step 5 · 终端简要返回
 
 返回 3 句：
 
 - 今日阶段 + 与昨日对比
 - 观察池命中率（触发 / 收红 / 假突破）
-- 明日决策（再战 / 减仓 / 空仓）+ 推送 msg_id
+- 明日决策（再战 / 减仓 / 空仓）+ 推送 msg_id + `stock_basic` 刷新状态
 
 不重复整张卡片。
 

@@ -3,6 +3,16 @@ name: stock-weekly
 description: A 股周日晚 21:00 触发的周复盘 + 下周方向。Part 1 本周市场叙事 + 个人交易回顾，Part 2 周末消息归类 + 下周 2-3 条主线（含代表股、催化、风险）。落地长文 data/weekly_review/YYYY-WW.md 供下周 L1-L4 读取。当用户要求"周复盘"、"周报"、"weekly"、"下周看什么"、"下周方向"，或周日晚自然触发时调用。
 ---
 
+## Codex automation 契约
+
+本 skill 会被 Codex automation 无人值守触发。执行时必须产出下面列出的文件和推送副作用；不要只回复完成。如果任一步骤失败，必须说明具体失败步骤，并停止声称成功。
+
+- 必须先检查本周 `data/weekly_review/YYYY-WW.md` 是否已存在。
+- 已存在且未 force 时必须跳过并报告，不重复推送。
+- 需要生成周报时必须写入 `data/weekly_review/YYYY-WW.md` 和 `data/last_weekly_card.md`。
+- 必须通过 `.claude/skills/stock-premarket/scripts/push.py --source stock-weekly` 推送摘要。
+- 输出层级：文件内容是完整卡片/长文，Telegram 推送是摘要卡片，Codex automation 最终回复只给简要运行摘要。
+
 # 定位
 
 L7 望远镜层，周维度。**不给买点**（买点交给 L1 周一早上）。两段输出：
@@ -31,7 +41,30 @@ L7 望远镜层，周维度。**不给买点**（买点交给 L1 周一早上）
 
 `push.py` 自动跑校验器（warn 模式留日志；enforce 模式拒推）。
 
-最终 assistant 消息必须是卡片/长文本身；不要"任务完成/已生成"等元状态文字。
+写入文件的内容必须是周复盘长文，Telegram 推送必须是摘要卡片；Codex automation 最终回复只给简要运行摘要，不要用“完成”替代文件写入和推送。
+
+## Step 0 · 幂等检查（先于聚合/Web）
+
+先算本周 `week_label`，检查 `data/weekly_review/YYYY-WW.md` 是否已存在。存在且未 force 时，直接停止：不跑 aggregate、不做 WebSearch、不写 `data/last_weekly_card.md`、不推送 Telegram，只在 Codex automation 最终回复中报告已跳过。
+
+```python
+from datetime import date, timedelta
+from pathlib import Path
+
+today = date.today()
+weekday = today.weekday()
+if weekday == 6:
+    friday = today - timedelta(days=2)
+elif weekday >= 4:
+    friday = today - timedelta(days=weekday - 4)
+else:
+    friday = today - timedelta(days=weekday + 3)
+iso_year, iso_week, _ = friday.isocalendar()
+week_label = f"{iso_year}-W{iso_week:02d}"
+out = Path("data/weekly_review") / f"{week_label}.md"
+if out.exists():
+    print(f"SKIP: {out} 已存在；未 force 不重复生成或推送")
+```
 
 ## Step 1 · 本地数据聚合
 
@@ -115,6 +148,8 @@ parts = {
 md = render_long_form(pack, parts)
 out = Path("data/weekly_review") / f"{pack['week_label']}.md"
 out.parent.mkdir(parents=True, exist_ok=True)
+if out.exists():
+    raise SystemExit(f"SKIP: {out} 已存在；未 force 不覆盖")
 out.write_text(md)
 print(f"WROTE: {out}")
 ```
@@ -156,7 +191,7 @@ Write 摘要卡到 `data/last_weekly_card.md`，然后用统一 push.py：
 - 节假日周（交易日 < 5）：fact pack `trading_days_in_week` 会反映；模板里加 banner "⚠ 本周仅 X 个交易日，下周判断置信度降低"。春节后/国庆后第一周尤其要标注"风格可能剧变"
 - 空仓周：Part 1 第 6 节退化为"空仓观察笔记"
 - Web 全部失败：`web_status=degraded`，Part 2 只用本地数据 + ths_hot_reason 推方向
-- 当周长文已存在：weekly_loop.py 跳过；本 skill 被直接手动调时，**覆盖**当周文件（用户预期是手动 force）
+- 当周长文已存在：未 force 时跳过并报告，不重复推送；只有用户明确 force 时才覆盖当周文件。
 
 # 关键约束
 
