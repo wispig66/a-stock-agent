@@ -18,34 +18,38 @@
   - 看 `data/card_violations/` 累积 → 误伤率高就调容差
   - 真伪虚构比例 > 80% 且零真伤 → 切 `enforce`
 
-## 切换 enforce 操作（6 处统一改）
+## 切换 enforce 操作
 
-### 1) 5 个 shell 启动脚本
+当前默认策略仍是 `warn`：`push.py` 和 `tg_listener.py` 在 env 不设时都会默认
+`warn`。当前还没有一条可执行命令能把所有 Codex automation short LLM jobs
+切到 `enforce`；切换前需要先实现并选定项目级策略：
 
-```bash
-sed -i '' 's/CARD_VALIDATOR_MODE=warn/CARD_VALIDATOR_MODE=enforce/' \
-  code/run_tg_listener.sh \
-  code/run_intraday.sh \
-  code/run_postmarket.sh \
-  code/run_premarket.sh \
-  code/run_anomaly_loop.sh
-```
+- 在 Codex automation prompt 里明确期望 `CARD_VALIDATOR_MODE=enforce`
+- 新增 runtime config，让 `push.py` 读取统一配置
+- 等 Codex automation 支持环境配置后，再通过 automation env 注入
 
-### 2) 1 个 plist（weekly 走 `bash -lc` 不读 shell 脚本，只能在 plist 注入）
-
-编辑 `launchd/com.user.stockweekly.plist` 里 `EnvironmentVariables` 块的
-`CARD_VALIDATOR_MODE` 值。
-
-### 3) 重启 daemon / 重装定时任务
+完成策略实现后，再重新安装 automation 并做 doctor 检查：
 
 ```bash
-# tg_listener daemon 立即生效
-launchctl kickstart -k gui/$(id -u)/com.user.stocktglistener
-
-# 5 个定时任务下次 launchd 触发时读新的 shell（无需手动重装）
-# weekly 需要重装 plist 因为只有它在 plist 里塞 env：
-bash scripts/install_launchd.sh  # 重装所有 plist
+bash scripts/install_codex_automations.sh
+bash scripts/doctor_codex_runtime.sh
 ```
+
+### Codex automation short LLM jobs
+
+`short LLM` jobs 由 `Codex automation` 触发，不再通过 short-job launchd plist
+注入环境变量。盘前、盘中、盘后、周报这类短时 LLM 调度应在 Codex automation
+侧落实 enforce 策略；在未完成项目级策略前，它们继续依赖 `push.py` 的默认
+`warn` 行为。
+
+旧 short-job launchd plist 只保留在 `launchd/disabled/claude/` 作为 fallback
+archive；它们不是 active job，不要重新安装为当前调度入口。
+
+### launchd daemon
+
+长时 `launchd daemon` 仍可通过 shell 脚本里的 `CARD_VALIDATOR_MODE` 控制，例如
+`tg_listener`、`anomaly_loop`。如果要让这些 daemon 进入 `enforce`，更新对应
+启动脚本中的环境变量后，重启服务使配置生效。
 
 ## 切完 enforce 后的预期
 
@@ -56,10 +60,20 @@ bash scripts/install_launchd.sh  # 重装所有 plist
 
 ## 紧急回滚
 
+当前可执行回滚只适用于长时 launchd daemon：把相关 shell 脚本里的
+`CARD_VALIDATOR_MODE=enforce` 改回 `warn`，然后重启对应服务。
+
 ```bash
 sed -i '' 's/CARD_VALIDATOR_MODE=enforce/CARD_VALIDATOR_MODE=warn/' code/run_*.sh
-# weekly plist 同步改回
 launchctl kickstart -k gui/$(id -u)/com.user.stocktglistener
+```
+
+如果未来为 Codex automation short LLM jobs 落地了 runtime config 或 automation
+env 方案，回滚应在同一配置源改回 `warn`，再运行：
+
+```bash
+bash scripts/install_codex_automations.sh
+bash scripts/doctor_codex_runtime.sh
 ```
 
 ## 模式判定逻辑代码位置
