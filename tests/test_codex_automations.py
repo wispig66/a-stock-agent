@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -47,6 +48,26 @@ def run_installer(output_dir: Path, *extra_args: str) -> subprocess.CompletedPro
     )
 
 
+def run_installer_without_output_dir(
+    sandbox: Path,
+    *extra_args: str,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HOME"] = str(sandbox / "home")
+    env["CODEX_HOME"] = str(sandbox / "codex-home")
+    env.pop("CODEX_AUTOMATIONS_DIR", None)
+    env["CODEX_AUTOMATION_MODEL"] = "gpt-5.4"
+    env["CODEX_AUTOMATION_REASONING_EFFORT"] = "medium"
+    return subprocess.run(
+        ["bash", str(SCRIPT), "--dry-run", *extra_args],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def result_details(result: subprocess.CompletedProcess[str]) -> str:
     return (
         f"exit code: {result.returncode}\n"
@@ -57,6 +78,12 @@ def result_details(result: subprocess.CompletedProcess[str]) -> str:
 
 def assert_success(result: subprocess.CompletedProcess[str]) -> None:
     assert result.returncode == 0, result_details(result)
+
+
+def installed_dir_from_stdout(result: subprocess.CompletedProcess[str]) -> Path:
+    match = re.search(r"Installed Codex automations under (.+)", result.stdout)
+    assert match, result_details(result)
+    return Path(match.group(1).strip())
 
 
 def load_job(output_dir: Path, job_id: str, result: subprocess.CompletedProcess[str]) -> dict:
@@ -80,6 +107,20 @@ def test_codex_automation_dry_run_generates_all_jobs(tmp_path):
     assert sorted(p.name for p in out_dir.iterdir()) == sorted(EXPECTED_JOBS)
 
 
+def test_codex_automation_dry_run_without_target_uses_temp_dir(tmp_path):
+    sandbox = tmp_path / "sandbox"
+    live_dir = sandbox / "codex-home" / "automations"
+
+    result = run_installer_without_output_dir(sandbox)
+
+    assert_success(result)
+    generated_dir = installed_dir_from_stdout(result)
+    assert generated_dir != live_dir
+    assert not live_dir.exists(), result_details(result)
+    assert generated_dir.exists(), result_details(result)
+    assert sorted(p.name for p in generated_dir.iterdir()) == sorted(EXPECTED_JOBS)
+
+
 def test_codex_automation_toml_contract(tmp_path):
     out_dir = tmp_path / "automations"
     result = run_installer(out_dir)
@@ -98,6 +139,30 @@ def test_codex_automation_toml_contract(tmp_path):
         assert job["cwds"] == [str(ROOT)]
         assert isinstance(job["created_at"], int)
         assert isinstance(job["updated_at"], int)
+
+
+def test_codex_automation_toml_escapes_string_values(tmp_path):
+    out_dir = tmp_path / "automations"
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path / "home")
+    env["CODEX_HOME"] = str(tmp_path / "codex-home")
+    env["CODEX_AUTOMATIONS_DIR"] = str(out_dir)
+    env["CODEX_AUTOMATION_MODEL"] = 'bad"model\\x'
+    env["CODEX_AUTOMATION_REASONING_EFFORT"] = "medium"
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--dry-run"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert_success(result)
+    job = load_job(out_dir, "stock-premarket", result)
+    assert job["model"] == 'bad"model\\x'
+    assert job["reasoning_effort"] == "medium"
 
 
 def test_codex_automation_prompts_have_unattended_contract(tmp_path):
