@@ -88,6 +88,18 @@ def format_alert(now: datetime, symbol: str, label: str, row: dict) -> str:
     return f"🆕 [{t[:5]}] {label} · {code} {name} · {symbol}  {info}"
 
 
+def _parse_rocket_info(info: str) -> tuple[str, str]:
+    """akshare 火箭发射 相关信息 = '3分钟涨幅,现价,3分钟涨幅'（第3段冗余）。
+    返回 (现价, 涨幅%) 的人类可读字符串。解析失败回退到原始字符串。"""
+    try:
+        parts = str(info).split(",")
+        chg = float(parts[0]) * 100
+        price = float(parts[1])
+        return f"{price:.2f} 元", f"3 分钟 +{chg:.1f}%"
+    except (ValueError, IndexError):
+        return info, ""
+
+
 def format_rocket_digest(now: datetime, entries: list[dict]) -> str:
     """火箭发射本轮聚合 digest。entries 已是仅持仓+观察池命中的 row.to_dict()。"""
     head = f"🚀 [{now.strftime('%H:%M')}] 观察池加速中（派别 D 触发参考）· {len(entries)} 只"
@@ -95,8 +107,11 @@ def format_rocket_digest(now: datetime, entries: list[dict]) -> str:
     for row in entries[:8]:
         code = row["代码"]
         name = row["名称"]
-        info = row.get("相关信息", "")
-        lines.append(f"- {code} {name}  {info}")
+        price_s, chg_s = _parse_rocket_info(row.get("相关信息", ""))
+        if chg_s:
+            lines.append(f"- {code} {name}  {price_s}  {chg_s}")
+        else:
+            lines.append(f"- {code} {name}  {price_s}")
     if len(entries) > 8:
         lines.append(f"- …还有 {len(entries) - 8} 只")
     return "\n".join(lines)
