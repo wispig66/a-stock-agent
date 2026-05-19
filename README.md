@@ -103,7 +103,7 @@ bash scripts/stop_tg_listener.sh     # 停
 
 `stock_basic` 表（代码 → 名称 / 板块 / ST 标志）由 `scripts/refresh_stock_basic.py` 每日刷新，已挂到 postmarket 流程末尾。
 
-**注意（macOS TCC/FDA）**：launchd 模板 `launchd/com.user.stocktglistener.plist` 已入库，但项目在 `~/Desktop` 下时 launchd 拉起的 `uv` 进程会在 `getcwd` 阻塞（Desktop 是受 TCC 保护的目录，背景守护进程拿不到 Full Disk Access）。若你把项目搬到 `~/code` 之类无 TCC 限制的目录，`bash scripts/install_launchd.sh` 即可挂载常驻；否则用上面的 `start_tg_listener.sh` 在交互式 shell 里拉起（终端 inheritance 自带 TCC 权限）。
+**注意（macOS TCC/FDA）**：launchd 模板 `launchd/disabled/com.user.stocktglistener.plist` 已挪到 `disabled/` 子目录，**`install_launchd.sh` 不再自动注册它**。原因：项目在 `~/Desktop` 下时 launchd 拉起的 `uv` 进程会在 `getcwd` 阻塞（Desktop 是受 TCC 保护的目录，背景守护进程拿不到 Full Disk Access），表现为 `uv` 卡死无子进程。如果你把项目搬到 `~/code` 之类无 TCC 限制的目录，可以把 plist 从 `disabled/` 挪回 `launchd/` 再跑 `install_launchd.sh`；否则一律用 `start_tg_listener.sh` 在交互式 SSH/终端里拉起（继承终端 TCC 权限）。
 
 ### TG 随时分析 · stock-ask（全天候）
 
