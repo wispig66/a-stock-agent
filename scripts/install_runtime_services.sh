@@ -22,6 +22,8 @@ if [ "${ENABLE_TG_LISTENER_LAUNCHD:-0}" = "1" ]; then
     TEMPLATES+=("launchd/disabled/com.user.stocktglistener.plist")
 fi
 
+RENDERED_DIR=""
+
 preflight() {
     local template
 
@@ -30,8 +32,8 @@ preflight() {
         exit 1
     fi
 
-    if ! command -v launchctl >/dev/null 2>&1; then
-        echo "missing required command: launchctl" >&2
+    if ! command -v plutil >/dev/null 2>&1; then
+        echo "missing required command: plutil" >&2
         exit 1
     fi
 
@@ -52,13 +54,14 @@ render_plist() {
     python3 - "$template" "$rendered_dir/$plist_name" "$PROJECT_ROOT" <<'PY'
 from pathlib import Path
 import sys
+from xml.sax.saxutils import escape
 
 template_path = Path(sys.argv[1])
 target_path = Path(sys.argv[2])
 project_root = sys.argv[3]
 
 text = template_path.read_text(encoding="utf-8")
-target_path.write_text(text.replace("{{PROJECT_ROOT}}", project_root), encoding="utf-8")
+target_path.write_text(text.replace("{{PROJECT_ROOT}}", escape(project_root)), encoding="utf-8")
 PY
 }
 
@@ -102,15 +105,25 @@ install_plist() {
     echo "[+] bootstrap $label"
 }
 
-mkdir -p "$TARGET_DIR" logs
 preflight
-
 RENDERED_DIR="$(mktemp -d "${TMPDIR:-/tmp}/stock-runtime-services.XXXXXX")"
 trap 'rm -rf "$RENDERED_DIR"' EXIT
 
 for template in "${TEMPLATES[@]}"; do
     render_plist "$template" "$RENDERED_DIR"
 done
+
+for template in "${TEMPLATES[@]}"; do
+    plist_name="$(basename "$template")"
+    plutil -lint "$RENDERED_DIR/$plist_name" >/dev/null
+done
+
+if ! command -v launchctl >/dev/null 2>&1; then
+    echo "missing required command: launchctl" >&2
+    exit 1
+fi
+
+mkdir -p "$TARGET_DIR" logs
 
 for template in "${TEMPLATES[@]}"; do
     install_plist "$template" "$RENDERED_DIR"
