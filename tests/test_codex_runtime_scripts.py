@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import shlex
 from pathlib import Path
 
 
@@ -266,6 +267,52 @@ cat > {ssh_payload}
     assert "Remote deployment summary:" in payload
 
 
+def test_remote_codex_deploy_quotes_config_values_for_remote_payload(tmp_path) -> None:
+    read_script("scripts/deploy_remote_codex.sh")
+    env = base_env(tmp_path)
+    ssh_payload = tmp_path / "ssh.payload"
+    write_executable(
+        tmp_path / "bin" / "ssh",
+        f"""#!/usr/bin/env bash
+cat > {ssh_payload}
+""",
+    )
+    remote_root = tmp_path / 'remote stock $(touch SHOULD_NOT_RUN)'
+    repo_url = 'https://example.com/org/stock repo.git?x=$(touch BAD_REPO)'
+    branch = 'feature/"quoted branch"'
+    config = tmp_path / "deploy.remote.env"
+    config.write_text(
+        "\n".join(
+            [
+                "REMOTE_HOST=tester@example-host",
+                f"REMOTE_ROOT={shlex.quote(str(remote_root))}",
+                f"REMOTE_REPO_URL={shlex.quote(repo_url)}",
+                f"REMOTE_BRANCH={shlex.quote(branch)}",
+                "REMOTE_RUN_TESTS=0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env["DEPLOY_REMOTE_ENV"] = str(config)
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "deploy_remote_codex.sh")],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = ssh_payload.read_text(encoding="utf-8")
+    syntax = subprocess.run(["bash", "-n", str(ssh_payload)], text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+    assert f"REMOTE_ROOT={shlex.quote(str(remote_root))}" in payload
+    assert f"REMOTE_REPO_URL={shlex.quote(repo_url)}" in payload
+    assert f"REMOTE_BRANCH={shlex.quote(branch)}" in payload
+
+
 def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
     script = read_script("scripts/doctor_codex_runtime.sh")
 
@@ -389,6 +436,55 @@ def test_runtime_doctor_fails_when_legacy_short_launchd_is_loaded(tmp_path) -> N
 
     assert result.returncode != 0
     assert "legacy short LLM launchd job still loaded: com.user.stockpremarket" in result.stderr
+
+
+def test_runtime_doctor_fails_when_codex_automation_is_missing(tmp_path) -> None:
+    read_script("scripts/doctor_codex_runtime.sh")
+    env = base_env(tmp_path)
+    project = make_runtime_project(tmp_path)
+    env["PROJECT_ROOT"] = str(project)
+    home = Path(env["HOME"])
+    prepare_codex_home(home, project)
+    shutil.rmtree(home / ".codex" / "automations" / "stock-premarket")
+    write_launchctl_fake(tmp_path / "bin")
+
+    result = subprocess.run(
+        ["bash", str(project / "scripts" / "doctor_codex_runtime.sh")],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "automation stock-premarket missing" in result.stderr
+
+
+def test_runtime_doctor_fails_when_automation_cwd_points_elsewhere(tmp_path) -> None:
+    read_script("scripts/doctor_codex_runtime.sh")
+    env = base_env(tmp_path)
+    project = make_runtime_project(tmp_path)
+    env["PROJECT_ROOT"] = str(project)
+    home = Path(env["HOME"])
+    prepare_codex_home(home, project)
+    (home / ".codex" / "automations" / "stock-premarket" / "automation.toml").write_text(
+        'cwds = ["/tmp/not-this-runtime"]\n',
+        encoding="utf-8",
+    )
+    write_launchctl_fake(tmp_path / "bin")
+
+    result = subprocess.run(
+        ["bash", str(project / "scripts" / "doctor_codex_runtime.sh")],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "automation stock-premarket cwd does not point to" in result.stderr
 
 
 def test_new_runtime_shell_scripts_parse_with_bash_n() -> None:
