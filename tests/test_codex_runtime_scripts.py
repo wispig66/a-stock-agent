@@ -217,6 +217,14 @@ cat > {ssh_payload}
     assert result.returncode == 0, result.stderr
     assert ssh_args.read_text(encoding="utf-8").strip() == 'tester@example-host bash -s'
     payload = ssh_payload.read_text(encoding="utf-8")
+    payload_syntax = subprocess.run(
+        ["bash", "-n", str(ssh_payload)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert payload_syntax.returncode == 0, payload_syntax.stderr
     expected_sequence = [
         'if [ ! -d "$REMOTE_ROOT/.git" ]; then',
         'git clone "$REMOTE_REPO_URL" "$REMOTE_ROOT"',
