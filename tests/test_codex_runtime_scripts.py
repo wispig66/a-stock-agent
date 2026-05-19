@@ -13,14 +13,14 @@ def read_script(relative_path: str) -> str:
     return path.read_text()
 
 
-def assert_contains_all(text: str, expected: list[str]) -> None:
+def assert_contains_all(text: str, expected: list[str], *, label: str = "text") -> None:
     missing = [item for item in expected if item not in text]
-    assert not missing, f"Missing expected text: {missing}"
+    assert not missing, f"{label} missing expected text: {missing}"
 
 
-def assert_contains_none(text: str, forbidden: list[str]) -> None:
+def assert_contains_none(text: str, forbidden: list[str], *, label: str = "text") -> None:
     present = [item for item in forbidden if item in text]
-    assert not present, f"Unexpected text found: {present}"
+    assert not present, f"{label} has unexpected text: {present}"
 
 
 def test_setup_delegates_runtime_and_codex_installation() -> None:
@@ -52,16 +52,11 @@ def test_runtime_services_installer_only_handles_long_running_templates() -> Non
             "stockanomalyloop",
             "stockthemeloop",
         ],
+        label="scripts/install_runtime_services.sh",
     )
-    assert_contains_none(
-        script,
-        [
-            "stockpremarket",
-            "stockintraday",
-            "stockpostmarket",
-            "stockweekly",
-        ],
-    )
+    for short_job in ["stockpremarket", "stockintraday", "stockpostmarket", "stockweekly"]:
+        assert f'"com.user.{short_job}"' not in script
+        assert f"'com.user.{short_job}'" not in script
 
 
 def test_remote_codex_deploy_uses_git_and_runtime_helpers() -> None:
@@ -71,13 +66,27 @@ def test_remote_codex_deploy_uses_git_and_runtime_helpers() -> None:
         script,
         [
             "deploy.remote.env",
+            "REMOTE_HOST",
+            "REMOTE_ROOT",
+            "REMOTE_REPO_URL",
+            "REMOTE_BRANCH",
+            "REMOTE_RUN_TESTS",
+            'ssh "$REMOTE_HOST" "bash -s"',
+            '[ ! -d "$REMOTE_ROOT/.git" ]',
             "git clone",
+            "git fetch origin",
+            "git checkout",
             "git pull --ff-only",
+            "bash scripts/setup.sh",
             "scripts/sync_codex_skills.sh",
             "scripts/install_runtime_services.sh",
             "scripts/install_codex_automations.sh",
+            "scripts/disable_legacy_claude_launchd.sh",
             "scripts/doctor_codex_runtime.sh",
+            "uv run pytest tests/",
+            "Remote deployment summary:",
         ],
+        label="scripts/deploy_remote_codex.sh",
     )
     assert "rsync" not in script
 
@@ -101,11 +110,18 @@ def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
             "cwd",
             "PROJECT_ROOT",
             "launchctl list",
+            "command -v uv",
+            "command -v sqlite3",
+            ".agents/skills/$skill/SKILL.md",
+            "sqlite_master",
+            "cwds =",
+            "fail \"legacy short LLM launchd job still loaded",
             "com.user.stockpremarket",
             "com.user.stockintraday",
             "com.user.stockpostmarket",
             "com.user.stockweekly",
         ],
+        label="scripts/doctor_codex_runtime.sh",
     )
     assert_contains_none(
         script,
@@ -113,6 +129,7 @@ def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
             "notify.py test",
             "sendMessage",
         ],
+        label="scripts/doctor_codex_runtime.sh",
     )
 
 
