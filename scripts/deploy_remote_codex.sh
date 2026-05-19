@@ -20,14 +20,64 @@ quote_double() {
     printf '"%s"' "$value"
 }
 
+trim() {
+    local value="$1"
+    value="${value##+([[:space:]])}"
+    value="${value%%+([[:space:]])}"
+    printf '%s' "$value"
+}
+
+parse_deploy_env() {
+    local raw line key value first last line_no
+
+    shopt -s extglob
+    line_no=0
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        line_no=$((line_no + 1))
+        line="$(trim "$raw")"
+
+        case "$line" in
+            ""|\#*) continue ;;
+        esac
+
+        if [[ ! "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            fail "invalid deploy env line $line_no: $raw"
+        fi
+
+        key="${BASH_REMATCH[1]}"
+        value="$(trim "${BASH_REMATCH[2]}")"
+
+        case "$key" in
+            REMOTE_HOST|REMOTE_ROOT|REMOTE_REPO_URL|REMOTE_BRANCH|REMOTE_RUN_TESTS) ;;
+            *) fail "unknown deploy env key on line $line_no: $key" ;;
+        esac
+
+        if [ "${#value}" -ge 2 ]; then
+            first="${value:0:1}"
+            last="${value:$((${#value} - 1)):1}"
+            if [ "$first" = "'" ] || [ "$first" = '"' ]; then
+                [ "$last" = "$first" ] || fail "unterminated quoted value on line $line_no"
+                value="${value:1:$((${#value} - 2))}"
+            fi
+        elif [ "$value" = "'" ] || [ "$value" = '"' ]; then
+            fail "unterminated quoted value on line $line_no"
+        fi
+
+        case "$key" in
+            REMOTE_HOST) REMOTE_HOST="$value" ;;
+            REMOTE_ROOT) REMOTE_ROOT="$value" ;;
+            REMOTE_REPO_URL) REMOTE_REPO_URL="$value" ;;
+            REMOTE_BRANCH) REMOTE_BRANCH="$value" ;;
+            REMOTE_RUN_TESTS) REMOTE_RUN_TESTS="$value" ;;
+        esac
+    done <"$DEPLOY_ENV"
+}
+
 if [ ! -f "$DEPLOY_ENV" ]; then
     fail "missing deploy env: $DEPLOY_ENV"
 fi
 
-set -a
-# shellcheck disable=SC1090
-. "$DEPLOY_ENV"
-set +a
+parse_deploy_env
 
 REMOTE_BRANCH="${REMOTE_BRANCH:-main}"
 REMOTE_RUN_TESTS="${REMOTE_RUN_TESTS:-1}"
@@ -80,4 +130,4 @@ echo "  branch: $(git branch --show-current 2>/dev/null || echo "$REMOTE_BRANCH"
 echo "  commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo "  tests: $REMOTE_RUN_TESTS"
 REMOTE_PAYLOAD
-} | ssh "$REMOTE_HOST" "bash -s"
+} | ssh -- "$REMOTE_HOST" "bash -s"

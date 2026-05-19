@@ -78,11 +78,33 @@ check_automation_cwd() {
         fail "automation $job missing: $toml"
     fi
 
-    if ! grep -Fq "cwds =" "$toml"; then
-        fail "automation $job missing cwds = in $toml"
-    fi
+    if ! python3 - "$toml" "$PROJECT_ROOT" <<'PY'
+import sys
 
-    if ! grep -Fq "\"$PROJECT_ROOT\"" "$toml"; then
+try:
+    import tomllib
+except ModuleNotFoundError:
+    sys.stderr.write("python3 with tomllib is required\n")
+    sys.exit(2)
+
+toml_path, project_root = sys.argv[1], sys.argv[2]
+
+with open(toml_path, "rb") as fh:
+    data = tomllib.load(fh)
+
+cwds = data.get("cwds")
+if not isinstance(cwds, list):
+    sys.stderr.write("cwds must be an array\n")
+    sys.exit(1)
+
+if not all(isinstance(item, str) for item in cwds):
+    sys.stderr.write("cwds must contain only strings\n")
+    sys.exit(1)
+
+if project_root not in cwds:
+    sys.exit(1)
+PY
+    then
         fail "automation $job cwd does not point to $PROJECT_ROOT"
     fi
 

@@ -202,7 +202,7 @@ def test_remote_codex_deploy_uses_git_and_runtime_helpers() -> None:
             "REMOTE_REPO_URL",
             "REMOTE_BRANCH",
             "REMOTE_RUN_TESTS",
-            'ssh "$REMOTE_HOST" "bash -s"',
+            'ssh -- "$REMOTE_HOST" "bash -s"',
             '[ ! -d "$REMOTE_ROOT/.git" ]',
             "git clone",
             'cd "$REMOTE_ROOT"',
@@ -260,7 +260,7 @@ cat > {ssh_payload}
     )
 
     assert result.returncode == 0, result.stderr
-    assert ssh_args.read_text(encoding="utf-8").strip() == 'tester@example-host bash -s'
+    assert ssh_args.read_text(encoding="utf-8").strip() == '-- tester@example-host bash -s'
     payload = ssh_payload.read_text(encoding="utf-8")
     payload_syntax = subprocess.run(
         ["bash", "-n", str(ssh_payload)],
@@ -354,6 +354,86 @@ bash {ssh_payload}
     assert "uv|run pytest tests/" not in remote_log
     assert not (tmp_path / "SHOULD_NOT_RUN").exists()
     assert not (tmp_path / "BAD_REPO").exists()
+
+
+def test_remote_codex_deploy_does_not_execute_env_command_substitution(tmp_path) -> None:
+    read_script("scripts/deploy_remote_codex.sh")
+    env = base_env(tmp_path)
+    write_executable(
+        tmp_path / "bin" / "ssh",
+        """#!/usr/bin/env bash
+cat >/dev/null
+""",
+    )
+    config = tmp_path / "deploy.remote.env"
+    config.write_text(
+        "\n".join(
+            [
+                "REMOTE_HOST=tester@example-host",
+                "REMOTE_ROOT=$(touch BAD)",
+                "REMOTE_REPO_URL=https://example.com/org/stock.git",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env["DEPLOY_REMOTE_ENV"] = str(config)
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "deploy_remote_codex.sh")],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode in {0, 1}, result.stderr
+    assert not (tmp_path / "BAD").exists()
+
+
+@pytest.mark.parametrize(
+    ("line", "expected_error"),
+    [
+        ("REMOTE_PASSWORD=secret", "unknown deploy env key"),
+        ("export REMOTE_HOST=tester@example-host", "invalid deploy env line"),
+    ],
+)
+def test_remote_codex_deploy_rejects_unknown_or_invalid_env_lines(
+    tmp_path, line: str, expected_error: str
+) -> None:
+    read_script("scripts/deploy_remote_codex.sh")
+    env = base_env(tmp_path)
+    write_executable(
+        tmp_path / "bin" / "ssh",
+        """#!/usr/bin/env bash
+cat >/dev/null
+""",
+    )
+    config = tmp_path / "deploy.remote.env"
+    config.write_text(
+        "\n".join(
+            [
+                "REMOTE_HOST=tester@example-host",
+                "REMOTE_ROOT=/tmp/remote-stock",
+                "REMOTE_REPO_URL=https://example.com/org/stock.git",
+                line,
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env["DEPLOY_REMOTE_ENV"] = str(config)
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "deploy_remote_codex.sh")],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
 
 
 def test_remote_codex_deploy_executes_helpers_and_remote_tests(tmp_path) -> None:
@@ -519,7 +599,8 @@ def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
             "command -v sqlite3",
             ".agents/skills/$skill/SKILL.md",
             "sqlite_master",
-            "cwds =",
+            "tomllib",
+            "cwds must be an array",
             "fail \"legacy short LLM launchd job still loaded",
             "com.user.stockpremarket",
             "com.user.stockintraday",
@@ -670,6 +751,67 @@ def test_runtime_doctor_fails_when_automation_cwd_points_elsewhere(tmp_path, job
 
     assert result.returncode != 0
     assert f"automation {job_id} cwd does not point to" in result.stderr
+
+
+def test_runtime_doctor_fails_when_automation_cwd_only_appears_in_comment(tmp_path) -> None:
+    read_script("scripts/doctor_codex_runtime.sh")
+    env = base_env(tmp_path)
+    project = make_runtime_project(tmp_path)
+    env["PROJECT_ROOT"] = str(project)
+    home = Path(env["HOME"])
+    prepare_codex_home(home, project)
+    (home / ".codex" / "automations" / "stock-premarket" / "automation.toml").write_text(
+        f'# cwds = ["{project}"]\ncwds = ["/tmp/not-this-runtime"]\n',
+        encoding="utf-8",
+    )
+    write_launchctl_fake(tmp_path / "bin")
+
+    result = subprocess.run(
+        ["bash", str(project / "scripts" / "doctor_codex_runtime.sh")],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "automation stock-premarket cwd does not point to" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("toml_text", "expected_error"),
+    [
+        ("name = \"stock-premarket\"\n", "cwd does not point to"),
+        ("cwds = \"/tmp/not-an-array\"\n", "cwd does not point to"),
+    ],
+)
+def test_runtime_doctor_fails_when_automation_cwds_is_missing_or_not_an_array(
+    tmp_path, toml_text: str, expected_error: str
+) -> None:
+    read_script("scripts/doctor_codex_runtime.sh")
+    env = base_env(tmp_path)
+    project = make_runtime_project(tmp_path)
+    env["PROJECT_ROOT"] = str(project)
+    home = Path(env["HOME"])
+    prepare_codex_home(home, project)
+    (home / ".codex" / "automations" / "stock-premarket" / "automation.toml").write_text(
+        toml_text,
+        encoding="utf-8",
+    )
+    write_launchctl_fake(tmp_path / "bin")
+
+    result = subprocess.run(
+        ["bash", str(project / "scripts" / "doctor_codex_runtime.sh")],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
 
 
 def test_new_runtime_shell_scripts_parse_with_bash_n() -> None:
