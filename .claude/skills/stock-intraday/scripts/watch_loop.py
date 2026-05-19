@@ -1,13 +1,14 @@
 """
 盘中阈值轮询脚本 · 独立后台进程，不调 CC。
 
-监控对象：今日 push_log 的观察池 + holdings.yaml 持仓
+监控对象：今日 decision_tickets / 旧观察池 + holdings.yaml 持仓
 监控时段：交易日 09:31-11:29 + 13:01-14:59（避开 4 时点和 CC 卡片重叠）
 轮询频率：90 秒一次
 触发条件（每只票同一类型一次会话只推一次）：
   · 💥 跌破止损：current ≤ holdings.stop_loss → 强推
   · 🚨 跌破观察池止损：current ≤ watchlist.stop_loss
-  · 🚀 触发观察池买点：watchlist.buy ≤ current ≤ watchlist.buy * 1.03 AND 当前涨幅 < 9.8（未涨停，超出 3% 视为已错过）
+  · 🚀 触发主攻/备选买点：watchlist.buy ≤ current ≤ max_chase_price 或 buy * 1.03
+  · 🟡 潜伏低吸区：ambush.entry_low ≤ current ≤ ambush.entry_high，只低吸不追高
   · ✅ 封板：涨幅 ≥ 9.8（注意不是 10，主板涨停 10%，创业板 20%——这里只盯主板）
   · 💥 持仓异动放量：持仓股 |涨幅| ≥ 5 且 量比 ≥ 2
   · 💥 持仓砸盘：持仓股涨幅 ≤ -5
@@ -124,11 +125,20 @@ def evaluate(
                 ))
 
     if w:
+        lane = w.get("lane")
         buy = w.get("buy")
         sl = w.get("stop_loss")
+        entry_low = w.get("entry_low")
+        entry_high = w.get("entry_high")
         if sl and price <= sl:
             alerts.append(("watch_stop", f"🚨 观察池跌破止损 · {code} {name} [{w.get('genre')}] · 现价 {price} ≤ 止损 {sl} → 假突破已现，未持仓忽略，已持仓立即出"))
-        if buy and price >= buy and price <= buy * 1.03 and pct < 9.8:
+        if lane == "ambush":
+            if entry_low and entry_high and entry_low <= price <= entry_high:
+                alerts.append((
+                    "ambush_zone",
+                    f"🟡 潜伏低吸区 · {code} {name} [E] · 现价 {price} 在 {entry_low}-{entry_high} 内 · 小仓试错，不追高",
+                ))
+        elif buy and price >= buy and price <= (w.get("max_chase_price") or buy * 1.03) and pct < 9.8:
             alerts.append(("watch_trigger", f"🚀 观察池触发买点 · {code} {name} [{w.get('genre')}] · 现价 {price} ≥ 买点 {buy}（{pct}%）"))
         if pct >= 9.8:
             alerts.append(("watch_zt", f"✅ 观察池封板 · {code} {name} [{w.get('genre')}] · {pct}% 已涨停"))

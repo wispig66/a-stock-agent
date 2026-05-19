@@ -3,7 +3,8 @@ Skill 内置推送 wrapper：从 stdin 或 --text 接收消息，调用项目 co
 自动按 Telegram 4096 上限分段（保留 200 字符余量）。
 
 推送前先过 card_validator：卡片里的数据点必须在 data/allowed_latest_<source>.json
-里。env CARD_VALIDATOR_MODE ∈ {warn, enforce, off}，默认 warn（只写审计日志不拦截）。
+里。env CARD_VALIDATOR_MODE ∈ {warn, enforce, off}。
+无人值守定时卡默认 enforce；其他来源默认 warn（只写审计日志不拦截）。
 
 用法：
     echo "今日观察池..." | python push.py --source stock-intraday
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -24,13 +26,27 @@ sys.path.insert(0, str(ROOT / "code"))
 from notify import push  # noqa: E402
 
 CHUNK_LIMIT = 3800
-VALIDATOR_MODE = os.environ.get("CARD_VALIDATOR_MODE", "warn").lower()
 DB_PATH = ROOT / "data" / "daily.db"
+AUTOMATION_ENFORCE_SOURCES = {
+    "stock-intraday",
+    "stock-postmarket",
+    "stock-weekly",
+}
+MACHINE_BLOCK_RE = re.compile(r"\n?```decision_tickets\s*.*?```\n?", re.DOTALL)
 
 
-def _validate(text: str, source: str) -> tuple[bool, list]:
+def validator_mode(source: str) -> str:
+    explicit = os.environ.get("CARD_VALIDATOR_MODE")
+    if explicit:
+        return explicit.lower()
+    if source in AUTOMATION_ENFORCE_SOURCES:
+        return "enforce"
+    return "warn"
+
+
+def _validate(text: str, source: str, mode: str) -> tuple[bool, list]:
     """读 data/allowed_latest_<source>.json 校验 text。无 allowed 文件 = 跳过校验。"""
-    if VALIDATOR_MODE == "off":
+    if mode == "off":
         return (True, [])
     allowed_file = ROOT / "data" / f"allowed_latest_{source}.json"
     if not allowed_file.exists():
@@ -45,7 +61,7 @@ def _validate(text: str, source: str) -> tuple[bool, list]:
         return (True, [])
 
 
-def _log_violations(text: str, source: str, violations: list) -> Path:
+def _log_violations(text: str, source: str, mode: str, violations: list) -> Path:
     """落审计日志到 data/card_violations/<ts>_<source>.json。"""
     log_dir = ROOT / "data" / "card_violations"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -53,11 +69,16 @@ def _log_violations(text: str, source: str, violations: list) -> Path:
     fn.write_text(json.dumps({
         "ts": datetime.now().isoformat(),
         "source": source,
-        "mode": VALIDATOR_MODE,
+        "mode": mode,
         "card_text": text,
         "violations": [v.to_dict() for v in violations],
     }, ensure_ascii=False, indent=2))
     return fn
+
+
+def strip_machine_blocks(text: str) -> str:
+    """Remove machine-readable blocks that should be stored but not pushed."""
+    return re.sub(r"\n{3,}", "\n\n", MACHINE_BLOCK_RE.sub("\n\n", text))
 
 
 def split_chunks(text: str) -> list[str]:
@@ -80,13 +101,16 @@ def split_chunks(text: str) -> list[str]:
     return chunks
 
 
-def main():
+def main(argv: list[str] | None = None):
     p = argparse.ArgumentParser()
     p.add_argument("--text", help="消息内容直传")
     p.add_argument("--file", help="从文件读消息内容")
     p.add_argument("--source", default="stock-premarket",
                    help="入库时记录的来源标签，默认 stock-premarket")
-    args = p.parse_args()
+    p.add_argument("--notify-blocked", action="store_true",
+                   help="enforce 拦截时也推送一条拦截告警；默认只打印错误并退出")
+    args = p.parse_args(argv)
+    mode = validator_mode(args.source)
 
     if args.file:
         text = Path(args.file).read_text(encoding="utf-8")
@@ -94,31 +118,35 @@ def main():
         text = args.text
     else:
         text = sys.stdin.read()
-    text = text.strip()
+    text = strip_machine_blocks(text).strip()
     if not text:
         print("ERROR: 空消息，未发送", file=sys.stderr)
         sys.exit(1)
 
     # 校验
-    ok, violations = _validate(text, args.source)
+    ok, violations = _validate(text, args.source, mode)
     if not ok:
         from lib.card_validator import format_violations
-        log_file = _log_violations(text, args.source, violations)
+        log_file = _log_violations(text, args.source, mode, violations)
         summary = format_violations(violations)
         print(f"[push] ⚠️ 卡片含 {len(violations)} 处数据来源违规 "
-              f"(mode={VALIDATOR_MODE}) 日志={log_file.name}\n{summary}",
+              f"(mode={mode}) 日志={log_file.name}\n{summary}",
               file=sys.stderr)
-        if VALIDATOR_MODE == "enforce":
-            warn_card = (
-                f"⚠️ <b>卡片被拦截（{args.source}）</b>\n"
-                f"含 {len(violations)} 处数据未在 fact pack 中：\n\n"
-                f"{summary}\n\n"
-                f"审计日志：data/card_violations/{log_file.name}\n"
-                f"原卡未推送。请检查 pipeline 输出或调整 SKILL.md。"
-            )
-            r = push(warn_card, source=f"{args.source}-blocked")
-            print(f"[push] enforce 模式：原卡已拒推；告警卡 msg_id="
-                  f"{r['result']['message_id']}")
+        if mode == "enforce":
+            if args.notify_blocked:
+                warn_card = (
+                    f"⚠️ <b>卡片被拦截（{args.source}）</b>\n"
+                    f"含 {len(violations)} 处数据未在 fact pack 中：\n\n"
+                    f"{summary}\n\n"
+                    f"审计日志：data/card_violations/{log_file.name}\n"
+                    f"原卡未推送。请检查 pipeline 输出或调整 SKILL.md。"
+                )
+                r = push(warn_card, source=f"{args.source}-blocked")
+                print(f"[push] enforce 模式：原卡已拒推；告警卡 msg_id="
+                      f"{r['result']['message_id']}")
+            else:
+                print("[push] enforce 模式：原卡已拒推，未发送 Telegram",
+                      file=sys.stderr)
             sys.exit(2)
         # warn 模式：继续推但已留下违规日志
 

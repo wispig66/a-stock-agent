@@ -17,6 +17,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from db import connect as db_connect
+from lib.decision import load_tickets
 
 DB = Path(__file__).resolve().parent.parent / "data" / "daily.db"
 
@@ -172,6 +173,57 @@ def review_today(entries: list[dict]) -> list[dict]:
     return entries
 
 
+def review_decision_tickets(tickets: list[dict], spot_df) -> list[dict]:
+    """Score decision_tickets against a spot dataframe without reparsing card text."""
+    if spot_df is None or spot_df.empty:
+        for t in tickets:
+            t["status"] = "无行情数据"
+        return tickets
+
+    sub = spot_df[spot_df["代码"].isin([t["code"] for t in tickets])].set_index("代码")
+    for t in tickets:
+        code = t["code"]
+        if code not in sub.index:
+            t["status"] = "无数据"
+            continue
+        row = sub.loc[code]
+        high = float(row["最高"])
+        low = float(row["最低"])
+        close = float(row["最新价"])
+        pct = float(row["涨跌幅"])
+        t.update({"high": high, "low": low, "close": close, "pct": pct})
+
+        lane = t.get("lane")
+        stop = t.get("stop_price")
+        entry_low = t.get("entry_low")
+        entry_high = t.get("entry_high")
+
+        if stop is not None and low <= float(stop):
+            t["status"] = "💥 跌破止损/失效"
+        elif lane in {"main", "backup"}:
+            trigger = entry_high is not None and high >= float(entry_high)
+            red = entry_high is not None and close >= float(entry_high)
+            if trigger and red:
+                t["status"] = "✅ 主攻触发+收红" if lane == "main" else "✅ 备选触发+收红"
+            elif trigger:
+                t["status"] = "⚠️ 触发+假突破"
+            else:
+                t["status"] = "❌ 未触发"
+        elif lane == "ambush":
+            touched = (
+                entry_low is not None
+                and entry_high is not None
+                and low <= float(entry_high)
+                and high >= float(entry_low)
+            )
+            t["status"] = "🟡 潜伏触达低吸区" if touched else "⏳ 潜伏未到低吸区"
+        elif lane == "ban":
+            t["status"] = "🚫 禁买后走强" if pct >= 5 else "✅ 禁买规避/无强信号"
+        else:
+            t["status"] = "未分类"
+    return tickets
+
+
 def persist_stats(reviewed: list[dict], review_date: str) -> int:
     with db_connect(DB) as conn:
         conn.execute(REVIEW_STATS_SCHEMA)
@@ -235,13 +287,62 @@ def render_markdown(reviewed: list[dict]) -> str:
     return "\n".join(out)
 
 
+def render_decision_markdown(reviewed: list[dict]) -> str:
+    out = [
+        "| lane | 代码 | 名称 | 派 | 区间/触发 | 今收 | 涨跌% | 状态 |",
+        "|---|------|------|----|------|------|-------|------|",
+    ]
+    for t in reviewed:
+        low = t.get("entry_low")
+        high = t.get("entry_high")
+        zone = "-"
+        if low is not None and high is not None:
+            zone = f"{low:.2f}-{high:.2f}"
+        elif high is not None:
+            zone = f">={high:.2f}"
+        close_s = f"{t['close']:.2f}" if "close" in t else "-"
+        pct_s = f"{t['pct']:+.2f}" if "pct" in t else "-"
+        out.append(
+            f"| {t.get('lane')} | {t['code']} | {t['name']} | {t.get('faction') or '-'} | "
+            f"{zone} | {close_s} | {pct_s} | {t.get('status','-')} |"
+        )
+
+    main = [t for t in reviewed if t.get("lane") == "main"]
+    ambush = [t for t in reviewed if t.get("lane") == "ambush"]
+    bans = [t for t in reviewed if t.get("lane") == "ban"]
+    out += [
+        "",
+        "**决策评分**",
+        f"- 主攻：{main[0].get('status') if main else '今日无主攻'}",
+        f"- 潜伏：{sum('低吸区' in t.get('status','') for t in ambush)}/{len(ambush)} 触达低吸区" if ambush else "- 潜伏：无",
+        f"- 禁买：{sum('禁买后走强' in t.get('status','') for t in bans)}/{len(bans)} 禁买后走强" if bans else "- 禁买：无",
+    ]
+    return "\n".join(out)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["parse", "review"])
+    ap.add_argument("cmd", choices=["parse", "review", "decision-review"])
     ap.add_argument("--date", help="YYYY-MM-DD，默认今日")
     ap.add_argument("--format", choices=["json", "markdown"])
     ap.add_argument("--no-persist", action="store_true", help="review 子命令默认入 review_stats 表")
     args = ap.parse_args()
+
+    if args.cmd == "decision-review":
+        import akshare as ak
+        from datetime import date
+        rd = args.date or date.today().isoformat()
+        tickets = load_tickets(DB, rd)
+        if not tickets:
+            sys.exit(f"[review] 未找到 {rd} 的 decision_tickets")
+        df = ak.stock_zh_a_spot_em()
+        reviewed = review_decision_tickets(tickets, df)
+        fmt = args.format or "markdown"
+        if fmt == "json":
+            print(json.dumps(reviewed, ensure_ascii=False, indent=2, default=str))
+        else:
+            print(render_decision_markdown(reviewed))
+        return
 
     row = fetch_premarket(args.date)
     if not row:

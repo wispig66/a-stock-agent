@@ -41,14 +41,24 @@ def section(title: str):
 
 
 def load_today_watchlist() -> list[dict]:
-    """从 push_log 取今日 stock-premarket 最新一条，正则提取代码 + 名称 + 派别 + 买卖纪律。
+    """优先读取 decision_tickets，缺失时回退解析旧 stock-premarket 推送。
 
     Fallback 链：
-    1. push_log 今日 stock-premarket（已推送）
-    2. data/last_card.md（mtime=今天，已写卡未推送，比如 push 链路慢）
-    3. 都没有 → 返回空，并打 PREMARKET_MISSING 标记给上游 SKILL 走兜底文案
+    1. decision_tickets 今日决策单（新交易决策漏斗）
+    2. push_log 今日 stock-premarket（旧观察池）
+    3. data/last_card.md（mtime=今天，已写卡未推送，比如 push 链路慢）
+    4. 都没有 → 返回空，并打 PREMARKET_MISSING 标记给上游 SKILL 走兜底文案
     """
     today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        from lib.decision import load_watchlist_compat
+        decision_items = load_watchlist_compat(DB, today)
+        if decision_items:
+            log("[info] watchlist 数据来源：decision_tickets")
+            return decision_items
+    except Exception as e:
+        log(f"[warn] decision_tickets 读取失败，回退旧观察池：{e}")
+
     text: str | None = None
     source_hint = ""
 
@@ -360,7 +370,7 @@ def main():
     now = datetime.now()
     print(f"=== 盘中实时拉取 · {now.strftime('%Y-%m-%d %H:%M:%S')} ===")
 
-    section("一、今日观察池（解析自 push_log）")
+    section("一、今日决策单 / 观察池")
     watchlist = load_today_watchlist()
     if not watchlist:
         print("（今日无 L1 盘前推送记录，跳过观察池）")

@@ -214,6 +214,39 @@ CREATE TABLE IF NOT EXISTS watchlist_dynamic (
 CREATE INDEX IF NOT EXISTS idx_wld_date ON watchlist_dynamic(trade_date);
 CREATE INDEX IF NOT EXISTS idx_wld_concept ON watchlist_dynamic(trade_date, concept_tag);
 
+-- ──────────────────────────────────────────────────────────────
+-- decision_tickets（交易决策漏斗：主攻 / 潜伏 / 备选 / 禁买）
+-- ──────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS decision_tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    concept TEXT,
+    lane TEXT NOT NULL CHECK(lane IN ('main','ambush','backup','ban')),
+    faction TEXT CHECK(faction IN ('A','B','C','D','E')),
+    action TEXT NOT NULL DEFAULT 'wait' CHECK(action IN ('buy_if','wait','avoid','sell','empty')),
+    entry_low REAL,
+    entry_high REAL,
+    max_chase_price REAL,
+    stop_price REAL,
+    invalid_price REAL,
+    deadline_time TEXT,
+    size_pct INTEGER,
+    thesis TEXT,
+    evidence_json TEXT,
+    invalid_conditions_json TEXT,
+    upgrade_conditions_json TEXT,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','triggered','bought','expired','invalid','reviewed')),
+    source_msg_id INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(trade_date, code, lane)
+);
+CREATE INDEX IF NOT EXISTS idx_decision_tickets_date ON decision_tickets(trade_date);
+CREATE INDEX IF NOT EXISTS idx_decision_tickets_lane ON decision_tickets(trade_date, lane);
+
 -- 实时涨停池快照（簇集计数 + 首板时间数据源）
 CREATE TABLE IF NOT EXISTS intraday_limit_up_snapshot (
     snapshot_ts     TEXT NOT NULL,

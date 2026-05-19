@@ -177,6 +177,8 @@ def test_codex_automation_prompts_have_unattended_contract(tmp_path):
         assert "Final response:" in prompt
         assert "do not claim success" in prompt
         assert "push.py" in prompt
+        assert "CARD_VALIDATOR_MODE=enforce" in prompt
+        assert "do not send a card while validation is only warning" in prompt
         assert EXPECTED_SKILLS[job_id] in prompt
         assert "claude -p" not in prompt
 

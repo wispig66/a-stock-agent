@@ -80,7 +80,8 @@ Required behavior:
 1. Run the $skill workflow from the current repository checkout.
 2. Produce the expected output: $expected_output.
 3. Use the unified push.py path for any Telegram delivery required by the skill.
-4. Keep the work unattended; do not ask the user to run commands or provide context that the repository already contains.
+4. Invoke push.py with CARD_VALIDATOR_MODE=enforce. If validation fails, fix the card and retry; do not send a card while validation is only warning.
+5. Keep the work unattended; do not ask the user to run commands or provide context that the repository already contains.
 
 Failure handling:
 If any required data source, command, validation step, or push.py delivery fails, report the concrete failure and do not claim success. Do not hide partial failures behind a normal summary.
@@ -147,7 +148,7 @@ write_automation \
     "stock-premarket" \
     "stock premarket" \
     "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=30" \
-    "$(skill_prompt "stock-premarket" "today's A-share premarket watchlist and Telegram card" "the premarket run")"
+    "$(skill_prompt "stock-premarket" "today's A-share premarket trading plan, decision_tickets, and Telegram card" "the premarket run")"
 
 write_automation \
     "stock-intraday-09-30" \
