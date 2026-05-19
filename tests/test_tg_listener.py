@@ -4,6 +4,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from unittest.mock import patch
+import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -364,3 +365,73 @@ def test_handle_trade_does_not_block_query(tmp_path, monkeypatch):
                       return_value="📊 fake") as r:
         tl.handle("600519", chat_id="999")
     r.assert_called_once()
+
+
+def test_main_logs_recovery_after_poll_failures(monkeypatch):
+    """Telegram 长轮询短暂失败后恢复时，必须有明确恢复日志。"""
+    monkeypatch.setattr(tl, "TG_TOKEN", "token")
+    monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "999")
+    monkeypatch.setattr(tl, "_load_offset", lambda: 0)
+    monkeypatch.setattr(tl, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(tl.time, "sleep", lambda seconds: None)
+
+    calls = {"n": 0}
+
+    def fake_get_updates(offset):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise requests.exceptions.ReadTimeout("telegram timeout")
+        if calls["n"] == 3:
+            return []
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(tl, "_get_updates", fake_get_updates)
+
+    with patch.object(tl.log, "warning") as warning, \
+         patch.object(tl.log, "error") as error, \
+         patch.object(tl.log, "info") as info:
+        try:
+            tl.main()
+        except KeyboardInterrupt:
+            pass
+
+    assert warning.call_count == 2
+    error.assert_not_called()
+    assert any(
+        call.args[0] == "getUpdates recovered after %d failures, downtime %.1fs"
+        and call.args[1] == 2
+        for call in info.call_args_list
+    )
+
+
+def test_main_alerts_only_after_poll_failure_threshold(monkeypatch):
+    """连续失败达到阈值后才发 ERROR，避免短暂网络抖动刷屏。"""
+    monkeypatch.setattr(tl, "TG_TOKEN", "token")
+    monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "999")
+    monkeypatch.setattr(tl, "POLL_ALERT_AFTER_FAILURES", 3)
+    monkeypatch.setattr(tl, "POLL_ALERT_EVERY_FAILURES", 20)
+    monkeypatch.setattr(tl, "_load_offset", lambda: 0)
+    monkeypatch.setattr(tl, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(tl.time, "sleep", lambda seconds: None)
+
+    calls = {"n": 0}
+
+    def fake_get_updates(offset):
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            raise requests.exceptions.ReadTimeout("telegram timeout")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(tl, "_get_updates", fake_get_updates)
+
+    with patch.object(tl.log, "warning") as warning, \
+         patch.object(tl.log, "error") as error:
+        try:
+            tl.main()
+        except KeyboardInterrupt:
+            pass
+
+    assert warning.call_count == 2
+    error.assert_called_once()
+    assert "getUpdates failed #3" in error.call_args.args[0]
+    assert error.call_args.kwargs.get("exc_info") is True

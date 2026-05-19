@@ -62,6 +62,8 @@ _SKILL_TIMEOUT_DEEP = 300
 SKILL_TIMEOUT = _SKILL_TIMEOUT_NORMAL  # default; per-call override via run_skill_streaming_generic
 EDIT_THROTTLE = 1.0         # Telegram editMessageText 限速：≥1s/chat 才安全
 TG_MAX_LEN = 4000           # 4096 上限，留 96 字 buffer
+POLL_ALERT_AFTER_FAILURES = int(os.environ.get("TG_POLL_ALERT_AFTER_FAILURES", "3"))
+POLL_ALERT_EVERY_FAILURES = int(os.environ.get("TG_POLL_ALERT_EVERY_FAILURES", "20"))
 
 _running = 0
 _waiting = 0
@@ -864,9 +866,17 @@ def main() -> None:
     offset = _load_offset()
     log.info("启动 offset=%d", offset)
     backoff = 1
+    poll_failures = 0
+    first_failure_at: float | None = None
     while True:
         try:
             updates = _get_updates(offset)
+            if poll_failures:
+                downtime = time.monotonic() - (first_failure_at or time.monotonic())
+                log.info("getUpdates recovered after %d failures, downtime %.1fs",
+                         poll_failures, downtime)
+                poll_failures = 0
+                first_failure_at = None
             backoff = 1
             for u in updates:
                 offset = max(offset, u["update_id"] + 1)
@@ -882,8 +892,24 @@ def main() -> None:
                            update_id=u["update_id"], user_msg_id=msg.get("message_id"))
                 except Exception:
                     log.exception("handle 异常 update_id=%s", u.get("update_id"))
-        except Exception:
-            log.exception("loop 异常 退避 %ds", backoff)
+        except Exception as e:
+            poll_failures += 1
+            if first_failure_at is None:
+                first_failure_at = time.monotonic()
+            should_alert = (
+                poll_failures == POLL_ALERT_AFTER_FAILURES
+                or (
+                    poll_failures > POLL_ALERT_AFTER_FAILURES
+                    and POLL_ALERT_EVERY_FAILURES > 0
+                    and poll_failures % POLL_ALERT_EVERY_FAILURES == 0
+                )
+            )
+            msg = ("getUpdates failed #%d (%s: %s), backoff %ds"
+                   % (poll_failures, type(e).__name__, str(e)[:200], backoff))
+            if should_alert:
+                log.error(msg, exc_info=True)
+            else:
+                log.warning(msg)
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
 

@@ -3,6 +3,7 @@
 
 set -e
 cd "$(dirname "$0")/.."
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/anaconda3/bin:$HOME/.local/bin:$PATH"
 
 # card_validator 模式（见 docs/card_validator_enforce_switch.md）
 export CARD_VALIDATOR_MODE=warn
@@ -33,7 +34,7 @@ done
 
   echo
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] 刷新 stock_basic（给 TG 单股查询用）"
-  for c in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv"; do
+  for c in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv" "$HOME/anaconda3/bin/uv"; do
     [ -x "$c" ] && { "$c" run --no-sync scripts/refresh_stock_basic.py \
       || echo "stock_basic 刷新失败（不阻断 postmarket 主流程）"; break; }
   done

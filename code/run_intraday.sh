@@ -4,6 +4,7 @@
 
 set -e
 cd "$(dirname "$0")/.."
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/anaconda3/bin:$HOME/.local/bin:$PATH"
 
 # card_validator 模式（见 docs/card_validator_enforce_switch.md）
 export CARD_VALIDATOR_MODE=warn

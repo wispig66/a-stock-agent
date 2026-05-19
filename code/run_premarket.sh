@@ -4,6 +4,7 @@
 
 set -e
 cd "$(dirname "$0")/.."
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/anaconda3/bin:$HOME/.local/bin:$PATH"
 
 # card_validator 模式（见 docs/card_validator_enforce_switch.md）
 export CARD_VALIDATOR_MODE=warn
@@ -22,13 +23,23 @@ for candidate in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" "/usr/lo
 done
 [ -n "$CLAUDE_BIN" ] || { echo "未找到 claude 可执行"; exit 1; }
 
+for candidate in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv" "$HOME/anaconda3/bin/uv"; do
+  if [ -x "$candidate" ]; then
+    UV_BIN="$candidate"
+    break
+  fi
+done
+[ -n "$UV_BIN" ] || { echo "未找到 uv 可执行"; exit 1; }
+
+CLAUDE_TIMEOUT_SEC=${PREMARKET_CLAUDE_TIMEOUT_SEC:-900}
+
 {
   echo "=========================================="
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] 启动 stock-premarket skill"
   echo "=========================================="
 
   # 幂等检查：今日已成功推送过 → 跳过（支持 launchd 多次触发补跑）
-  ALREADY_PUSHED=$(/opt/homebrew/bin/uv run --no-sync python -c "
+  ALREADY_PUSHED=$("$UV_BIN" run --no-sync python -c "
 import sqlite3, sys
 try:
     c = sqlite3.connect('data/daily.db')
@@ -53,7 +64,32 @@ except Exception:
   "$CLAUDE_BIN" -p "使用 stock-premarket skill 生成今日 A 股盘前观察池并推送到 Telegram。完成后只返回简要总结。" \
     --permission-mode bypassPermissions \
     --output-format text \
-    < /dev/null
+    < /dev/null &
+  CLAUDE_PID=$!
+  WAITED=0
+  while kill -0 "$CLAUDE_PID" 2>/dev/null; do
+    if [ "$WAITED" -ge "$CLAUDE_TIMEOUT_SEC" ]; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ claude 超时 ${CLAUDE_TIMEOUT_SEC}s，终止本次 premarket"
+      kill "$CLAUDE_PID" 2>/dev/null || true
+      sleep 2
+      kill -9 "$CLAUDE_PID" 2>/dev/null || true
+      wait "$CLAUDE_PID" 2>/dev/null || true
+      exit 124
+    fi
+    sleep 5
+    WAITED=$((WAITED + 5))
+    if [ $((WAITED % 60)) -eq 0 ]; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] claude 仍在运行，已用 ${WAITED}s"
+    fi
+  done
+  set +e
+  wait "$CLAUDE_PID"
+  CLAUDE_STATUS=$?
+  set -e
+  if [ "$CLAUDE_STATUS" -ne 0 ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ claude 退出码 $CLAUDE_STATUS"
+    exit "$CLAUDE_STATUS"
+  fi
 
   echo
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] 完成"
