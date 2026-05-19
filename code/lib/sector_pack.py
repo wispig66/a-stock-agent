@@ -29,6 +29,20 @@ from db import connect
 ROOT = Path(__file__).resolve().parents[2]
 DB = ROOT / "data" / "daily.db"
 
+
+def _latest_table_date(conn: sqlite3.Connection, table: str, where: str = "", params: tuple = ()) -> str | None:
+    sql = f"SELECT MAX(date) FROM {table}"
+    if where:
+        sql += f" WHERE {where}"
+    row = conn.execute(sql, params).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def _window_start_from_anchor(anchor: str | None, days: int) -> tuple[str, str]:
+    anchor_date = date.fromisoformat(anchor) if anchor else date.today()
+    return (anchor_date - timedelta(days=days)).isoformat(), anchor_date.isoformat()
+
+
 # 内置同义词：用户口语 → 题材库标准名
 _BUILTIN_SYNONYMS = {
     "AI": "人工智能",
@@ -111,11 +125,18 @@ def _fetch_sentiment_panel(sector: str) -> dict:
     """近 5 日命中该题材的涨停记录数 + 候选骨架。
     候选骨架的 ret_5d/main_inflow/dist_high_20d 由实时接口层填充——
     本函数只提供 code/name/is_st 等不联网字段。"""
-    since = (date.today() - timedelta(days=5)).isoformat()
     with sqlite3.connect(DB) as conn:
+        anchor = _latest_table_date(
+            conn,
+            "limit_up",
+            "concept LIKE ?",
+            (f"%{sector}%",),
+        )
+        since, as_of = _window_start_from_anchor(anchor, 5)
         lu_rows = conn.execute(
-            "SELECT date, code, name FROM limit_up WHERE date >= ? AND concept LIKE ?",
-            (since, f"%{sector}%"),
+            "SELECT date, code, name FROM limit_up "
+            "WHERE date >= ? AND date <= ? AND concept LIKE ?",
+            (since, as_of, f"%{sector}%"),
         ).fetchall()
         limit_up_count = len(lu_rows)
         codes = {c for _, c, _ in lu_rows}
@@ -132,6 +153,8 @@ def _fetch_sentiment_panel(sector: str) -> dict:
                     "limit_up_lock": False,
                 })
     return {
+        "as_of_date": as_of,
+        "window_start": since,
         "limit_up_count": limit_up_count,
         "leader_consecutive": 0,
         "ret_5d_pct": 0,
