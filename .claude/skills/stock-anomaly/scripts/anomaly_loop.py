@@ -90,7 +90,7 @@ def format_alert(now: datetime, symbol: str, label: str, row: dict) -> str:
 
 def format_rocket_digest(now: datetime, entries: list[dict]) -> str:
     """火箭发射本轮聚合 digest。entries 已是仅持仓+观察池命中的 row.to_dict()。"""
-    head = f"🚀 [{now.strftime('%H:%M')}] 火箭发射 · 持仓/观察池命中 {len(entries)} 只"
+    head = f"🚀 [{now.strftime('%H:%M')}] 观察池加速中（派别 D 触发参考）· {len(entries)} 只"
     lines = [head]
     for row in entries[:8]:
         code = row["代码"]
