@@ -133,9 +133,9 @@ bash scripts/stop_tg_listener.sh     # 停
 - **输出** — TG 摘要卡 + 落地长文 `data/weekly_review/YYYY-WW.md`（含 machine-readable YAML 块）
 - **L1 接入** — 周一开始 L1 stock-premarket 自动读最近一份周复盘 YAML，作为观察池先验种子
 
-手动触发：`uv run scripts/weekly_loop.py --force`
+手动触发：在 runtime host 的 Codex 中手动运行 `stock-weekly`。`uv run scripts/weekly_loop.py --force` 仅作为 legacy fallback wrapper 保留，不是默认调度入口。
 
-新增模块：`code/lib/weekly_pack.py`（数据聚合 + 长文渲染 + YAML 读写）、`.claude/skills/stock-weekly/`（SKILL.md + aggregate.py）、`scripts/weekly_loop.py`（周复盘入口）、Codex automation job `stock-weekly-review`。
+新增模块：`code/lib/weekly_pack.py`（数据聚合 + 长文渲染 + YAML 读写）、`.claude/skills/stock-weekly/`（SKILL.md + aggregate.py）、Codex automation job `stock-weekly-review`，以及 legacy fallback `scripts/weekly_loop.py`。
 
 ### 数据扩展层
 
@@ -301,10 +301,10 @@ cp risk_config.example.yaml risk_config.yaml
 │   ├── notify.py                  # Telegram + md→HTML 渲染
 │   ├── init_db.sql                # SQLite schema
 │   ├── refresh_calendar.py        # 拉 akshare 交易日历到 data/trade_calendar.csv
-│   ├── run_premarket.sh           # L1 entry
-│   ├── run_intraday.sh            # L2 entry（4 时点共用）
+│   ├── run_premarket.sh           # legacy fallback entry
+│   ├── run_intraday.sh            # legacy fallback entry
 │   ├── run_watch_loop.sh          # watch_loop launchd entry
-│   └── run_postmarket.sh
+│   └── run_postmarket.sh          # legacy fallback entry
 ├── launchd/                       # 长时 daemon plist 模板（{{PROJECT_ROOT}} 占位符）
 ├── scripts/
 │   ├── setup.sh                   # 本地基础初始化辅助

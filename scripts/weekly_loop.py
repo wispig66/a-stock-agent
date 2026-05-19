@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""L7 stock-weekly 周日 21:00 launchd 入口。
+"""L7 stock-weekly legacy fallback wrapper.
+
+默认生产调度已迁移到 Codex automation `stock-weekly-review`。本脚本只保留
+幂等检查和手动 fallback，不再作为默认 launchd 入口安装。
 
 行为：
   1. 计算当周 label
