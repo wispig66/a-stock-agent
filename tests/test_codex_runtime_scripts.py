@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -47,6 +48,29 @@ def base_env(tmp_path: Path) -> dict[str, str]:
     return env
 
 
+def make_runtime_project(tmp_path: Path) -> Path:
+    project = tmp_path / "runtime-project"
+    (project / "scripts").mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "doctor_codex_runtime.sh", project / "scripts" / "doctor_codex_runtime.sh")
+    (project / ".agents" / "skills").mkdir(parents=True)
+    for skill in ["stock-premarket", "stock-intraday", "stock-postmarket", "stock-weekly"]:
+        skill_dir = project / ".agents" / "skills" / skill
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"# {skill}\n", encoding="utf-8")
+    (project / "data").mkdir()
+    subprocess.run(
+        [
+            "sqlite3",
+            str(project / "data" / "daily.db"),
+            "CREATE TABLE push_log(id INTEGER PRIMARY KEY);",
+        ],
+        check=True,
+    )
+    (project / "data" / "trade_calendar.csv").write_text("cal_date,is_open\n20260519,1\n", encoding="utf-8")
+    (project / ".env").write_text("TG_BOT_TOKEN=test-token\nTG_CHAT_ID=test-chat\n", encoding="utf-8")
+    return project
+
+
 def test_setup_delegates_runtime_and_codex_installation() -> None:
     script = read_script("scripts/setup.sh")
 
@@ -64,6 +88,11 @@ def test_setup_delegates_runtime_and_codex_installation() -> None:
             "launchctl bootstrap",
             "scripts/install_launchd.sh",
             "notify.py test",
+            "LaunchAgents",
+            "launchctl print",
+            "launchctl bootout",
+            "claude --version",
+            "Telegram 推送通了",
         ],
     )
 
@@ -105,25 +134,16 @@ exit 0
 
     assert result.returncode == 0, result.stderr
     launchctl_log = log.read_text(encoding="utf-8")
-    assert_contains_all(
-        launchctl_log,
-        [
-            "com.user.stockwatchloop",
-            "com.user.stockanomalyloop",
-            "com.user.stockthemeloop",
-        ],
-        label="launchctl calls",
-    )
-    assert_contains_none(
-        launchctl_log,
-        [
-            "com.user.stockpremarket",
-            "com.user.stockintraday",
-            "com.user.stockpostmarket",
-            "com.user.stockweekly",
-        ],
-        label="launchctl calls",
-    )
+    bootstrapped = {
+        Path(line.split()[-1]).stem
+        for line in launchctl_log.splitlines()
+        if line.startswith("bootstrap ")
+    }
+    assert bootstrapped == {
+        "com.user.stockwatchloop",
+        "com.user.stockanomalyloop",
+        "com.user.stockthemeloop",
+    }
 
 
 def test_remote_codex_deploy_uses_git_and_runtime_helpers() -> None:
@@ -198,6 +218,7 @@ cat > {ssh_payload}
     assert ssh_args.read_text(encoding="utf-8").strip() == 'tester@example-host bash -s'
     payload = ssh_payload.read_text(encoding="utf-8")
     expected_sequence = [
+        'if [ ! -d "$REMOTE_ROOT/.git" ]; then',
         'git clone "$REMOTE_REPO_URL" "$REMOTE_ROOT"',
         'git fetch origin "$REMOTE_BRANCH"',
         'git checkout "$REMOTE_BRANCH"',
@@ -210,8 +231,14 @@ cat > {ssh_payload}
         "bash scripts/doctor_codex_runtime.sh",
         "uv run pytest tests/",
     ]
-    positions = [payload.index(item) for item in expected_sequence]
+    positions = []
+    for item in expected_sequence:
+        assert item in payload, f"missing remote deploy payload command: {item}"
+        positions.append(payload.index(item))
     assert positions == sorted(positions)
+    clone_pos = payload.index('git clone "$REMOTE_REPO_URL" "$REMOTE_ROOT"')
+    guard_end_pos = payload.index("\nfi\n", clone_pos)
+    assert clone_pos < guard_end_pos < payload.index('git fetch origin "$REMOTE_BRANCH"')
     assert "rsync" not in payload
     assert "Remote deployment summary:" in payload
 
@@ -258,21 +285,26 @@ def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
     )
 
 
-def prepare_codex_home(home: Path) -> None:
+def prepare_codex_home(home: Path, project_root: Path) -> None:
     for job in CODEX_JOBS:
         job_dir = home / ".codex" / "automations" / job
         job_dir.mkdir(parents=True, exist_ok=True)
         (job_dir / "automation.toml").write_text(
-            f'cwds = ["{ROOT}"]\n',
+            f'cwds = ["{project_root}"]\n',
             encoding="utf-8",
         )
 
 
 def write_launchctl_fake(fake_bin: Path, *, loaded_label: str | None = None) -> None:
     loaded_case = (
-        f'if [ "$*" = "print gui/$(id -u)/{loaded_label}" ]; then exit 0; fi'
+        "\n".join(
+            [
+                f'if [ "$*" = "print gui/$(id -u)/{loaded_label}" ]; then exit 0; fi',
+                f'if [ "${{1:-}}" = "list" ]; then echo "123 0 {loaded_label}"; exit 0; fi',
+            ]
+        )
         if loaded_label
-        else ""
+        else 'if [ "${1:-}" = "list" ]; then exit 0; fi'
     )
     write_executable(
         fake_bin / "launchctl",
@@ -289,13 +321,15 @@ exit 0
 def test_runtime_doctor_executes_readiness_checks_without_real_push(tmp_path) -> None:
     read_script("scripts/doctor_codex_runtime.sh")
     env = base_env(tmp_path)
+    project = make_runtime_project(tmp_path)
+    env["PROJECT_ROOT"] = str(project)
     home = Path(env["HOME"])
-    prepare_codex_home(home)
+    prepare_codex_home(home, project)
     write_launchctl_fake(tmp_path / "bin")
 
     result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "doctor_codex_runtime.sh")],
-        cwd=ROOT,
+        ["bash", str(project / "scripts" / "doctor_codex_runtime.sh")],
+        cwd=project,
         env=env,
         text=True,
         capture_output=True,
@@ -315,13 +349,15 @@ def test_runtime_doctor_executes_readiness_checks_without_real_push(tmp_path) ->
 def test_runtime_doctor_fails_when_legacy_short_launchd_is_loaded(tmp_path) -> None:
     read_script("scripts/doctor_codex_runtime.sh")
     env = base_env(tmp_path)
+    project = make_runtime_project(tmp_path)
+    env["PROJECT_ROOT"] = str(project)
     home = Path(env["HOME"])
-    prepare_codex_home(home)
+    prepare_codex_home(home, project)
     write_launchctl_fake(tmp_path / "bin", loaded_label="com.user.stockpremarket")
 
     result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "doctor_codex_runtime.sh")],
-        cwd=ROOT,
+        ["bash", str(project / "scripts" / "doctor_codex_runtime.sh")],
+        cwd=project,
         env=env,
         text=True,
         capture_output=True,
