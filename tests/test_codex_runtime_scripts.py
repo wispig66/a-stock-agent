@@ -6,6 +6,8 @@ import subprocess
 import shlex
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CODEX_JOBS = [
@@ -78,6 +80,39 @@ def make_runtime_project(tmp_path: Path) -> Path:
     (project / "data" / "trade_calendar.csv").write_text("cal_date,is_open\n20260519,1\n", encoding="utf-8")
     (project / ".env").write_text("TG_BOT_TOKEN=test-token\nTG_CHAT_ID=test-chat\n", encoding="utf-8")
     return project
+
+
+def write_remote_payload_fakes(fake_bin: Path, log: Path) -> None:
+    write_executable(
+        fake_bin / "git",
+        f"""#!/usr/bin/env bash
+echo "git|$*" >> {log}
+case "${{1:-}}" in
+  clone)
+    mkdir -p "$3/.git" "$3/scripts"
+    for script in setup.sh sync_codex_skills.sh install_codex_automations.sh install_runtime_services.sh disable_legacy_claude_launchd.sh doctor_codex_runtime.sh; do
+      cat > "$3/scripts/$script" <<'EOS'
+#!/usr/bin/env bash
+echo "script|$0" >> "$REMOTE_EXEC_LOG"
+EOS
+      chmod +x "$3/scripts/$script"
+    done
+    ;;
+  branch)
+    echo codex-test
+    ;;
+  rev-parse)
+    echo deadbee
+    ;;
+esac
+""",
+    )
+    write_executable(
+        fake_bin / "uv",
+        f"""#!/usr/bin/env bash
+echo "uv|$*" >> {log}
+""",
+    )
 
 
 def test_setup_delegates_runtime_and_codex_installation() -> None:
@@ -270,11 +305,16 @@ cat > {ssh_payload}
 def test_remote_codex_deploy_quotes_config_values_for_remote_payload(tmp_path) -> None:
     read_script("scripts/deploy_remote_codex.sh")
     env = base_env(tmp_path)
+    log = tmp_path / "remote-exec.log"
+    env["REMOTE_EXEC_LOG"] = str(log)
+    write_remote_payload_fakes(tmp_path / "bin", log)
     ssh_payload = tmp_path / "ssh.payload"
     write_executable(
         tmp_path / "bin" / "ssh",
         f"""#!/usr/bin/env bash
 cat > {ssh_payload}
+cd {tmp_path}
+bash {ssh_payload}
 """,
     )
     remote_root = tmp_path / 'remote stock $(touch SHOULD_NOT_RUN)'
@@ -308,9 +348,12 @@ cat > {ssh_payload}
     payload = ssh_payload.read_text(encoding="utf-8")
     syntax = subprocess.run(["bash", "-n", str(ssh_payload)], text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
-    assert f"REMOTE_ROOT={shlex.quote(str(remote_root))}" in payload
-    assert f"REMOTE_REPO_URL={shlex.quote(repo_url)}" in payload
-    assert f"REMOTE_BRANCH={shlex.quote(branch)}" in payload
+    remote_log = log.read_text(encoding="utf-8")
+    assert f"git|clone {repo_url} {remote_root}" in remote_log
+    assert "git|checkout " + branch in remote_log
+    assert "uv|run pytest tests/" not in remote_log
+    assert not (tmp_path / "SHOULD_NOT_RUN").exists()
+    assert not (tmp_path / "BAD_REPO").exists()
 
 
 def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
@@ -438,14 +481,15 @@ def test_runtime_doctor_fails_when_legacy_short_launchd_is_loaded(tmp_path) -> N
     assert "legacy short LLM launchd job still loaded: com.user.stockpremarket" in result.stderr
 
 
-def test_runtime_doctor_fails_when_codex_automation_is_missing(tmp_path) -> None:
+@pytest.mark.parametrize("job_id", CODEX_JOBS)
+def test_runtime_doctor_fails_when_codex_automation_is_missing(tmp_path, job_id: str) -> None:
     read_script("scripts/doctor_codex_runtime.sh")
     env = base_env(tmp_path)
     project = make_runtime_project(tmp_path)
     env["PROJECT_ROOT"] = str(project)
     home = Path(env["HOME"])
     prepare_codex_home(home, project)
-    shutil.rmtree(home / ".codex" / "automations" / "stock-premarket")
+    shutil.rmtree(home / ".codex" / "automations" / job_id)
     write_launchctl_fake(tmp_path / "bin")
 
     result = subprocess.run(
@@ -458,17 +502,18 @@ def test_runtime_doctor_fails_when_codex_automation_is_missing(tmp_path) -> None
     )
 
     assert result.returncode != 0
-    assert "automation stock-premarket missing" in result.stderr
+    assert f"automation {job_id} missing" in result.stderr
 
 
-def test_runtime_doctor_fails_when_automation_cwd_points_elsewhere(tmp_path) -> None:
+@pytest.mark.parametrize("job_id", CODEX_JOBS)
+def test_runtime_doctor_fails_when_automation_cwd_points_elsewhere(tmp_path, job_id: str) -> None:
     read_script("scripts/doctor_codex_runtime.sh")
     env = base_env(tmp_path)
     project = make_runtime_project(tmp_path)
     env["PROJECT_ROOT"] = str(project)
     home = Path(env["HOME"])
     prepare_codex_home(home, project)
-    (home / ".codex" / "automations" / "stock-premarket" / "automation.toml").write_text(
+    (home / ".codex" / "automations" / job_id / "automation.toml").write_text(
         'cwds = ["/tmp/not-this-runtime"]\n',
         encoding="utf-8",
     )
@@ -484,7 +529,7 @@ def test_runtime_doctor_fails_when_automation_cwd_points_elsewhere(tmp_path) -> 
     )
 
     assert result.returncode != 0
-    assert "automation stock-premarket cwd does not point to" in result.stderr
+    assert f"automation {job_id} cwd does not point to" in result.stderr
 
 
 def test_new_runtime_shell_scripts_parse_with_bash_n() -> None:
