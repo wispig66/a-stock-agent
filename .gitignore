@@ -1,4 +1,5 @@
 .env
+deploy.remote.env
 holdings.yaml
 data/last_intraday_card.md
 data/last_anomaly_card.md
