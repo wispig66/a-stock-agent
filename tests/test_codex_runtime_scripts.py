@@ -34,6 +34,14 @@ def assert_contains_none(text: str, forbidden: list[str], *, label: str = "text"
     assert not present, f"{label} has unexpected text: {present}"
 
 
+def effective_shell_lines(script: str) -> list[str]:
+    return [
+        line.strip()
+        for line in script.splitlines()
+        if line.strip() and not line.strip().startswith("#") and not line.strip().startswith("echo ")
+    ]
+
+
 def write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
@@ -134,16 +142,16 @@ exit 0
 
     assert result.returncode == 0, result.stderr
     launchctl_log = log.read_text(encoding="utf-8")
-    bootstrapped = {
+    bootstrapped = [
         Path(line.split()[-1]).stem
         for line in launchctl_log.splitlines()
         if line.startswith("bootstrap ")
-    }
-    assert bootstrapped == {
+    ]
+    assert bootstrapped == [
         "com.user.stockwatchloop",
         "com.user.stockanomalyloop",
         "com.user.stockthemeloop",
-    }
+    ]
 
 
 def test_remote_codex_deploy_uses_git_and_runtime_helpers() -> None:
@@ -161,6 +169,7 @@ def test_remote_codex_deploy_uses_git_and_runtime_helpers() -> None:
             'ssh "$REMOTE_HOST" "bash -s"',
             '[ ! -d "$REMOTE_ROOT/.git" ]',
             "git clone",
+            'cd "$REMOTE_ROOT"',
             "git fetch origin",
             "git checkout",
             "git pull --ff-only",
@@ -225,9 +234,14 @@ cat > {ssh_payload}
         check=False,
     )
     assert payload_syntax.returncode == 0, payload_syntax.stderr
+    assert f'REMOTE_ROOT="{tmp_path / "remote-stock"}"' in payload
+    assert 'REMOTE_REPO_URL="https://example.com/org/stock.git"' in payload
+    assert 'REMOTE_BRANCH="codex-test"' in payload
+    assert 'REMOTE_RUN_TESTS="1"' in payload
     expected_sequence = [
         'if [ ! -d "$REMOTE_ROOT/.git" ]; then',
         'git clone "$REMOTE_REPO_URL" "$REMOTE_ROOT"',
+        'cd "$REMOTE_ROOT"',
         'git fetch origin "$REMOTE_BRANCH"',
         'git checkout "$REMOTE_BRANCH"',
         'git pull --ff-only origin "$REMOTE_BRANCH"',
@@ -239,14 +253,15 @@ cat > {ssh_payload}
         "bash scripts/doctor_codex_runtime.sh",
         "uv run pytest tests/",
     ]
+    effective_lines = "\n".join(effective_shell_lines(payload))
     positions = []
     for item in expected_sequence:
-        assert item in payload, f"missing remote deploy payload command: {item}"
-        positions.append(payload.index(item))
+        assert item in effective_lines, f"missing remote deploy payload command: {item}"
+        positions.append(effective_lines.index(item))
     assert positions == sorted(positions)
-    clone_pos = payload.index('git clone "$REMOTE_REPO_URL" "$REMOTE_ROOT"')
-    guard_end_pos = payload.index("\nfi\n", clone_pos)
-    assert clone_pos < guard_end_pos < payload.index('git fetch origin "$REMOTE_BRANCH"')
+    clone_pos = effective_lines.index('git clone "$REMOTE_REPO_URL" "$REMOTE_ROOT"')
+    guard_end_pos = effective_lines.index("\nfi", clone_pos)
+    assert clone_pos < guard_end_pos < effective_lines.index('cd "$REMOTE_ROOT"')
     assert "rsync" not in payload
     assert "Remote deployment summary:" in payload
 
