@@ -602,6 +602,9 @@ def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
             "tomllib",
             "cwds must be an array",
             "fail \"legacy short LLM launchd job still loaded",
+            "legacy short LLM launchd plist still installed",
+            "$key missing or empty in .env",
+            ".env missing; $key is required",
             "com.user.stockpremarket",
             "com.user.stockintraday",
             "com.user.stockpostmarket",
@@ -676,8 +679,68 @@ def test_runtime_doctor_executes_readiness_checks_without_real_push(tmp_path) ->
     assert "daily.db push_log table exists" in result.stdout
     assert "automation stock-premarket cwd ok" in result.stdout
     assert "legacy short LLM launchd job not loaded: com.user.stockpremarket" in result.stdout
+    assert "legacy short LLM launchd plist absent:" in result.stdout
     assert "notify.py test" not in result.stdout
     assert "sendMessage" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("env_text", "expected_error"),
+    [
+        ("", "TG_BOT_TOKEN missing or empty in .env"),
+        ("TG_BOT_TOKEN=test-token\n", "TG_CHAT_ID missing or empty in .env"),
+        ("TG_BOT_TOKEN=\nTG_CHAT_ID=test-chat\n", "TG_BOT_TOKEN missing or empty in .env"),
+        ('TG_BOT_TOKEN=""\nTG_CHAT_ID=test-chat\n', "TG_BOT_TOKEN missing or empty in .env"),
+        ("TG_BOT_TOKEN=''\nTG_CHAT_ID=test-chat\n", "TG_BOT_TOKEN missing or empty in .env"),
+        ('TG_BOT_TOKEN=test-token\nTG_CHAT_ID=""\n', "TG_CHAT_ID missing or empty in .env"),
+    ],
+)
+def test_runtime_doctor_fails_when_required_env_values_are_missing_or_empty(
+    tmp_path, env_text: str, expected_error: str
+) -> None:
+    read_script("scripts/doctor_codex_runtime.sh")
+    env = base_env(tmp_path)
+    project = make_runtime_project(tmp_path)
+    (project / ".env").write_text(env_text, encoding="utf-8")
+    env["PROJECT_ROOT"] = str(project)
+    home = Path(env["HOME"])
+    prepare_codex_home(home, project)
+    write_launchctl_fake(tmp_path / "bin")
+
+    result = subprocess.run(
+        ["bash", str(project / "scripts" / "doctor_codex_runtime.sh")],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+
+
+def test_runtime_doctor_fails_when_env_file_is_missing(tmp_path) -> None:
+    read_script("scripts/doctor_codex_runtime.sh")
+    env = base_env(tmp_path)
+    project = make_runtime_project(tmp_path)
+    (project / ".env").unlink()
+    env["PROJECT_ROOT"] = str(project)
+    home = Path(env["HOME"])
+    prepare_codex_home(home, project)
+    write_launchctl_fake(tmp_path / "bin")
+
+    result = subprocess.run(
+        ["bash", str(project / "scripts" / "doctor_codex_runtime.sh")],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert ".env missing; TG_BOT_TOKEN is required" in result.stderr
 
 
 def test_runtime_doctor_fails_when_legacy_short_launchd_is_loaded(tmp_path) -> None:
@@ -700,6 +763,84 @@ def test_runtime_doctor_fails_when_legacy_short_launchd_is_loaded(tmp_path) -> N
 
     assert result.returncode != 0
     assert "legacy short LLM launchd job still loaded: com.user.stockpremarket" in result.stderr
+
+
+def test_runtime_doctor_fails_when_legacy_short_launchd_plist_file_remains(tmp_path) -> None:
+    read_script("scripts/doctor_codex_runtime.sh")
+    env = base_env(tmp_path)
+    project = make_runtime_project(tmp_path)
+    env["PROJECT_ROOT"] = str(project)
+    home = Path(env["HOME"])
+    prepare_codex_home(home, project)
+    stale = home / "Library" / "LaunchAgents" / "com.user.stockpremarket.plist"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("<plist/>", encoding="utf-8")
+    write_launchctl_fake(tmp_path / "bin")
+
+    result = subprocess.run(
+        ["bash", str(project / "scripts" / "doctor_codex_runtime.sh")],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "legacy short LLM launchd plist still installed" in result.stderr
+
+
+def test_disable_legacy_claude_launchd_removes_stale_launchagent_plists(tmp_path) -> None:
+    script = read_script("scripts/disable_legacy_claude_launchd.sh")
+    assert_contains_all(
+        script,
+        [
+            "launchctl bootout",
+            "rm -f \"$target\"",
+            "com.user.stockpremarket",
+            "com.user.stockweekly",
+        ],
+        label="scripts/disable_legacy_claude_launchd.sh",
+    )
+    assert "|| true" not in script
+
+    env = base_env(tmp_path)
+    home = Path(env["HOME"])
+    agents = home / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    for label in [
+        "com.user.stockpremarket",
+        "com.user.stockintraday",
+        "com.user.stockpostmarket",
+        "com.user.stockweekly",
+    ]:
+        (agents / f"{label}.plist").write_text("<plist/>", encoding="utf-8")
+    log = tmp_path / "launchctl.log"
+    write_executable(
+        tmp_path / "bin" / "launchctl",
+        f"""#!/usr/bin/env bash
+echo "$@" >> {log}
+if [ "${{1:-}}" = "print" ]; then
+    exit 1
+fi
+if [ "${{1:-}}" = "list" ]; then
+    exit 0
+fi
+exit 0
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "disable_legacy_claude_launchd.sh")],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not list(agents.glob("com.user.stock*.plist"))
 
 
 @pytest.mark.parametrize("job_id", CODEX_JOBS)

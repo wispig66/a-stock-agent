@@ -12,10 +12,14 @@ for label in \
 do
     target="$HOME/Library/LaunchAgents/$label.plist"
     if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
-        launchctl bootout "gui/$(id -u)" "$target" 2>/dev/null || true
+        launchctl bootout "gui/$(id -u)" "$target"
         echo "[+] bootout $label"
     else
         echo "[-] not loaded $label"
+    fi
+    if [ -e "$target" ]; then
+        rm -f "$target"
+        echo "[+] removed $target"
     fi
 done
 

@@ -59,15 +59,48 @@ check_env_presence() {
     local env_file="$PROJECT_ROOT/.env"
 
     if [ ! -f "$env_file" ]; then
-        warn ".env missing; $key presence unknown"
-        return 0
+        fail ".env missing; $key is required"
     fi
 
-    if grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]#]+" "$env_file"; then
+    if python3 - "$env_file" "$key" <<'PY'
+import sys
+
+env_file, key = sys.argv[1], sys.argv[2]
+
+with open(env_file, encoding="utf-8") as fh:
+    for raw_line in fh:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        if name.strip() != key:
+            continue
+        value = value.strip()
+        if (
+            len(value) >= 2
+            and value[0] == value[-1]
+            and value[0] in {"'", '"'}
+        ):
+            value = value[1:-1].strip()
+        sys.exit(0 if value else 1)
+
+sys.exit(1)
+PY
+    then
         ok "$key present"
     else
-        warn "$key missing from .env"
+        fail "$key missing or empty in .env"
     fi
+}
+
+check_legacy_plist_file_absent() {
+    local label="$1"
+    local target="$HOME/Library/LaunchAgents/$label.plist"
+
+    if [ -e "$target" ]; then
+        fail "legacy short LLM launchd plist still installed: $target"
+    fi
+    ok "legacy short LLM launchd plist absent: $target"
 }
 
 check_automation_cwd() {
@@ -183,6 +216,7 @@ for label in "${LEGACY_LABELS[@]}"; do
         fail "legacy short LLM launchd job still loaded: $label"
     fi
     ok "legacy short LLM launchd job not loaded: $label"
+    check_legacy_plist_file_absent "$label"
 done
 
 echo
