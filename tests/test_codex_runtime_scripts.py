@@ -356,6 +356,146 @@ bash {ssh_payload}
     assert not (tmp_path / "BAD_REPO").exists()
 
 
+def test_remote_codex_deploy_executes_helpers_and_remote_tests(tmp_path) -> None:
+    read_script("scripts/deploy_remote_codex.sh")
+    env = base_env(tmp_path)
+    log = tmp_path / "remote-exec.log"
+    env["REMOTE_EXEC_LOG"] = str(log)
+    write_remote_payload_fakes(tmp_path / "bin", log)
+    ssh_payload = tmp_path / "ssh.payload"
+    write_executable(
+        tmp_path / "bin" / "ssh",
+        f"""#!/usr/bin/env bash
+cat > {ssh_payload}
+cd {tmp_path}
+bash {ssh_payload}
+""",
+    )
+    config = tmp_path / "deploy.remote.env"
+    remote_root = tmp_path / "remote-stock"
+    config.write_text(
+        "\n".join(
+            [
+                "REMOTE_HOST=tester@example-host",
+                f"REMOTE_ROOT={remote_root}",
+                "REMOTE_REPO_URL=https://example.com/org/stock.git",
+                "REMOTE_BRANCH=codex-test",
+                "REMOTE_RUN_TESTS=1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env["DEPLOY_REMOTE_ENV"] = str(config)
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "deploy_remote_codex.sh")],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    remote_log = log.read_text(encoding="utf-8")
+    expected = [
+        "git|clone https://example.com/org/stock.git " + str(remote_root),
+        "git|fetch origin codex-test",
+        "git|checkout codex-test",
+        "git|pull --ff-only origin codex-test",
+        f"script|{remote_root}/scripts/setup.sh",
+        f"script|{remote_root}/scripts/sync_codex_skills.sh",
+        f"script|{remote_root}/scripts/install_codex_automations.sh",
+        f"script|{remote_root}/scripts/install_runtime_services.sh",
+        f"script|{remote_root}/scripts/disable_legacy_claude_launchd.sh",
+        f"script|{remote_root}/scripts/doctor_codex_runtime.sh",
+        "uv|run pytest tests/",
+    ]
+    positions = []
+    for item in expected:
+        assert item in remote_log, f"missing executed remote command: {item}"
+        positions.append(remote_log.index(item))
+    assert positions == sorted(positions)
+
+
+def test_remote_codex_deploy_existing_checkout_skips_clone_but_updates(tmp_path) -> None:
+    read_script("scripts/deploy_remote_codex.sh")
+    env = base_env(tmp_path)
+    log = tmp_path / "remote-exec.log"
+    env["REMOTE_EXEC_LOG"] = str(log)
+    write_remote_payload_fakes(tmp_path / "bin", log)
+    remote_root = tmp_path / "remote-stock"
+    (remote_root / ".git").mkdir(parents=True)
+    (remote_root / "scripts").mkdir()
+    for script in [
+        "setup.sh",
+        "sync_codex_skills.sh",
+        "install_codex_automations.sh",
+        "install_runtime_services.sh",
+        "disable_legacy_claude_launchd.sh",
+        "doctor_codex_runtime.sh",
+    ]:
+        write_executable(
+            remote_root / "scripts" / script,
+            """#!/usr/bin/env bash
+echo "script|$0" >> "$REMOTE_EXEC_LOG"
+""",
+        )
+    ssh_payload = tmp_path / "ssh.payload"
+    write_executable(
+        tmp_path / "bin" / "ssh",
+        f"""#!/usr/bin/env bash
+cat > {ssh_payload}
+cd {tmp_path}
+bash {ssh_payload}
+""",
+    )
+    config = tmp_path / "deploy.remote.env"
+    config.write_text(
+        "\n".join(
+            [
+                "REMOTE_HOST=tester@example-host",
+                f"REMOTE_ROOT={remote_root}",
+                "REMOTE_REPO_URL=https://example.com/org/stock.git",
+                "REMOTE_BRANCH=codex-test",
+                "REMOTE_RUN_TESTS=1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env["DEPLOY_REMOTE_ENV"] = str(config)
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "deploy_remote_codex.sh")],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    remote_log = log.read_text(encoding="utf-8")
+    assert "git|clone" not in remote_log
+    expected = [
+        "git|fetch origin codex-test",
+        "git|checkout codex-test",
+        "git|pull --ff-only origin codex-test",
+        f"script|{remote_root}/scripts/setup.sh",
+        f"script|{remote_root}/scripts/sync_codex_skills.sh",
+        f"script|{remote_root}/scripts/install_codex_automations.sh",
+        f"script|{remote_root}/scripts/install_runtime_services.sh",
+        f"script|{remote_root}/scripts/disable_legacy_claude_launchd.sh",
+        f"script|{remote_root}/scripts/doctor_codex_runtime.sh",
+        "uv|run pytest tests/",
+    ]
+    positions = []
+    for item in expected:
+        assert item in remote_log, f"missing executed remote command: {item}"
+        positions.append(remote_log.index(item))
+    assert positions == sorted(positions)
+
+
 def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
     script = read_script("scripts/doctor_codex_runtime.sh")
 
