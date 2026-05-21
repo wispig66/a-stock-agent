@@ -304,7 +304,7 @@ cp risk_config.example.yaml risk_config.yaml
 │       └── plans/                 # 实施计划
 ├── research/                      # 18 份一手资料（情绪周期/游资语录/数据工具/合规）
 ├── CHANGELOG.md                   # 较大版本变更
-└── data/                          # daily.db + fact_pack + trade_calendar.csv（部分 gitignored）
+└── data/                          # daily.db / fact_pack / trade_calendar.csv 等本地运行态（gitignored）
 ```
 
 ## 数据源

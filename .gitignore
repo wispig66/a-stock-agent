@@ -8,6 +8,7 @@ __pycache__/
 .venv/
 data/*.db
 data/*.db-*
+data/trade_calendar.csv
 data/minute/*.parquet
 data/snapshots/*.parquet
 data/fact_pack/*.md
