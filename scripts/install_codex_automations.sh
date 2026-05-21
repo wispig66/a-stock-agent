@@ -147,7 +147,7 @@ PY
 write_automation \
     "stock-premarket" \
     "stock premarket" \
-    "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=30" \
+    "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0" \
     "$(skill_prompt "stock-premarket" "today's A-share premarket trading plan, decision_tickets, and Telegram card" "the premarket run")"
 
 write_automation \

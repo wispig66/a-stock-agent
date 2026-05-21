@@ -22,14 +22,14 @@ data/ask_fact_pack/
 data/query_fact_pack/
 data/allowed_latest_*.json
 data/card_violations/
+data/intraday_cache/
+data/postmarket_cache/
 logs/*.log
 logs/*.log.*
-.agents/
 .DS_Store
 holdings.yaml.lock
 data/tg_listener.pid
 data/tg_offset.txt
-.claude/settings.local.json
 research/
 docs/superpowers/
 .pytest_cache/

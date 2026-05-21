@@ -1,6 +1,6 @@
 """watch_loop.evaluate() 锁仓期文案分轨测试。
 
-watch_loop.py 位于 .claude/skills/stock-intraday/scripts/，不在 pytest pythonpath 中，
+watch_loop.py 位于 .agents/skills/stock-intraday/scripts/，不在 pytest pythonpath 中，
 本测试通过 sys.path 手动注入后 import。
 """
 from __future__ import annotations
@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / ".claude" / "skills" / "stock-intraday" / "scripts"
+SCRIPTS = ROOT / ".agents" / "skills" / "stock-intraday" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import watch_loop  # noqa: E402

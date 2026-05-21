@@ -42,8 +42,7 @@ bash scripts/doctor_codex_runtime.sh
 侧落实 enforce 策略；在未完成项目级策略前，它们继续依赖 `push.py` 的默认
 `warn` 行为。
 
-旧 short-job launchd plist 只保留在 `launchd/disabled/claude/` 作为 fallback
-archive；它们不是 active job，不要重新安装为当前调度入口。
+旧 short-job launchd plist 不再保存在仓库里；它们不是 active job，不要重新安装为当前调度入口。
 
 ### launchd daemon
 
@@ -79,7 +78,7 @@ bash scripts/doctor_codex_runtime.sh
 ## 模式判定逻辑代码位置
 
 - `code/lib/card_validator.py` — validate_card() 不感知模式，只返回 violations
-- `.claude/skills/stock-premarket/scripts/push.py` — `_validate()` 读 env
+- `.agents/skills/stock-premarket/scripts/push.py` — `_validate()` 读 env
 - `scripts/tg_listener.py` — `_validate_card_for_push()` 读 env
 
 env 不设时默认 `warn`（push.py 和 tg_listener.py 各自的 default）。

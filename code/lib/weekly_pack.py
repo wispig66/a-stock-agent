@@ -161,7 +161,7 @@ _YAML_FENCE_RE = re.compile(
 def render_long_form(pack: dict, parts: dict) -> str:
     """渲染 data/weekly_review/YYYY-WW.md 长文。
 
-    parts 由 skill 阶段（claude）合成：
+    parts 由 skill 阶段（Codex）合成：
       part1_narrative, part2_narrative, themes, discipline_notes, web_status
     """
     week_num = pack["week_label"].split("-W")[1]

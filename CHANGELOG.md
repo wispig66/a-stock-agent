@@ -8,7 +8,7 @@
 
 新增 L7 望远镜层。每周日 21:00 launchd 触发，输出 Part 1 本周复盘（6 节叙事 + 个人交易回顾）+ Part 2 下周方向（2-3 条主线 + 代表股 + 催化 + 风险，不给买点），落地长文 `data/weekly_review/YYYY-WW.md`。长文含 machine-readable YAML 块，L1 stock-premarket 加 Step 1.5 自动读取作为观察池先验种子。
 
-新增模块：`code/lib/weekly_pack.py`、`.claude/skills/stock-weekly/`（SKILL.md + aggregate.py）、`scripts/weekly_loop.py`、`launchd/com.user.stockweekly.plist`。
+新增模块：`code/lib/weekly_pack.py`、`.agents/skills/stock-weekly/`（SKILL.md + aggregate.py）、`scripts/weekly_loop.py`、`launchd/com.user.stockweekly.plist`。
 
 设计 spec：`docs/superpowers/specs/2026-05-17-stock-weekly-design.md`。
 
@@ -19,7 +19,7 @@
 新增「在 Telegram 发 `/ask <text>` 或 `/ask+ <text>` → 自动识别意图 + 输出板块/事件分析卡片」入口。补足 stock-query 单股之外的"随手丢一个东西问问"场景（板块名、政策事件、模糊描述都能进）。
 
 **新增**
-- `.claude/skills/stock-ask/SKILL.md` — 路由 + 板块卡 + 事件卡 + 模糊兜底
+- `.agents/skills/stock-ask/SKILL.md` — 路由 + 板块卡 + 事件卡 + 模糊兜底
 - `code/lib/intent.py` — 四层意图分类（显式覆盖 → 规则 → LLM → 模糊安全网）+ `build_sector_lexicon()` 从 `ths_hot_reason` / `limit_up.concept` 构建板块词库
 - `code/lib/sector_pack.py` — `fuzzy_match` / `_load_lexicon` / `classify_stage`（启动期/主升期/高潮期/退潮期）/ `pick_top_n`（追高过滤 + 评分公式）/ `build_sector_pack`（4 面板 ThreadPool 并发）
 - `code/lib/event_pack.py` — `calibrate`（题材库三档 ✓/△/✗）+ `build_event_pack`（normal/deep 双模式，deep 含 web 实时搜索补强 + 静默降级）
@@ -46,7 +46,7 @@
 - 组合层风控 Week 1：总仓位计算器 + L1 盘前预检横幅
   - `risk_config.yaml`（gitignore）+ `risk_config.example.yaml` 模板
   - `code/lib/risk.py`：`load_risk_config` / `compute_exposure` / `preflight_check` / `make_price_fn_from_df` / `fetch_spot_price_fn`
-  - `.claude/skills/stock-premarket/scripts/preflight.py` CLI 入口
+  - `.agents/skills/stock-premarket/scripts/preflight.py` CLI 入口
   - L1 卡片支持总仓位超额 ⚠️ 横幅 + 每只候选股"当前可用 X%"额度行
 - watch_loop 锁仓期告警分轨：今日买入持仓 (today < unlock_date) 命中 hold_stop / hold_dump / hold_vol 时改文案为"🌙 锁仓中 · 明早处理"，alert_key 加 `_locked` 后缀与解锁版去重隔离
 - L4 盘后卡片新增持仓题材集中度判定：⚠️ ≥60% / 🟡 ≥40% / ✅ <40% / 空仓跳过，与 3a 题材延续性联动给出"保持/减半"动作建议
@@ -54,10 +54,10 @@
 
 ### TG 单股查询助手 · stock-query (2026-05-14)
 
-新增「在 Telegram 发股票代码 → 30-90s 内回一张题材派决策卡」入口。常驻 daemon 10s 长轮询，前置校验秒级拒绝不合规票（科创/北交所/ST/未找到），合规票走 `claude -p` headless 跑新 skill `stock-query` 并把卡片流式写到 TG 同一条消息。
+新增「在 Telegram 发股票代码 → 30-90s 内回一张题材派决策卡」入口。常驻 daemon 10s 长轮询，前置校验秒级拒绝不合规票（科创/北交所/ST/未找到），合规票走 `codex exec` headless 跑新 skill `stock-query` 并把卡片流式写到 TG 同一条消息。
 
 **新增**
-- `.claude/skills/stock-query/SKILL.md` — 题材派 6 维判定 + fresh/holding 双分支模板 + 三档明确表态
+- `.agents/skills/stock-query/SKILL.md` — 题材派 6 维判定 + fresh/holding 双分支模板 + 三档明确表态
 - `scripts/tg_listener.py` — TG 长轮询守护进程，fcntl 文件锁串行化、1 跑 + 3 等队列、`subprocess` + `--output-format stream-json --include-partial-messages` 流式跑 skill，工具调用阶段也 editMessageText 显示进度
 - `scripts/start_tg_listener.sh` / `stop_tg_listener.sh` — 交互式 shell 拉起 daemon（绕开 launchd + ~/Desktop 的 TCC 阻塞）
 - `code/lib/query.py` — 单股查询数据层：`parse_input` / `board_of` / `is_st` / `lookup_by_name` + 联网拉 K 线 / 盘口 / 资金流 / 概念榜 / 新闻
@@ -95,7 +95,7 @@
 - `scripts/install_launchd.sh` — 单独重装 launchd 任务
 
 **改动**
-- `.claude/skills/stock-intraday/scripts/fetch_realtime.py` — `load_holdings` 转调 `lib.holdings`，统一数据来源，对下游保持 `list[dict]` 返回不变
+- `.agents/skills/stock-intraday/scripts/fetch_realtime.py` — `load_holdings` 转调 `lib.holdings`，统一数据来源，对下游保持 `list[dict]` 返回不变
 - `pyproject.toml` — 加 `filelock>=3.13` 运行依赖；新增 dev group 含 `pytest>=8.0`；配置 `pythonpath = ["code"]`
 - `holdings.yaml` header 注释 — 补 unlock_date / source / 历史兼容说明
 - `.gitignore` — 加 `holdings.yaml.lock`

@@ -1,4 +1,4 @@
--- daily.db schema for stock 短线 CC 辅助系统
+-- daily.db schema for stock 短线 Codex 辅助系统
 -- 用法：sqlite3 data/daily.db < code/init_db.sql
 
 -- 启用 WAL（持久化 PRAGMA，写进 DB 文件头一次永久生效）

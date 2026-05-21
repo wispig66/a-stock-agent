@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""L7 stock-weekly legacy fallback wrapper.
+"""L7 stock-weekly manual fallback wrapper.
 
 默认生产调度已迁移到 Codex automation `stock-weekly-review`。本脚本只保留
 幂等检查和手动 fallback，不再作为默认 launchd 入口安装。
@@ -7,7 +7,7 @@
 行为：
   1. 计算当周 label
   2. data/weekly_review/<label>.md 已存在 → 跳过（除非 --force）
-  3. 否则 headless `claude -p` 触发 stock-weekly skill，超时 600s
+  3. 否则 `codex exec` 触发 stock-weekly skill，超时 600s
   4. 全程日志到 logs/weekly_loop.log
 """
 from __future__ import annotations
@@ -47,10 +47,15 @@ def _current_week_label(today: date) -> str:
     return f"{iso_year}-W{iso_week:02d}"
 
 
-def _invoke_claude(timeout: int = TIMEOUT_SECONDS) -> int:
-    """headless 触发 stock-weekly skill。stdin 给自然语言 prompt。"""
+def _invoke_codex(timeout: int = TIMEOUT_SECONDS) -> int:
+    """Headless 触发 stock-weekly skill。stdin 给自然语言 prompt。"""
     root = _project_root()
-    cmd = ["claude", "-p", "--permission-mode", "bypassPermissions"]
+    cmd = [
+        "codex", "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-C", str(root),
+        "-",
+    ]
     prompt = "请运行 /stock-weekly：跑当周周复盘，输出长文 + TG 推送。"
     try:
         result = run_subprocess(cmd, name="weekly_skill", timeout=timeout,
@@ -78,7 +83,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     log.info("START weekly loop for %s", label)
-    rc = _invoke_claude()
+    rc = _invoke_codex()
     if rc == 0:
         log.info("DONE rc=0")
     else:

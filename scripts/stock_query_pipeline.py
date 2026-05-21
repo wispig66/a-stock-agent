@@ -1,7 +1,7 @@
 """单股 fact pack 生成器。
 
 被 stock-query SKILL.md 调用。一次 Python 进程并发拉所有数据，每个数据源独立 try/except，
-输出 JSON fact pack 让 claude 一次性综合判断 + 写卡片。
+输出 JSON fact pack 让 Codex 一次性综合判断 + 写卡片。
 
 用法:
   uv run scripts/stock_query_pipeline.py --code 002208 --mode fresh

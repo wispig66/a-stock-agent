@@ -138,6 +138,44 @@ def remove_holding(code: str) -> Holding:
     return removed
 
 
+def reduce_holding(code: str, shares: int) -> tuple[Holding, Holding | None]:
+    """卖出部分或全部持仓。
+
+    返回 (卖出前记录, 卖出后记录)。卖出后为 None 表示已清仓。
+    """
+    if shares <= 0:
+        raise ValueError("shares must be > 0")
+    with FileLock(str(LOCK_FILE)):
+        raw = yaml.safe_load(HOLDINGS_FILE.read_text(encoding="utf-8")) if HOLDINGS_FILE.exists() else {}
+        raw = raw or {}
+        items = raw.get("holdings") or []
+        idx = next((i for i, d in enumerate(items) if str(d.get("code")) == code), None)
+        if idx is None:
+            raise KeyError(f"持仓中无 {code}")
+        old = _from_yaml_dict(items[idx])
+        if shares >= old.shares:
+            items.pop(idx)
+            remaining = None
+        else:
+            remaining = Holding(
+                code=old.code,
+                name=old.name,
+                genre=old.genre,
+                cost=old.cost,
+                shares=old.shares - shares,
+                buy_date=old.buy_date,
+                stop_loss=old.stop_loss,
+                take_profit=old.take_profit,
+                unlock_date=old.unlock_date,
+                source=old.source,
+                note=old.note,
+            )
+            items[idx] = remaining.to_yaml_dict()
+        raw["holdings"] = items
+        _atomic_write(raw)
+    return old, remaining
+
+
 def _atomic_write(raw: dict) -> None:
     HOLDINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(

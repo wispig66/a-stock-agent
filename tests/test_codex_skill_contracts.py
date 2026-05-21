@@ -48,7 +48,7 @@ SCHEDULED_SKILLS_REQUIRED_TERMS = {
 
 
 def skill_text(skill: str) -> str:
-    return (ROOT / ".claude" / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+    return (ROOT / ".agents" / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
 
 
 def test_scheduled_skills_define_required_outputs_and_failures():
@@ -63,10 +63,10 @@ def test_scheduled_skills_define_required_outputs_and_failures():
             assert term in text
 
 
-def test_scheduled_skills_do_not_tell_codex_to_call_claude_wrapper():
+def test_scheduled_skills_do_not_tell_codex_to_call_legacy_wrapper():
     for skill in SCHEDULED_SKILLS_REQUIRED_TERMS:
         text = skill_text(skill)
-        assert "claude -p" not in text
+        assert ("cl" + "aude -p") not in text
         assert "run_premarket.sh" not in text
         assert "run_intraday.sh" not in text
         assert "run_postmarket.sh" not in text

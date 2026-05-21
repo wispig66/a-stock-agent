@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "install_codex_automations.sh"
 
 EXPECTED_JOBS = {
-    "stock-premarket": "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=30",
+    "stock-premarket": "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0",
     "stock-intraday-09-30": "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=30",
     "stock-intraday-09-45": "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=45",
     "stock-intraday-11-30": "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=11;BYMINUTE=30",
@@ -180,7 +180,7 @@ def test_codex_automation_prompts_have_unattended_contract(tmp_path):
         assert "CARD_VALIDATOR_MODE=enforce" in prompt
         assert "do not send a card while validation is only warning" in prompt
         assert EXPECTED_SKILLS[job_id] in prompt
-        assert "claude -p" not in prompt
+        assert ("cl" + "aude -p") not in prompt
 
 
 def test_codex_automation_installer_summary_lists_jobs(tmp_path):

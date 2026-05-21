@@ -92,6 +92,27 @@ def test_remove_holding(tmp_yaml):
     assert h.read_holdings() == []
 
 
+def test_reduce_holding_partial_and_full(tmp_yaml):
+    rec = h.Holding(
+        code="000601", name="韶能股份", genre="B",
+        cost=9.0, shares=1000,
+        buy_date=date(2026, 5, 14),
+        stop_loss=8.9, take_profit=None, source="manual",
+    )
+    h.upsert_holding(rec)
+
+    old, remaining = h.reduce_holding("000601", 400)
+    assert old.shares == 1000
+    assert remaining is not None
+    assert remaining.shares == 600
+    assert h.read_holdings()[0].shares == 600
+
+    old, remaining = h.reduce_holding("000601", 600)
+    assert old.shares == 600
+    assert remaining is None
+    assert h.read_holdings() == []
+
+
 def test_remove_missing_raises(tmp_yaml):
     with pytest.raises(KeyError):
         h.remove_holding("999999")

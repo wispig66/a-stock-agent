@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / ".claude/skills/stock-postmarket/scripts"))
+sys.path.insert(0, str(ROOT / ".agents/skills/stock-postmarket/scripts"))
 
 from fetch_postmarket import compute_ladder_gap  # noqa: E402
 

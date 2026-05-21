@@ -36,8 +36,14 @@ def _seed_db(path):
 
 def _setup(monkeypatch, tmp_path):
     _seed_db(tmp_path / "t.db")
+    cal_csv = tmp_path / "trade_calendar.csv"
+    cal_csv.write_text("trade_date\n2026-05-14\n2026-05-15\n2026-05-18\n", encoding="utf-8")
+    monkeypatch.setattr(tl.holdings_lib.cal, "CALENDAR_FILE", cal_csv)
+    tl.holdings_lib.cal._cache_clear()
     monkeypatch.setattr(tl.query, "DB", tmp_path / "t.db")
     monkeypatch.setattr(tl, "HOLDINGS_FILE", tmp_path / "holdings.yaml")
+    monkeypatch.setattr(tl.holdings_lib, "HOLDINGS_FILE", tmp_path / "holdings.yaml")
+    monkeypatch.setattr(tl.holdings_lib, "LOCK_FILE", tmp_path / "holdings.yaml.lock")
     (tmp_path / "holdings.yaml").write_text("holdings: []\n")
     monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "999")
 
@@ -293,6 +299,57 @@ def test_handle_buy_command_writes_and_replies(tmp_path, monkeypatch):
     ).fetchone()
     conn.close()
     assert row == ("600519", "buy", 1000, "自主", 271)
+    holdings = tl.holdings_lib.read_holdings()
+    assert len(holdings) == 1
+    assert holdings[0].code == "600519"
+    assert holdings[0].name == "贵州茅台"
+    assert holdings[0].shares == 1000
+    assert holdings[0].cost == 12.34
+    assert holdings[0].source == "bot_buy"
+
+
+def test_handle_sell_command_reduces_holdings(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    db = tmp_path / "t.db"
+    monkeypatch.setattr(tl, "TRADES_DB", db)
+    tl.holdings_lib.upsert_holding(tl.holdings_lib.Holding(
+        code="600519",
+        name="贵州茅台",
+        genre="未标记",
+        cost=12.34,
+        shares=1000,
+        buy_date=datetime(2026, 5, 14).date(),
+        source="bot_buy",
+    ))
+    with patch.object(tl, "push_reply") as p, \
+         patch.object(tl, "run_skill_streaming") as r:
+        tl.handle("/sell 600519 15.0 4 止盈", chat_id="999")
+    ack = p.call_args.args[0]
+    assert "卖出" in ack and "剩余 600 股" in ack
+    r.assert_not_called()
+    holdings = tl.holdings_lib.read_holdings()
+    assert len(holdings) == 1
+    assert holdings[0].shares == 600
+
+
+def test_handle_sell_command_clears_holdings(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    db = tmp_path / "t.db"
+    monkeypatch.setattr(tl, "TRADES_DB", db)
+    tl.holdings_lib.upsert_holding(tl.holdings_lib.Holding(
+        code="600519",
+        name="贵州茅台",
+        genre="未标记",
+        cost=12.34,
+        shares=1000,
+        buy_date=datetime(2026, 5, 14).date(),
+        source="bot_buy",
+    ))
+    with patch.object(tl, "push_reply") as p:
+        tl.handle("/sell 600519 15.0 10 止盈", chat_id="999")
+    ack = p.call_args.args[0]
+    assert "卖出" in ack and "已清仓" in ack
+    assert tl.holdings_lib.read_holdings() == []
 
 
 def test_handle_invalid_trade_replies_error(tmp_path, monkeypatch):

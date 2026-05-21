@@ -13,14 +13,14 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 
 def test_skip_when_file_exists(tmp_path, monkeypatch):
-    """data/weekly_review/<label>.md 已存在 → 跳过，不调 claude。"""
+    """data/weekly_review/<label>.md 已存在 → 跳过，不调 Codex。"""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "weekly_review").mkdir(parents=True)
     import weekly_loop
     label = weekly_loop._current_week_label(date.today())
     (tmp_path / "data" / "weekly_review" / f"{label}.md").write_text("existing")
 
-    with patch("weekly_loop._invoke_claude") as mock_invoke:
+    with patch("weekly_loop._invoke_codex") as mock_invoke:
         rc = weekly_loop.main([])
 
     assert rc == 0
@@ -34,7 +34,7 @@ def test_force_overrides_skip(tmp_path, monkeypatch):
     label = weekly_loop._current_week_label(date.today())
     (tmp_path / "data" / "weekly_review" / f"{label}.md").write_text("existing")
 
-    with patch("weekly_loop._invoke_claude", return_value=0) as mock_invoke:
+    with patch("weekly_loop._invoke_codex", return_value=0) as mock_invoke:
         rc = weekly_loop.main(["--force"])
 
     assert rc == 0

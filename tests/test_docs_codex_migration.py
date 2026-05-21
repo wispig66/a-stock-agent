@@ -84,18 +84,17 @@ def test_readme_describes_codex_as_short_llm_scheduler():
     )
 
 
-def test_codex_runbook_documents_remote_pull_deploy():
+def test_codex_runbook_documents_local_runtime_deploy():
     text = read("docs/codex_automations.md")
 
     assert_contains_all(
         text,
         [
-            "pull-based",
-            "runtime host",
-            "deploy.remote.env",
-            "scripts/deploy_remote_codex.sh",
+            "本机运行模型",
+            "~/.codex/automations/",
+            "~/Library/LaunchAgents/",
             "scripts/doctor_codex_runtime.sh",
-            "launchd/disabled/claude/",
+            "scripts/disable_legacy_llm_launchd.sh",
         ],
         label="Codex automation runbook",
     )

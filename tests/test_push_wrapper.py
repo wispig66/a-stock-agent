@@ -7,7 +7,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PUSH = ROOT / ".claude" / "skills" / "stock-premarket" / "scripts" / "push.py"
+PUSH = ROOT / ".agents" / "skills" / "stock-premarket" / "scripts" / "push.py"
 
 
 def load_push_module():

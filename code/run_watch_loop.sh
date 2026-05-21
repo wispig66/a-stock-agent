@@ -19,4 +19,4 @@ done
 [ -n "$UV_BIN" ] || { echo "未找到 uv 可执行；先 brew install uv 或 curl -LsSf https://astral.sh/uv/install.sh | sh" >&2; exit 1; }
 
 echo "=== watch_loop start $(date) ===" >> "$LOG"
-exec "$UV_BIN" run .claude/skills/stock-intraday/scripts/watch_loop.py "$@" >> "$LOG" 2>&1
+exec "$UV_BIN" run .agents/skills/stock-intraday/scripts/watch_loop.py "$@" >> "$LOG" 2>&1

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / ".claude" / "skills" / "stock-intraday" / "scripts"
+SCRIPTS = ROOT / ".agents" / "skills" / "stock-intraday" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(ROOT / "code"))
 

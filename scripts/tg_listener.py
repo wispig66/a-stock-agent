@@ -1,11 +1,8 @@
-"""TG 长轮询守护进程：接收单股代码/名称 → 调 CC headless 跑 stock-query → 流式回卡片。
+"""TG 长轮询守护进程：接收单股代码/名称 → 调 Codex headless 跑 stock-query → 回卡片。
 
 并发：fcntl 文件锁 + 排队计数器；1 跑 + 3 等 = 4 容量，第 5 拒绝。
-失败重试：TG API 指数退避，CC 子进程超时 180s 直接报错。
+失败重试：TG API 指数退避，Codex 子进程超时 180s 直接报错。
 进程崩溃由 launchd KeepAlive 拉起；offset 持久化到 data/tg_offset.txt。
-
-流式输出：claude -p --output-format stream-json --include-partial-messages
-解析 content_block_delta 累积文本，每 1.5s editMessageText 一次（限速 + 节省 API 调用）。
 """
 from __future__ import annotations
 import fcntl
@@ -14,6 +11,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -26,6 +24,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "code"))
 from lib import query  # noqa: E402
+from lib import holdings as holdings_lib  # noqa: E402
 from lib.card_validator import (  # noqa: E402
     validate_card, load_stock_name_dict, format_violations,
 )
@@ -35,16 +34,16 @@ from logger import get_logger, new_req_id, set_req_id, get_req_id  # noqa: E402
 
 log = get_logger("tg_listener")
 
-def _find_claude_bin() -> str:
-    for p in (Path.home() / ".local/bin/claude",
-              Path.home() / ".claude/local/claude",
-              Path("/usr/local/bin/claude"),
-              Path("/opt/homebrew/bin/claude")):
+def _find_codex_bin() -> str:
+    for p in (Path.home() / ".nvm/versions/node/v24.15.0/bin/codex",
+              Path.home() / ".local/bin/codex",
+              Path("/opt/homebrew/bin/codex"),
+              Path("/usr/local/bin/codex")):
         if p.is_file() and os.access(p, os.X_OK):
             return str(p)
-    return "claude"
+    return "codex"
 
-CLAUDE_BIN = _find_claude_bin()
+CODEX_BIN = _find_codex_bin()
 
 _ASK_RE = re.compile(r"^/ask(\+)?(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)
 
@@ -67,6 +66,13 @@ POLL_ALERT_EVERY_FAILURES = int(os.environ.get("TG_POLL_ALERT_EVERY_FAILURES", "
 
 _running = 0
 _waiting = 0
+
+
+def _safe_error_text(exc: Exception) -> str:
+    text = str(exc)
+    if TG_TOKEN:
+        text = text.replace(TG_TOKEN, "<redacted-token>")
+    return text
 
 DB_PATH = ROOT / "data" / "daily.db"
 
@@ -224,164 +230,73 @@ def held_codes() -> set[str]:
 def run_skill_streaming(code: str, mode: str,
                         on_text: Callable[[str], None],
                         on_tool: Callable[[str], None]) -> str:
-    """流式跑 stock-query skill。
+    """跑 stock-query skill。
 
-    on_text(accumulated)：模型写卡片时（每个 text_delta）回调，调用方自行节流
-    on_tool(tool_name)：每次 tool_use 开始时回调（拉数据进度）
+    on_text(accumulated)：最终输出回调，调用方自行节流。
+    on_tool(tool_name)：开始时回调，用于 loading 状态。
     返回最终完整卡片文本。
     """
     prompt = (f"请使用 stock-query skill 分析这只股票，严格按 SKILL.md "
               f"模板输出卡片，不要任何额外文字：code={code} mode={mode}")
-    cmd = [CLAUDE_BIN, "-p", "--permission-mode", "bypassPermissions",
-           "--output-format", "stream-json",
-           "--include-partial-messages",
-           "--verbose"]
-
-    log.info("skill_streaming(query) 启动 code=%s mode=%s timeout=%ss", code, mode, SKILL_TIMEOUT)
-    env = os.environ.copy()
-    env["STOCK_REQ_ID"] = get_req_id()
-    proc = subprocess.Popen(
-        cmd, cwd=str(ROOT),
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, bufsize=1, env=env,
-    )
-    assert proc.stdin and proc.stdout
-    proc.stdin.write(prompt)
-    proc.stdin.close()
-
-    accumulated = ""
-    final_text = ""
-    start = time.time()
-
-    try:
-        for raw in iter(proc.stdout.readline, ""):
-            if time.time() - start > SKILL_TIMEOUT:
-                proc.kill()
-                log.error("skill_streaming(query) 超时 code=%s", code)
-                raise subprocess.TimeoutExpired(cmd, SKILL_TIMEOUT)
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                evt = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            etype = evt.get("type")
-
-            # 工具调用：拉数据阶段的进度信号
-            if etype == "stream_event":
-                ev = evt.get("event", {})
-                ev_type = ev.get("type")
-                if ev_type == "content_block_start":
-                    block = ev.get("content_block", {})
-                    if block.get("type") == "tool_use":
-                        on_tool(block.get("name", "tool"))
-                elif ev_type == "content_block_delta":
-                    delta = ev.get("delta", {})
-                    if delta.get("type") == "text_delta":
-                        accumulated += delta.get("text", "")
-                        on_text(accumulated)
-                continue
-
-            if etype == "assistant":
-                content = (evt.get("message") or {}).get("content") or []
-                for blk in content:
-                    if blk.get("type") == "text":
-                        accumulated = blk.get("text", "") or accumulated
-                        on_text(accumulated)
-                continue
-
-            if etype == "result":
-                final_text = (evt.get("result") or "").strip()
-                continue
-    finally:
-        proc.wait(timeout=5)
-
-    if proc.returncode != 0:
-        err = proc.stderr.read() if proc.stderr else ""
-        log.error("skill_streaming(query) 退出码 %d code=%s\nstderr:\n%s",
-                  proc.returncode, code, err[-4000:])
-        raise RuntimeError(f"claude -p 退出码 {proc.returncode}: {err[:500]}")
-    log.info("skill_streaming(query) 完成 code=%s 用时 %.1fs len=%d",
-             code, time.time() - start, len(final_text or accumulated))
-    return final_text or accumulated.strip()
+    return _run_codex_exec(prompt=prompt, timeout=SKILL_TIMEOUT,
+                           label=f"query:{code}:{mode}",
+                           on_text=on_text, on_tool=on_tool)
 
 
 def run_skill_streaming_generic(*, prompt: str, timeout: int,
                                 on_text: Callable[[str], None],
                                 on_tool: Callable[[str], None]) -> str:
-    """通用流式跑 claude -p。返回最终卡片文本。
+    """通用 Codex headless 调用。返回最终卡片文本。
     与 run_skill_streaming 的差异：prompt + timeout 都是入参，不依赖模块级 SKILL_TIMEOUT。"""
-    cmd = [CLAUDE_BIN, "-p", "--permission-mode", "bypassPermissions",
-           "--output-format", "stream-json",
-           "--include-partial-messages",
-           "--verbose"]
+    return _run_codex_exec(prompt=prompt, timeout=timeout, label="generic",
+                           on_text=on_text, on_tool=on_tool)
 
-    log.info("skill_streaming(generic) 启动 timeout=%ss prompt_head=%s",
-             timeout, prompt[:80].replace("\n", " "))
+
+def _run_codex_exec(*, prompt: str, timeout: int, label: str,
+                    on_text: Callable[[str], None],
+                    on_tool: Callable[[str], None]) -> str:
+    on_tool("codex")
     env = os.environ.copy()
     env["STOCK_REQ_ID"] = get_req_id()
-    proc = subprocess.Popen(
-        cmd, cwd=str(ROOT),
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, bufsize=1, env=env,
-    )
-    assert proc.stdin and proc.stdout
-    proc.stdin.write(prompt)
-    proc.stdin.close()
-
-    accumulated = ""
-    final_text = ""
     start = time.time()
-
-    try:
-        for raw in iter(proc.stdout.readline, ""):
-            if time.time() - start > timeout:
-                proc.kill()
-                log.error("skill_streaming(generic) 超时 %ds", timeout)
-                raise subprocess.TimeoutExpired(cmd, timeout)
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                evt = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            etype = evt.get("type")
-            if etype == "stream_event":
-                ev = evt.get("event", {})
-                ev_type = ev.get("type")
-                if ev_type == "content_block_start":
-                    block = ev.get("content_block", {})
-                    if block.get("type") == "tool_use":
-                        on_tool(block.get("name", "tool"))
-                elif ev_type == "content_block_delta":
-                    delta = ev.get("delta", {})
-                    if delta.get("type") == "text_delta":
-                        accumulated += delta.get("text", "")
-                        on_text(accumulated)
-                continue
-            if etype == "assistant":
-                content = (evt.get("message") or {}).get("content") or []
-                for blk in content:
-                    if blk.get("type") == "text":
-                        accumulated = blk.get("text", "") or accumulated
-                        on_text(accumulated)
-                continue
-            if etype == "result":
-                final_text = (evt.get("result") or "").strip()
-                continue
-    finally:
-        proc.wait(timeout=5)
-
-    if proc.returncode != 0:
-        err = proc.stderr.read() if proc.stderr else ""
-        log.error("skill_streaming(generic) 退出码 %d\nstderr:\n%s",
-                  proc.returncode, err[-4000:])
-        raise RuntimeError(f"claude -p 退出码 {proc.returncode}: {err[:500]}")
-    log.info("skill_streaming(generic) 完成 用时 %.1fs len=%d",
-             time.time() - start, len(final_text or accumulated))
-    return final_text or accumulated.strip()
+    with tempfile.NamedTemporaryFile("r+", encoding="utf-8", delete=True) as out:
+        cmd = [
+            CODEX_BIN,
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "-C",
+            str(ROOT),
+            "--output-last-message",
+            out.name,
+            "-",
+        ]
+        log.info("codex_exec(%s) 启动 timeout=%ss prompt_head=%s",
+                 label, timeout, prompt[:80].replace("\n", " "))
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(ROOT),
+                input=prompt,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                env=env,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            log.error("codex_exec(%s) 超时 %ds", label, timeout)
+            raise
+        out.seek(0)
+        final_text = out.read().strip()
+    if result.returncode != 0:
+        err = (result.stderr or "")[-4000:]
+        log.error("codex_exec(%s) 退出码 %d\nstderr:\n%s", label, result.returncode, err)
+        raise RuntimeError(f"codex exec 退出码 {result.returncode}: {(result.stderr or '')[:500]}")
+    if not final_text:
+        final_text = (result.stdout or "").strip()
+    on_text(final_text)
+    log.info("codex_exec(%s) 完成 用时 %.1fs len=%d", label, time.time() - start, len(final_text))
+    return final_text
 
 
 def _reject(code: str, reason: str) -> str:
@@ -395,6 +310,12 @@ def _reject(code: str, reason: str) -> str:
 BUY_REASONS = ("二板接力", "龙头补涨", "火箭跟", "自主")
 SELL_REASONS = ("止盈", "破位", "跳水", "换股")
 TRADES_DB = ROOT / "data" / "daily.db"
+BUY_REASON_GENRE = {
+    "二板接力": "A",
+    "龙头补涨": "B",
+    "火箭跟": "D",
+    "自主": "未标记",
+}
 
 HELP_TEXT = (
     "📒 交易流水命令\n"
@@ -543,6 +464,49 @@ def record_trade(parsed: dict, source_msg_id: Optional[int],
         conn.close()
 
 
+def _stock_name_for_code(code: str) -> str:
+    try:
+        conn = sqlite3.connect(TRADES_DB)
+        try:
+            row = conn.execute("SELECT name FROM stock_basic WHERE code=?", (code,)).fetchone()
+        finally:
+            conn.close()
+        if row and row[0]:
+            return str(row[0])
+    except Exception:
+        log.exception("stock_basic 查询失败 code=%s", code)
+    return code
+
+
+def _sync_trade_to_holdings(parsed: dict, now: Optional[datetime] = None) -> str:
+    ts = _build_ts(parsed["ts_override"], now=now)
+    trade_date = datetime.fromisoformat(ts).date()
+    if parsed["side"] == "buy":
+        rec = holdings_lib.Holding(
+            code=parsed["code"],
+            name=_stock_name_for_code(parsed["code"]),
+            genre=BUY_REASON_GENRE.get(parsed["reason"] or "", "未标记"),
+            cost=parsed["price"],
+            shares=parsed["qty"],
+            buy_date=trade_date,
+            source="bot_buy",
+            note=parsed["reason"] or "TG /buy",
+        )
+        final = holdings_lib.upsert_holding(rec)
+        return (
+            f"已同步 holdings.yaml：{final.name} {final.shares} 股，"
+            f"成本 {final.cost}，T+1 解锁 {final.unlock_date.isoformat()}"
+        )
+
+    try:
+        old, remaining = holdings_lib.reduce_holding(parsed["code"], parsed["qty"])
+    except KeyError:
+        return "⚠️ trades 已记录；holdings.yaml 未找到该持仓，未能同步扣减"
+    if remaining is None:
+        return f"已同步 holdings.yaml：{old.name} 已清仓"
+    return f"已同步 holdings.yaml：{remaining.name} 剩余 {remaining.shares} 股"
+
+
 def handle_trade(parsed: dict, source_msg_id: Optional[int]) -> str:
     """落库 + 返回给用户看的确认文本。"""
     row_id = record_trade(parsed, source_msg_id)
@@ -558,6 +522,11 @@ def handle_trade(parsed: dict, source_msg_id: Optional[int]) -> str:
         parts.append(f"成交时间：{parsed['ts_override']}")
     if source_msg_id:
         parts.append(f"关联推送 msg_id={source_msg_id}")
+    try:
+        parts.append(_sync_trade_to_holdings(parsed))
+    except Exception as e:
+        log.exception("holdings.yaml 同步失败 trade_id=%s", row_id)
+        parts.append(f"⚠️ trades 已记录；holdings.yaml 同步失败：{e}")
     return "\n".join(parts)
 
 
@@ -905,7 +874,7 @@ def main() -> None:
                 )
             )
             msg = ("getUpdates failed #%d (%s: %s), backoff %ds"
-                   % (poll_failures, type(e).__name__, str(e)[:200], backoff))
+                   % (poll_failures, type(e).__name__, _safe_error_text(e)[:200], backoff))
             if should_alert:
                 log.error(msg, exc_info=True)
             else:

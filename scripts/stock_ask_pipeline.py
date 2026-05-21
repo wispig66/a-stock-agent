@@ -1,12 +1,12 @@
 """A 股随时分析 fact pack 生成器。
 
 被 stock-ask SKILL.md 调用。一次 Python 进程并发拉所有数据，输出 JSON fact pack
-让 claude 一次性综合判断 + 写卡片。
+让 Codex 一次性综合判断 + 写卡片。
 
 用法:
   uv run scripts/stock_ask_pipeline.py --text "token工厂" --mode normal
 
-输出：JSON 到 stdout（claude 直接读）+ 写文件 data/ask_fact_pack/<ts>.json
+输出：JSON 到 stdout（Codex 直接读）+ 写文件 data/ask_fact_pack/<ts>.json
 """
 from __future__ import annotations
 import argparse
@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "code"))
-sys.path.insert(0, str(ROOT / ".claude" / "skills" / "stock-premarket" / "scripts"))
+sys.path.insert(0, str(ROOT / ".agents" / "skills" / "stock-premarket" / "scripts"))
 
 from logger import get_logger, init_req_id_from_env  # noqa: E402
 

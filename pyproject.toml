@@ -1,7 +1,7 @@
 [project]
-name = "stock-cc"
+name = "stock-codex"
 version = "0.1.0"
-description = "A股短线 Claude Code 辅助系统"
+description = "A股短线 Codex 辅助系统"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "akshare>=1.18",

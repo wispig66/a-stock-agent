@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import shlex
 from pathlib import Path
 
 import pytest
@@ -37,14 +36,6 @@ def assert_contains_none(text: str, forbidden: list[str], *, label: str = "text"
     assert not present, f"{label} has unexpected text: {present}"
 
 
-def effective_shell_lines(script: str) -> list[str]:
-    return [
-        line.strip()
-        for line in script.splitlines()
-        if line.strip() and not line.strip().startswith("#") and not line.strip().startswith("echo ")
-    ]
-
-
 def write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
@@ -53,9 +44,13 @@ def write_executable(path: Path, text: str) -> None:
 def base_env(tmp_path: Path) -> dict[str, str]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
+    codex = fake_bin / "codex"
+    codex.write_text("#!/usr/bin/env bash\necho codex-test\n", encoding="utf-8")
+    codex.chmod(0o755)
     env = os.environ.copy()
     env["HOME"] = str(tmp_path / "home")
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["STOCK_DOCTOR_SKIP_NETWORK"] = "1"
     return env
 
 
@@ -82,39 +77,6 @@ def make_runtime_project(tmp_path: Path) -> Path:
     return project
 
 
-def write_remote_payload_fakes(fake_bin: Path, log: Path) -> None:
-    write_executable(
-        fake_bin / "git",
-        f"""#!/usr/bin/env bash
-echo "git|$*" >> {log}
-case "${{1:-}}" in
-  clone)
-    mkdir -p "$3/.git" "$3/scripts"
-    for script in setup.sh sync_codex_skills.sh install_codex_automations.sh install_runtime_services.sh disable_legacy_claude_launchd.sh doctor_codex_runtime.sh; do
-      cat > "$3/scripts/$script" <<'EOS'
-#!/usr/bin/env bash
-echo "script|$0" >> "$REMOTE_EXEC_LOG"
-EOS
-      chmod +x "$3/scripts/$script"
-    done
-    ;;
-  branch)
-    echo codex-test
-    ;;
-  rev-parse)
-    echo deadbee
-    ;;
-esac
-""",
-    )
-    write_executable(
-        fake_bin / "uv",
-        f"""#!/usr/bin/env bash
-echo "uv|$*" >> {log}
-""",
-    )
-
-
 def test_setup_delegates_runtime_and_codex_installation() -> None:
     script = read_script("scripts/setup.sh")
 
@@ -128,14 +90,12 @@ def test_setup_delegates_runtime_and_codex_installation() -> None:
     assert_contains_none(
         script,
         [
-            "command -v claude",
             "launchctl bootstrap",
             "scripts/install_launchd.sh",
             "notify.py test",
             "LaunchAgents",
             "launchctl print",
             "launchctl bootout",
-            "claude --version",
             "Telegram 推送通了",
         ],
     )
@@ -190,392 +150,6 @@ exit 0
     ]
 
 
-def test_remote_codex_deploy_uses_git_and_runtime_helpers() -> None:
-    script = read_script("scripts/deploy_remote_codex.sh")
-
-    assert_contains_all(
-        script,
-        [
-            "deploy.remote.env",
-            "REMOTE_HOST",
-            "REMOTE_ROOT",
-            "REMOTE_REPO_URL",
-            "REMOTE_BRANCH",
-            "REMOTE_RUN_TESTS",
-            'ssh -- "$REMOTE_HOST" "bash -s"',
-            '[ ! -d "$REMOTE_ROOT/.git" ]',
-            "git clone",
-            'cd "$REMOTE_ROOT"',
-            "git fetch origin",
-            "git checkout",
-            "git pull --ff-only",
-            "bash scripts/setup.sh",
-            "scripts/sync_codex_skills.sh",
-            "scripts/install_runtime_services.sh",
-            "scripts/install_codex_automations.sh",
-            "scripts/disable_legacy_claude_launchd.sh",
-            "scripts/doctor_codex_runtime.sh",
-            "uv run pytest tests/",
-            "Remote deployment summary:",
-        ],
-        label="scripts/deploy_remote_codex.sh",
-    )
-    assert "rsync" not in script
-
-
-def test_remote_codex_deploy_sends_pull_based_payload_to_ssh(tmp_path) -> None:
-    read_script("scripts/deploy_remote_codex.sh")
-    env = base_env(tmp_path)
-    ssh_args = tmp_path / "ssh.args"
-    ssh_payload = tmp_path / "ssh.payload"
-    write_executable(
-        tmp_path / "bin" / "ssh",
-        f"""#!/usr/bin/env bash
-printf '%s\\n' "$*" > {ssh_args}
-cat > {ssh_payload}
-""",
-    )
-    config = tmp_path / "deploy.remote.env"
-    config.write_text(
-        "\n".join(
-            [
-                "REMOTE_HOST=tester@example-host",
-                f"REMOTE_ROOT={tmp_path / 'remote-stock'}",
-                "REMOTE_REPO_URL=https://example.com/org/stock.git",
-                "REMOTE_BRANCH=codex-test",
-                "REMOTE_RUN_TESTS=1",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    env["DEPLOY_REMOTE_ENV"] = str(config)
-
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "deploy_remote_codex.sh")],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert ssh_args.read_text(encoding="utf-8").strip() == '-- tester@example-host bash -s'
-    payload = ssh_payload.read_text(encoding="utf-8")
-    payload_syntax = subprocess.run(
-        ["bash", "-n", str(ssh_payload)],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert payload_syntax.returncode == 0, payload_syntax.stderr
-    assert f'REMOTE_ROOT="{tmp_path / "remote-stock"}"' in payload
-    assert 'REMOTE_REPO_URL="https://example.com/org/stock.git"' in payload
-    assert 'REMOTE_BRANCH="codex-test"' in payload
-    assert 'REMOTE_RUN_TESTS="1"' in payload
-    expected_sequence = [
-        'if [ ! -d "$REMOTE_ROOT/.git" ]; then',
-        'git clone "$REMOTE_REPO_URL" "$REMOTE_ROOT"',
-        'cd "$REMOTE_ROOT"',
-        'git fetch origin "$REMOTE_BRANCH"',
-        'git checkout "$REMOTE_BRANCH"',
-        'git pull --ff-only origin "$REMOTE_BRANCH"',
-        "bash scripts/setup.sh",
-        "bash scripts/sync_codex_skills.sh",
-        "bash scripts/install_codex_automations.sh",
-        "bash scripts/install_runtime_services.sh",
-        "bash scripts/disable_legacy_claude_launchd.sh",
-        "bash scripts/doctor_codex_runtime.sh",
-        "uv run pytest tests/",
-    ]
-    effective_lines = "\n".join(effective_shell_lines(payload))
-    positions = []
-    for item in expected_sequence:
-        assert item in effective_lines, f"missing remote deploy payload command: {item}"
-        positions.append(effective_lines.index(item))
-    assert positions == sorted(positions)
-    clone_pos = effective_lines.index('git clone "$REMOTE_REPO_URL" "$REMOTE_ROOT"')
-    guard_end_pos = effective_lines.index("\nfi", clone_pos)
-    assert clone_pos < guard_end_pos < effective_lines.index('cd "$REMOTE_ROOT"')
-    assert "rsync" not in payload
-    assert "Remote deployment summary:" in payload
-
-
-def test_remote_codex_deploy_quotes_config_values_for_remote_payload(tmp_path) -> None:
-    read_script("scripts/deploy_remote_codex.sh")
-    env = base_env(tmp_path)
-    log = tmp_path / "remote-exec.log"
-    env["REMOTE_EXEC_LOG"] = str(log)
-    write_remote_payload_fakes(tmp_path / "bin", log)
-    ssh_payload = tmp_path / "ssh.payload"
-    write_executable(
-        tmp_path / "bin" / "ssh",
-        f"""#!/usr/bin/env bash
-cat > {ssh_payload}
-cd {tmp_path}
-bash {ssh_payload}
-""",
-    )
-    remote_root = tmp_path / 'remote stock $(touch SHOULD_NOT_RUN)'
-    repo_url = 'https://example.com/org/stock repo.git?x=$(touch BAD_REPO)'
-    branch = 'feature/"quoted branch"'
-    config = tmp_path / "deploy.remote.env"
-    config.write_text(
-        "\n".join(
-            [
-                "REMOTE_HOST=tester@example-host",
-                f"REMOTE_ROOT={shlex.quote(str(remote_root))}",
-                f"REMOTE_REPO_URL={shlex.quote(repo_url)}",
-                f"REMOTE_BRANCH={shlex.quote(branch)}",
-                "REMOTE_RUN_TESTS=0",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    env["DEPLOY_REMOTE_ENV"] = str(config)
-
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "deploy_remote_codex.sh")],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    payload = ssh_payload.read_text(encoding="utf-8")
-    syntax = subprocess.run(["bash", "-n", str(ssh_payload)], text=True, capture_output=True, check=False)
-    assert syntax.returncode == 0, syntax.stderr
-    remote_log = log.read_text(encoding="utf-8")
-    assert f"git|clone {repo_url} {remote_root}" in remote_log
-    assert "git|checkout " + branch in remote_log
-    assert "uv|run pytest tests/" not in remote_log
-    assert not (tmp_path / "SHOULD_NOT_RUN").exists()
-    assert not (tmp_path / "BAD_REPO").exists()
-
-
-def test_remote_codex_deploy_does_not_execute_env_command_substitution(tmp_path) -> None:
-    read_script("scripts/deploy_remote_codex.sh")
-    env = base_env(tmp_path)
-    write_executable(
-        tmp_path / "bin" / "ssh",
-        """#!/usr/bin/env bash
-cat >/dev/null
-""",
-    )
-    config = tmp_path / "deploy.remote.env"
-    config.write_text(
-        "\n".join(
-            [
-                "REMOTE_HOST=tester@example-host",
-                "REMOTE_ROOT=$(touch BAD)",
-                "REMOTE_REPO_URL=https://example.com/org/stock.git",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    env["DEPLOY_REMOTE_ENV"] = str(config)
-
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "deploy_remote_codex.sh")],
-        cwd=tmp_path,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode in {0, 1}, result.stderr
-    assert not (tmp_path / "BAD").exists()
-
-
-@pytest.mark.parametrize(
-    ("line", "expected_error"),
-    [
-        ("REMOTE_PASSWORD=secret", "unknown deploy env key"),
-        ("export REMOTE_HOST=tester@example-host", "invalid deploy env line"),
-    ],
-)
-def test_remote_codex_deploy_rejects_unknown_or_invalid_env_lines(
-    tmp_path, line: str, expected_error: str
-) -> None:
-    read_script("scripts/deploy_remote_codex.sh")
-    env = base_env(tmp_path)
-    write_executable(
-        tmp_path / "bin" / "ssh",
-        """#!/usr/bin/env bash
-cat >/dev/null
-""",
-    )
-    config = tmp_path / "deploy.remote.env"
-    config.write_text(
-        "\n".join(
-            [
-                "REMOTE_HOST=tester@example-host",
-                "REMOTE_ROOT=/tmp/remote-stock",
-                "REMOTE_REPO_URL=https://example.com/org/stock.git",
-                line,
-            ]
-        ),
-        encoding="utf-8",
-    )
-    env["DEPLOY_REMOTE_ENV"] = str(config)
-
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "deploy_remote_codex.sh")],
-        cwd=tmp_path,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    assert expected_error in result.stderr
-
-
-def test_remote_codex_deploy_executes_helpers_and_remote_tests(tmp_path) -> None:
-    read_script("scripts/deploy_remote_codex.sh")
-    env = base_env(tmp_path)
-    log = tmp_path / "remote-exec.log"
-    env["REMOTE_EXEC_LOG"] = str(log)
-    write_remote_payload_fakes(tmp_path / "bin", log)
-    ssh_payload = tmp_path / "ssh.payload"
-    write_executable(
-        tmp_path / "bin" / "ssh",
-        f"""#!/usr/bin/env bash
-cat > {ssh_payload}
-cd {tmp_path}
-bash {ssh_payload}
-""",
-    )
-    config = tmp_path / "deploy.remote.env"
-    remote_root = tmp_path / "remote-stock"
-    config.write_text(
-        "\n".join(
-            [
-                "REMOTE_HOST=tester@example-host",
-                f"REMOTE_ROOT={remote_root}",
-                "REMOTE_REPO_URL=https://example.com/org/stock.git",
-                "REMOTE_BRANCH=codex-test",
-                "REMOTE_RUN_TESTS=1",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    env["DEPLOY_REMOTE_ENV"] = str(config)
-
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "deploy_remote_codex.sh")],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    remote_log = log.read_text(encoding="utf-8")
-    expected = [
-        "git|clone https://example.com/org/stock.git " + str(remote_root),
-        "git|fetch origin codex-test",
-        "git|checkout codex-test",
-        "git|pull --ff-only origin codex-test",
-        f"script|{remote_root}/scripts/setup.sh",
-        f"script|{remote_root}/scripts/sync_codex_skills.sh",
-        f"script|{remote_root}/scripts/install_codex_automations.sh",
-        f"script|{remote_root}/scripts/install_runtime_services.sh",
-        f"script|{remote_root}/scripts/disable_legacy_claude_launchd.sh",
-        f"script|{remote_root}/scripts/doctor_codex_runtime.sh",
-        "uv|run pytest tests/",
-    ]
-    positions = []
-    for item in expected:
-        assert item in remote_log, f"missing executed remote command: {item}"
-        positions.append(remote_log.index(item))
-    assert positions == sorted(positions)
-
-
-def test_remote_codex_deploy_existing_checkout_skips_clone_but_updates(tmp_path) -> None:
-    read_script("scripts/deploy_remote_codex.sh")
-    env = base_env(tmp_path)
-    log = tmp_path / "remote-exec.log"
-    env["REMOTE_EXEC_LOG"] = str(log)
-    write_remote_payload_fakes(tmp_path / "bin", log)
-    remote_root = tmp_path / "remote-stock"
-    (remote_root / ".git").mkdir(parents=True)
-    (remote_root / "scripts").mkdir()
-    for script in [
-        "setup.sh",
-        "sync_codex_skills.sh",
-        "install_codex_automations.sh",
-        "install_runtime_services.sh",
-        "disable_legacy_claude_launchd.sh",
-        "doctor_codex_runtime.sh",
-    ]:
-        write_executable(
-            remote_root / "scripts" / script,
-            """#!/usr/bin/env bash
-echo "script|$0" >> "$REMOTE_EXEC_LOG"
-""",
-        )
-    ssh_payload = tmp_path / "ssh.payload"
-    write_executable(
-        tmp_path / "bin" / "ssh",
-        f"""#!/usr/bin/env bash
-cat > {ssh_payload}
-cd {tmp_path}
-bash {ssh_payload}
-""",
-    )
-    config = tmp_path / "deploy.remote.env"
-    config.write_text(
-        "\n".join(
-            [
-                "REMOTE_HOST=tester@example-host",
-                f"REMOTE_ROOT={remote_root}",
-                "REMOTE_REPO_URL=https://example.com/org/stock.git",
-                "REMOTE_BRANCH=codex-test",
-                "REMOTE_RUN_TESTS=1",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    env["DEPLOY_REMOTE_ENV"] = str(config)
-
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "deploy_remote_codex.sh")],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    remote_log = log.read_text(encoding="utf-8")
-    assert "git|clone" not in remote_log
-    expected = [
-        "git|fetch origin codex-test",
-        "git|checkout codex-test",
-        "git|pull --ff-only origin codex-test",
-        f"script|{remote_root}/scripts/setup.sh",
-        f"script|{remote_root}/scripts/sync_codex_skills.sh",
-        f"script|{remote_root}/scripts/install_codex_automations.sh",
-        f"script|{remote_root}/scripts/install_runtime_services.sh",
-        f"script|{remote_root}/scripts/disable_legacy_claude_launchd.sh",
-        f"script|{remote_root}/scripts/doctor_codex_runtime.sh",
-        "uv|run pytest tests/",
-    ]
-    positions = []
-    for item in expected:
-        assert item in remote_log, f"missing executed remote command: {item}"
-        positions.append(remote_log.index(item))
-    assert positions == sorted(positions)
-
-
 def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
     script = read_script("scripts/doctor_codex_runtime.sh")
 
@@ -597,6 +171,14 @@ def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
             "launchctl list",
             "command -v uv",
             "command -v sqlite3",
+            "DNS_REQUIRED_HOSTS",
+            "api.telegram.org",
+            "push2ex.eastmoney.com",
+            "q.10jqka.com.cn",
+            "check_network_readiness",
+            "check_https_reachable \"https://api.telegram.org\"",
+            "STOCK_DOCTOR_SKIP_NETWORK",
+            "409 Conflict",
             ".agents/skills/$skill/SKILL.md",
             "sqlite_master",
             "tomllib",
@@ -680,6 +262,7 @@ def test_runtime_doctor_executes_readiness_checks_without_real_push(tmp_path) ->
     assert "automation stock-premarket cwd ok" in result.stdout
     assert "legacy short LLM launchd job not loaded: com.user.stockpremarket" in result.stdout
     assert "legacy short LLM launchd plist absent:" in result.stdout
+    assert "network readiness checks skipped by STOCK_DOCTOR_SKIP_NETWORK=1" in result.stderr
     assert "notify.py test" not in result.stdout
     assert "sendMessage" not in result.stdout
 
@@ -790,8 +373,8 @@ def test_runtime_doctor_fails_when_legacy_short_launchd_plist_file_remains(tmp_p
     assert "legacy short LLM launchd plist still installed" in result.stderr
 
 
-def test_disable_legacy_claude_launchd_removes_stale_launchagent_plists(tmp_path) -> None:
-    script = read_script("scripts/disable_legacy_claude_launchd.sh")
+def test_disable_legacy_llm_launchd_removes_stale_launchagent_plists(tmp_path) -> None:
+    script = read_script("scripts/disable_legacy_llm_launchd.sh")
     assert_contains_all(
         script,
         [
@@ -800,7 +383,7 @@ def test_disable_legacy_claude_launchd_removes_stale_launchagent_plists(tmp_path
             "com.user.stockpremarket",
             "com.user.stockweekly",
         ],
-        label="scripts/disable_legacy_claude_launchd.sh",
+        label="scripts/disable_legacy_llm_launchd.sh",
     )
     assert "|| true" not in script
 
@@ -831,7 +414,7 @@ exit 0
     )
 
     result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "disable_legacy_claude_launchd.sh")],
+        ["bash", str(ROOT / "scripts" / "disable_legacy_llm_launchd.sh")],
         cwd=ROOT,
         env=env,
         text=True,
@@ -958,7 +541,6 @@ def test_runtime_doctor_fails_when_automation_cwds_is_missing_or_not_an_array(
 def test_new_runtime_shell_scripts_parse_with_bash_n() -> None:
     scripts = [
         "scripts/install_runtime_services.sh",
-        "scripts/deploy_remote_codex.sh",
         "scripts/doctor_codex_runtime.sh",
     ]
 

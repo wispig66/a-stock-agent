@@ -19,6 +19,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 import requests
@@ -44,6 +45,13 @@ DB = ROOT / "data" / "daily.db"
 
 class NotifyError(RuntimeError):
     pass
+
+
+def _safe_error_text(error: object) -> str:
+    text = str(error)
+    if TOKEN:
+        text = text.replace(TOKEN, "<redacted-token>")
+    return text
 
 
 def _log_to_db(source: str, text: str, msg_id: int | None, chunks: int,
@@ -162,11 +170,23 @@ def _send(text: str, parse_mode: str | None = None) -> dict:
     payload = {"chat_id": CHAT_ID, "text": text, "disable_web_page_preview": True}
     if parse_mode:
         payload["parse_mode"] = parse_mode
-    r = requests.post(f"{API}/sendMessage", json=payload, timeout=10)
-    data = r.json()
-    if not data.get("ok"):
-        raise NotifyError(f"Telegram API 失败: {data}")
-    return data
+
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            r = requests.post(f"{API}/sendMessage", json=payload, timeout=10)
+            data = r.json()
+            if not data.get("ok"):
+                raise NotifyError(f"Telegram API 失败: {data}")
+            return data
+        except NotifyError:
+            raise
+        except (requests.RequestException, ValueError) as e:
+            last_error = e
+            if attempt == 3:
+                break
+            time.sleep(attempt)
+    raise NotifyError(f"Telegram send failed after 3 attempts: {_safe_error_text(last_error)}")
 
 
 def push(text: str, source: str = "manual", raw: bool = False) -> dict:
@@ -190,9 +210,9 @@ def push(text: str, source: str = "manual", raw: bool = False) -> dict:
                            "HTML parse failed, fallback to plaintext")
                 return r
             except Exception as e2:
-                _log_to_db(source, text, None, 1, False, str(e2)[:500])
+                _log_to_db(source, text, None, 1, False, _safe_error_text(e2)[:500])
                 raise
-        _log_to_db(source, text, None, 1, False, str(e)[:500])
+        _log_to_db(source, text, None, 1, False, _safe_error_text(e)[:500])
         raise
 
 

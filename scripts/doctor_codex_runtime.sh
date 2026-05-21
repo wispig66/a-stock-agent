@@ -33,6 +33,12 @@ LEGACY_LABELS=(
     "com.user.stockweekly"
 )
 
+DNS_REQUIRED_HOSTS=(
+    "api.telegram.org"
+    "push2ex.eastmoney.com"
+    "q.10jqka.com.cn"
+)
+
 fail() {
     echo "doctor_codex_runtime: $*" >&2
     exit 1
@@ -52,6 +58,68 @@ check_command() {
         fail "missing required command: $cmd"
     fi
     ok "command exists: $cmd"
+}
+
+check_dns_resolution() {
+    local host="$1"
+
+    if python3 - "$host" <<'PY'
+import socket
+import sys
+
+host = sys.argv[1]
+try:
+    socket.getaddrinfo(host, None)
+except OSError as exc:
+    sys.stderr.write(f"{host}: {exc}\n")
+    sys.exit(1)
+PY
+    then
+        ok "dns resolves: $host"
+    else
+        fail "DNS resolution failed: $host"
+    fi
+}
+
+check_https_reachable() {
+    local url="$1"
+
+    if python3 - "$url" <<'PY'
+import sys
+import urllib.request
+
+url = sys.argv[1]
+request = urllib.request.Request(url, method="GET")
+try:
+    with urllib.request.urlopen(request, timeout=8) as response:
+        status = response.status
+except Exception as exc:
+    sys.stderr.write(f"{url}: {exc}\n")
+    sys.exit(1)
+
+if status >= 500:
+    sys.stderr.write(f"{url}: HTTP {status}\n")
+    sys.exit(1)
+PY
+    then
+        ok "https reachable: $url"
+    else
+        fail "HTTPS connectivity failed: $url"
+    fi
+}
+
+check_network_readiness() {
+    if [ "${STOCK_DOCTOR_SKIP_NETWORK:-0}" = "1" ]; then
+        warn "network readiness checks skipped by STOCK_DOCTOR_SKIP_NETWORK=1"
+        return
+    fi
+
+    for host in "${DNS_REQUIRED_HOSTS[@]}"; do
+        check_dns_resolution "$host"
+    done
+
+    # Do not send a Telegram message here. This only verifies DNS/TLS/routing.
+    check_https_reachable "https://api.telegram.org"
 }
 
 check_env_presence() {
@@ -144,6 +212,20 @@ PY
     ok "automation $job cwd ok"
 }
 
+check_recent_tg_listener_conflicts() {
+    local log_file="$PROJECT_ROOT/logs/tg_listener.log"
+
+    if [ ! -f "$log_file" ]; then
+        return
+    fi
+
+    if tail -n 200 "$log_file" | grep -Fq "409 Conflict"; then
+        warn "recent Telegram getUpdates 409 Conflict found in logs/tg_listener.log; another bot poller may still be running"
+    else
+        ok "no recent Telegram getUpdates conflict in tg_listener.log"
+    fi
+}
+
 legacy_label_loaded() {
     local label="$1"
 
@@ -172,6 +254,12 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 ok "command exists: uv"
 
+if ! command -v codex >/dev/null 2>&1; then
+    fail "missing required command: codex"
+fi
+codex --version >/dev/null 2>&1 || fail "codex --version failed"
+ok "command exists: codex"
+
 if ! command -v sqlite3 >/dev/null 2>&1; then
     fail "missing required command: sqlite3"
 fi
@@ -187,6 +275,7 @@ done
 
 check_env_presence TG_BOT_TOKEN
 check_env_presence TG_CHAT_ID
+check_network_readiness
 
 [ -f "$PROJECT_ROOT/data/daily.db" ] || fail "missing data/daily.db"
 if sqlite3 "$PROJECT_ROOT/data/daily.db" \
@@ -218,6 +307,8 @@ for label in "${LEGACY_LABELS[@]}"; do
     ok "legacy short LLM launchd job not loaded: $label"
     check_legacy_plist_file_absent "$label"
 done
+
+check_recent_tg_listener_conflicts
 
 echo
 echo "Codex runtime doctor complete"

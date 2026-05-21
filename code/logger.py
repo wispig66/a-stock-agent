@@ -12,7 +12,7 @@
 
 req_id 贯穿：
     set_req_id(new_req_id())           # TG 入站时
-    run_subprocess(["claude", "-p", ...], name="ask")  # 自动把 req_id 塞子进程 env
+    run_subprocess(["codex", "exec", ...], name="ask")  # 自动把 req_id 塞子进程 env
     # 子进程脚本启动时：
     from logger import init_req_id_from_env
     init_req_id_from_env()

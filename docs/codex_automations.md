@@ -1,22 +1,21 @@
 # Codex Automations Runbook
 
-本文面向开源用户，说明如何把短时 LLM jobs 放到 Codex automations，把长时 watcher daemon 留在 launchd。关键原则：Codex automations 必须安装在实际运行交易 workflow 的 runtime host 上。
+本文说明本机运行模型：短时 LLM jobs 放到本机 Codex automations，长时 watcher daemon 留在本机 launchd。当前机器就是交易 workflow 的 runtime。
 
 ## 部署模型
 
-部署采用 pull-based 模型：
+部署只保留本机路径：
 
-- runtime host 自己 `clone` / `pull` 仓库，自己安装 Python 依赖、Codex skills、Codex automations 和 launchd daemon。
-- 开发机只通过 SSH 触发远程部署，不把当前工作区直接同步到 runtime host。
-- 如果你在开发机的 Codex app 里创建 automation，它只属于开发机，不会自动出现在 runtime host。
+- 本机安装 Python 依赖、Codex skills、Codex automations 和 launchd daemon。
+- 本机 `~/.codex/automations/` 是短时 LLM jobs 的唯一调度来源。
+- 本机 `~/Library/LaunchAgents/` 是长时 daemon 的唯一 launchd 来源。
 
-## Runtime host 本地安装
+## 本机安装
 
-在实际运行交易 workflow 的 runtime host 上执行：
+在本机执行：
 
 ```bash
-git clone https://github.com/wispig66/a-stock-agent.git stock
-cd stock
+cd /Users/wispig/Desktop/stock
 
 uv sync --group dev
 cp .env.example .env
@@ -33,31 +32,13 @@ bash scripts/doctor_codex_runtime.sh
 
 `scripts/install_codex_automations.sh` 只负责短时 LLM jobs；`scripts/install_runtime_services.sh` 负责长时 launchd daemon。
 
-## 开发机 SSH 触发远程部署
-
-开发机只保留远程连接配置，然后触发 runtime host 自己 pull/install：
-
-```bash
-cp deploy.remote.example.env deploy.remote.env
-# 编辑 deploy.remote.env，填 SSH 目标、runtime host 仓库路径、分支等
-bash scripts/deploy_remote_codex.sh
-```
-
-`deploy.remote.env` 只描述远程部署位置和分支，不包含 Telegram token/chat_id。runtime host 上的 `.env` 必须先存在且填好；首次远程部署如果只生成了 `.env` 模板，需要先 SSH 到 runtime host 填写 `.env`，再重跑部署或 doctor。
-
-远程部署后，在 runtime host 上用 doctor 检查：
-
-```bash
-bash scripts/doctor_codex_runtime.sh
-```
-
 ## Active Codex Jobs
 
 这些 jobs 是短时 LLM workflow，由 Codex automations 调度：
 
 | Job ID | Schedule | Task |
 |---|---:|---|
-| `stock-premarket` | Mon-Fri 08:30 | Run `stock-premarket` and push Telegram |
+| `stock-premarket` | Mon-Fri 08:00 | Run `stock-premarket` and push Telegram |
 | `stock-intraday-09-30` | Mon-Fri 09:30 | Run `stock-intraday` current-time branch |
 | `stock-intraday-09-45` | Mon-Fri 09:45 | Run `stock-intraday` current-time branch |
 | `stock-intraday-11-30` | Mon-Fri 11:30 | Run `stock-intraday` current-time branch |
@@ -65,7 +46,7 @@ bash scripts/doctor_codex_runtime.sh
 | `stock-postmarket` | Mon-Fri 15:35 | Run `stock-postmarket` and refresh daily data |
 | `stock-weekly-review` | Sun 21:00 | Run `stock-weekly` |
 
-Codex 在 runtime host 上保存 automation 文件的位置：
+Codex 在本机保存 automation 文件的位置：
 
 ```bash
 ~/.codex/automations/
@@ -78,25 +59,19 @@ Codex 在 runtime host 上保存 automation 文件的位置：
 - `com.user.stockwatchloop`
 - `com.user.stockanomalyloop`
 - `com.user.stockthemeloop`
-- `com.user.stocktglistener` if enabled
+- `com.user.stocktglistener` if explicitly enabled
 
 这些任务是盘中常驻进程或长时间轮询，不是短时 LLM jobs。保留在 launchd 可以避免让 Codex agent 从 09:25 到 15:00 持续运行。
 
-## Legacy Claude launchd
+## Legacy short LLM launchd
 
-旧版短时 LLM launchd jobs 已迁移为 Codex automations。确认 Codex jobs 已安装在 runtime host 后，可以禁用旧 Claude launchd jobs：
-
-```bash
-bash scripts/disable_legacy_claude_launchd.sh
-```
-
-旧模板保存在：
+旧版短时 LLM launchd jobs 已迁移为 Codex automations。确认 Codex jobs 已安装在本机后，可以禁用旧 short-job launchd jobs：
 
 ```bash
-launchd/disabled/claude/
+bash scripts/disable_legacy_llm_launchd.sh
 ```
 
-它们刻意不在 `launchd/com.user.stock*.plist` 路径下，避免安装 runtime services 时重新装回重复的 `claude -p` jobs。
+旧模板不再保存在仓库里，避免运行时安装脚本误装回重复 short-job launchd jobs。
 
 ## Verification
 
@@ -104,9 +79,10 @@ launchd/disabled/claude/
 
 ```bash
 bash scripts/doctor_codex_runtime.sh
-uv run pytest tests/test_docs_codex_migration.py -q
+uv run pytest tests/test_docs_codex_migration.py tests/test_codex_runtime_scripts.py -q
 ```
 
-- Codex automations 位于 runtime host 的 `~/.codex/automations/`。
+- Codex automations 位于本机 `~/.codex/automations/`。
 - 长时 daemon label 仍由 launchd 管理：`com.user.stockwatchloop`、`com.user.stockanomalyloop`、`com.user.stockthemeloop`。
-- `launchd/disabled/claude/` 中的 legacy Claude jobs 不应被重新安装为 active jobs。
+- legacy short LLM jobs 不应被重新安装为 active launchd jobs。
+- `doctor_codex_runtime.sh` 会在不发送 Telegram 消息的前提下检查 `api.telegram.org`、东财和同花顺域名解析，以及到 Telegram API 的 HTTPS 连通性；如果这里失败，当天盘前/盘中推送大概率也会失败或降级。
