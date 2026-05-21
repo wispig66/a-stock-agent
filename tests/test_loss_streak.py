@@ -7,9 +7,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
 
-from lib import loss_streak  # noqa: E402
+from stock_codex.domain import loss_streak  # noqa: E402
 
 
 def test_compute_daily_pnl_empty():

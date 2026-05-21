@@ -7,16 +7,15 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
 
-from lib import sector_pack  # noqa: E402
+from stock_codex.market import sector_pack  # noqa: E402
 
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     p = tmp_path / "t.db"
     conn = sqlite3.connect(p)
-    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
     # 当日 + 近 5 日涨停题材
     for d in ["2026-05-10", "2026-05-11", "2026-05-12", "2026-05-13", "2026-05-14"]:
         conn.execute("INSERT INTO limit_up(date,code,concept,name) VALUES(?,?,?,?)",

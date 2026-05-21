@@ -3,10 +3,7 @@ from __future__ import annotations
 import bisect
 from datetime import date, datetime
 from functools import lru_cache
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[2]
-CALENDAR_FILE = ROOT / "data" / "trade_calendar.csv"
+from stock_codex.paths import TRADE_CALENDAR_FILE as CALENDAR_FILE
 
 
 class CalendarOutOfRange(Exception):

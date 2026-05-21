@@ -9,7 +9,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Literal, Optional
 
-from lib import sector_pack
+from stock_codex.market import sector_pack
 
 WEB_TIMEOUT_SEC = 45
 

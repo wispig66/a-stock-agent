@@ -8,14 +8,13 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
 
-from lib import decision  # noqa: E402
+from stock_codex.domain import decision  # noqa: E402
 
 
 def make_db(tmp_path: Path) -> Path:
     db = tmp_path / "daily.db"
-    sqlite3.connect(db).executescript((ROOT / "code" / "init_db.sql").read_text())
+    sqlite3.connect(db).executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
     return db
 
 

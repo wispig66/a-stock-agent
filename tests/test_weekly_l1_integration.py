@@ -10,12 +10,11 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
 
 
 def test_find_latest_weekly_review(tmp_path):
     """有多个 weekly_review 文件时取最新（按 ISO label 字典序）。"""
-    from lib.weekly_pack import parse_machine_readable
+    from stock_codex.market.weekly_pack import parse_machine_readable
 
     d = tmp_path / "data" / "weekly_review"
     d.mkdir(parents=True)
@@ -32,7 +31,7 @@ def test_find_latest_weekly_review(tmp_path):
 
 def test_missing_dir_no_crash(tmp_path):
     """L1 在 data/weekly_review/ 不存在时不应 crash。"""
-    from lib.weekly_pack import parse_machine_readable
+    from stock_codex.market.weekly_pack import parse_machine_readable
     d = tmp_path / "data" / "weekly_review"
     # 不创建目录
     candidates = sorted(d.glob("*.md")) if d.exists() else []

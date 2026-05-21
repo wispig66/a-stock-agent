@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SQL_FILE = ROOT / "code" / "init_db.sql"
+SQL_FILE = ROOT / "stock_codex" / "schema" / "init_db.sql"
 
 
 def test_stock_basic_schema(tmp_path):

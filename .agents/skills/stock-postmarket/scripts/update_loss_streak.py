@@ -22,10 +22,9 @@ from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT / "code"))
 
-from lib import risk, loss_streak  # noqa: E402
-from lib.holdings import read_holdings  # noqa: E402
+from stock_codex.domain import risk, loss_streak  # noqa: E402
+from stock_codex.domain.holdings import read_holdings  # noqa: E402
 
 
 def main() -> int:

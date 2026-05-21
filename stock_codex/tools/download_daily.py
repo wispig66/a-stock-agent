@@ -5,8 +5,8 @@ Week 1 最小验收脚本：拉全市场最近 N 天日线，写入 SQLite。
 本脚本用新浪接口（akshare.stock_zh_a_daily）。
 
 用法：
-    uv run code/download_daily.py            # 默认 30 天 + 全市场
-    uv run code/download_daily.py 30 100     # 30 天 + 前 100 只（冒烟测试）
+    uv run python -m stock_codex.tools.download_daily            # 默认 30 天 + 全市场
+    uv run python -m stock_codex.tools.download_daily 30 100     # 30 天 + 前 100 只（冒烟测试）
 """
 
 from __future__ import annotations
@@ -14,16 +14,13 @@ import sys
 import sqlite3
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pandas as pd
 import akshare as ak
 
-from db import connect as db_connect
+from stock_codex.infra.db import connect as db_connect
+from stock_codex.paths import DB_FILE as DB, LOG_DIR
 
-ROOT = Path(__file__).resolve().parent.parent
-DB = ROOT / "data" / "daily.db"
-LOG_DIR = ROOT / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 

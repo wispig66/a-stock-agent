@@ -11,15 +11,11 @@ from __future__ import annotations
 import sys
 import time
 from datetime import date
-from pathlib import Path
 
 import requests
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
-from db import connect  # noqa: E402
-
-DB = ROOT / "data" / "daily.db"
+from stock_codex.infra.db import connect  # noqa: E402
+from stock_codex.paths import DB_FILE as DB
 
 SINA_URL = (
     "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"

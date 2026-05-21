@@ -16,9 +16,8 @@ from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT / "code"))
 
-from lib.weekly_pack import build_weekly_data_pack  # noqa: E402
+from stock_codex.market.weekly_pack import build_weekly_data_pack  # noqa: E402
 
 import sqlite3
 from datetime import datetime as _dt

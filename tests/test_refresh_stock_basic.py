@@ -6,15 +6,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
 
-import refresh_stock_basic as r  # noqa: E402
+import scripts.refresh_stock_basic as r  # noqa: E402
 
 
 def test_upsert_rows(tmp_path, monkeypatch):
     db = tmp_path / "t.db"
     conn = sqlite3.connect(db)
-    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
     conn.close()
     monkeypatch.setattr(r, "DB", db)
 

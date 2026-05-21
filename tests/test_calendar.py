@@ -2,7 +2,7 @@ from datetime import date
 from pathlib import Path
 import pytest
 
-from lib import calendar as cal
+from stock_codex.domain import calendar as cal
 
 
 @pytest.fixture

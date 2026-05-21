@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from lib import calendar as cal
-from lib import holdings as h
+from stock_codex.domain import calendar as cal
+from stock_codex.domain import holdings as h
 
 
 @pytest.fixture

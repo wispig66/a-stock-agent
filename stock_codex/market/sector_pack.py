@@ -24,10 +24,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from pathlib import Path
 
-from db import connect
-
-ROOT = Path(__file__).resolve().parents[2]
-DB = ROOT / "data" / "daily.db"
+from stock_codex.infra.db import connect
+from stock_codex.paths import DB_FILE as DB
 
 
 def _latest_table_date(conn: sqlite3.Connection, table: str, where: str = "", params: tuple = ()) -> str | None:

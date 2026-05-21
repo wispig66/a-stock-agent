@@ -5,8 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
-from lib import query  # noqa: E402
+from stock_codex.market import query  # noqa: E402
 
 
 def _mock_response(json_data=None, text=None, status=200):

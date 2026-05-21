@@ -6,9 +6,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
 
-from lib import risk  # noqa: E402
+from stock_codex.domain import risk  # noqa: E402
 
 
 def test_code_with_market_prefix():

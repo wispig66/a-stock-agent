@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from db import connect as db_connect
+from stock_codex.infra.db import connect as db_connect
 
 
 LANES = {"main", "ambush", "backup", "ban"}

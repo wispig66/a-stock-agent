@@ -9,13 +9,10 @@
 """
 from __future__ import annotations
 import sys
-from pathlib import Path
 from typing import Callable, Iterable
 
 import yaml
-
-ROOT = Path(__file__).resolve().parents[2]
-CONFIG_FILE = ROOT / "risk_config.yaml"
+from stock_codex.paths import RISK_CONFIG_FILE as CONFIG_FILE
 
 DEFAULT_CONFIG = {
     "total_capital": 500000,

@@ -40,8 +40,7 @@ pd.set_option("display.max_columns", None)
 ROOT = Path(__file__).resolve().parents[4]  # stock-premarket/scripts -> skills -> .agents -> stock
 DB = ROOT / "data" / "daily.db"
 
-sys.path.insert(0, str(ROOT / "code"))
-from db import connect as db_connect  # noqa: E402
+from stock_codex.infra.db import connect as db_connect  # noqa: E402
 OUT_DIR = ROOT / "data" / "fact_pack"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 

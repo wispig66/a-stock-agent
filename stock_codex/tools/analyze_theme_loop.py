@@ -2,9 +2,9 @@
 theme_emergence_loop 校准报告工具。
 
 跑法：
-  uv run code/analyze_theme_loop.py                   # 全部历史
-  uv run code/analyze_theme_loop.py --days 5          # 最近 N 天
-  uv run code/analyze_theme_loop.py --date 2026-05-19 # 单日详情
+  uv run python -m stock_codex.tools.analyze_theme_loop                   # 全部历史
+  uv run python -m stock_codex.tools.analyze_theme_loop --days 5          # 最近 N 天
+  uv run python -m stock_codex.tools.analyze_theme_loop --date 2026-05-19 # 单日详情
 
 ground truth：当日 ths_hot_reason 概念字段 split('+') 后频次 ≥3 的 tag 视为"真主线"。
 首版纪律：T1 准确率目标 ≥60% / T2 ≥80%；延迟目标 ≤10min（首封 → T1 告警）。
@@ -12,17 +12,13 @@ ground truth：当日 ths_hot_reason 概念字段 split('+') 后频次 ≥3 的 
 
 from __future__ import annotations
 import argparse
-import sys
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "code"))
+from stock_codex.infra.db import connect as db_connect  # noqa: E402
+from stock_codex.paths import DB_FILE
 
-from db import connect as db_connect  # noqa: E402
-
-DB = ROOT / "data" / "daily.db"
+DB = DB_FILE
 GROUND_TRUTH_THRESHOLD = 3  # 当日某 tag 出现 ≥3 次 = 真主线
 
 

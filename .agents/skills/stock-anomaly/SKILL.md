@@ -18,7 +18,7 @@ metadata:
 ## 触发场景
 
 - 用户喊："看看现在场内有什么异动" / "新主线候选" / "哪个方向在冒头"
-- 盘中任意时段（非固定时点）；若 anomaly_loop 没在跑，先提示用户启动 `bash code/run_anomaly_loop.sh`
+- 盘中任意时段（非固定时点）；若 anomaly_loop 没在跑，先提示用户启动 `bash bin/run_anomaly_loop.sh`
 
 # 输出契约（最重要，违反 = 整体失败）
 
@@ -33,7 +33,7 @@ Step 1 `build_fact_pack.py` 末尾输出 `=== ALLOWED === { ... } === /ALLOWED =
 
 **禁止**：从印象里编不在 anomaly 推送 / ths_hot_reason 里的股票。Step 4 卡片的"龙头"、"代表股"必须从 ALLOWED.codes 中挑。
 
-推送脚本 `push.py`（替代了旧的 `code/notify.py` 直推路径）自动跑校验器。**写卡前对照 ALLOWED 一遍**。
+推送脚本 `push.py`（替代了旧的 `stock_codex.infra.notify` 直推路径）自动跑校验器。**写卡前对照 ALLOWED 一遍**。
 
 最终 assistant 消息必须是卡片本身；不要"任务完成/已推送"。
 
@@ -48,7 +48,7 @@ stdout 包含：
 - 二、ths_hot_reason 最新一天（同花顺 reason tag）
 - 三、`=== ALLOWED === ... === /ALLOWED ===` JSON（**唯一允许引用的事实**）
 
-若"一"返回 0 条：先问用户 anomaly_loop 是否在跑（`pgrep -f anomaly_loop`），未跑则提示 `bash code/run_anomaly_loop.sh` 启动后再重跑。
+若"一"返回 0 条：先问用户 anomaly_loop 是否在跑（`pgrep -f anomaly_loop`），未跑则提示 `bash bin/run_anomaly_loop.sh` 启动后再重跑。
 
 ## Step 2 · 聚类成结构化清单
 
@@ -147,7 +147,7 @@ L1 SKILL.md Step 1 已被改为：若 `data/anomaly_findings/<前一交易日>.m
 
 `push.py` 会自动跑 card_validator（对照 `data/allowed_latest_stock-anomaly.json`）；
 warn 模式留审计日志，enforce 模式拒推。
-**不要**用 `code/notify.py` 直推（绕过校验）。
+**不要**用 `stock_codex.infra.notify` 直推（绕过校验）。
 
 ## 纪律
 

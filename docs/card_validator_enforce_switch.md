@@ -1,7 +1,7 @@
 # card_validator 模式切换
 
 [[feedback-data-must-be-sourced]] 落地后，所有 stock skill 卡片推送前都会被
-`code/lib/card_validator.py` 校验。模式由环境变量 `CARD_VALIDATOR_MODE` 控制。
+`stock_codex/market/card_validator.py` 校验。模式由环境变量 `CARD_VALIDATOR_MODE` 控制。
 
 ## 三档
 
@@ -63,7 +63,7 @@ bash scripts/doctor_codex_runtime.sh
 `CARD_VALIDATOR_MODE=enforce` 改回 `warn`，然后重启对应服务。
 
 ```bash
-sed -i '' 's/CARD_VALIDATOR_MODE=enforce/CARD_VALIDATOR_MODE=warn/' code/run_*.sh
+sed -i '' 's/CARD_VALIDATOR_MODE=enforce/CARD_VALIDATOR_MODE=warn/' bin/run_*.sh
 launchctl kickstart -k gui/$(id -u)/com.user.stocktglistener
 ```
 
@@ -77,7 +77,7 @@ bash scripts/doctor_codex_runtime.sh
 
 ## 模式判定逻辑代码位置
 
-- `code/lib/card_validator.py` — validate_card() 不感知模式，只返回 violations
+- `stock_codex/market/card_validator.py` — validate_card() 不感知模式，只返回 violations
 - `.agents/skills/stock-premarket/scripts/push.py` — `_validate()` 读 env
 - `scripts/tg_listener.py` — `_validate_card_for_push()` 读 env
 

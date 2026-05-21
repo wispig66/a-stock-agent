@@ -13,11 +13,10 @@ from typing import Optional
 import yaml
 from filelock import FileLock
 
-from lib import calendar as cal
+from stock_codex.domain import calendar as cal
+from stock_codex.paths import HOLDINGS_FILE
 
-ROOT = Path(__file__).resolve().parents[2]
-HOLDINGS_FILE = ROOT / "holdings.yaml"
-LOCK_FILE = ROOT / "holdings.yaml.lock"
+LOCK_FILE = HOLDINGS_FILE.with_suffix(HOLDINGS_FILE.suffix + ".lock")
 
 
 @dataclass

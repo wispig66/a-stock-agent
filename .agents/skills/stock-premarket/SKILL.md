@@ -75,7 +75,7 @@ ls -1 data/weekly_review/*.md 2>/dev/null | sort | tail -1
 
 ```python
 from pathlib import Path
-from lib.weekly_pack import parse_machine_readable
+from stock_codex.market.weekly_pack import parse_machine_readable
 import glob
 files = sorted(glob.glob("data/weekly_review/*.md"))
 parsed = parse_machine_readable(Path(files[-1])) if files else None

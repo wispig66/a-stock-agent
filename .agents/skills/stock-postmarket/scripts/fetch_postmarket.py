@@ -41,8 +41,7 @@ OUT_DIR = PROJECT_ROOT / "data" / "fact_pack"
 CACHE_DIR = PROJECT_ROOT / "data" / "postmarket_cache"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-sys.path.insert(0, str(PROJECT_ROOT / "code"))
-from db import connect as db_connect  # noqa: E402
+from stock_codex.infra.db import connect as db_connect  # noqa: E402
 
 
 def log(*a):

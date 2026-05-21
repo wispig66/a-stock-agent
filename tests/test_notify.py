@@ -7,9 +7,8 @@ import requests
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
 
-import notify  # noqa: E402
+from stock_codex.infra import notify  # noqa: E402
 
 
 class FakeResponse:

@@ -6,13 +6,12 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
 
 
 def test_tg_inbound_table_and_indexes(tmp_path):
     p = tmp_path / "t.db"
     conn = sqlite3.connect(p)
-    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
 
     cols = {r[1]: r[2] for r in conn.execute("PRAGMA table_info(tg_inbound)")}
     assert cols["timestamp"] == "TEXT"

@@ -107,10 +107,10 @@ Step 1 fact pack 给的 `anomaly_files` 是周内每天的异动日报路径。*
 
 ## Step 4 · 下周方向研判（Part 2）
 
-1. **题材库校准** — 调 `code/lib/event_pack.calibrate()` 把 Step 2 的事件归到现有题材或新建。代码：
+1. **题材库校准** — 调 `stock_codex.market.event_pack.calibrate()` 把 Step 2 的事件归到现有题材或新建。代码：
 
    ```python
-   from lib.event_pack import calibrate
+   from stock_codex.market.event_pack import calibrate
    # 把 Step 2 抓到的 N 个事件主题名传入
    themes_check = calibrate(extracted_theme_names, lexicon=...)
    ```
@@ -135,7 +135,7 @@ Step 1 fact pack 给的 `anomaly_files` 是周内每天的异动日报路径。*
 ```python
 from datetime import date
 from pathlib import Path
-from lib.weekly_pack import build_weekly_data_pack, render_long_form
+from stock_codex.market.weekly_pack import build_weekly_data_pack, render_long_form
 
 pack = build_weekly_data_pack(end_date=date.today())
 parts = {
@@ -163,7 +163,7 @@ Write 摘要卡到 `data/last_weekly_card.md`，然后用统一 push.py：
     --file data/last_weekly_card.md --source stock-weekly
 ```
 
-`push.py` 会跑 card_validator 对照 `data/allowed_latest_stock-weekly.json`（warn 模式留审计日志，enforce 模式拒推）。**不要**直接调 `code/notify.py` 或 `_tg_send`（绕过校验）。
+`push.py` 会跑 card_validator 对照 `data/allowed_latest_stock-weekly.json`（warn 模式留审计日志，enforce 模式拒推）。**不要**直接调 `stock_codex.infra.notify` 或 `_tg_send`（绕过校验）。
 
 模板：
 

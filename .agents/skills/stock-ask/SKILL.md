@@ -53,8 +53,7 @@ stdout 是 JSON。预期 3-10 秒返回。4 个字段并发跑完：
 
 ```python
 import sys
-sys.path.insert(0, "code")
-from lib import sector_pack
+from stock_codex.market import sector_pack
 pack = sector_pack.build_sector_pack(<canonical_sector_name>)
 ```
 
@@ -91,7 +90,7 @@ pack = sector_pack.build_sector_pack(<canonical_sector_name>)
 ### 3b 事件卡
 
 ```python
-from lib import sector_pack, event_pack
+from stock_codex.market import sector_pack, event_pack
 
 def categorize(text):
     # 用 LLM 跑一次 EVENT_PROMPT（见末尾），返回 {event_type, candidate_sectors, risk_sectors, core_logic}

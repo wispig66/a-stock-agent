@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>{{PROJECT_ROOT}}/code/run_tg_listener.sh</string>
+        <string>{{PROJECT_ROOT}}/bin/run_tg_listener.sh</string>
     </array>
 
     <key>WorkingDirectory</key>

@@ -78,7 +78,7 @@ v2 待加：concepts 强校验、global_markets 强校验。
 ## 验证流程
 
 ```python
-from lib.card_validator import validate_card, load_stock_name_dict
+from stock_codex.market.card_validator import validate_card, load_stock_name_dict
 
 stock_dict = load_stock_name_dict("data/daily.db")
 ok, violations = validate_card(card_text, allowed, stock_name_dict=stock_dict)

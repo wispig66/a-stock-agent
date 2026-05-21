@@ -3,12 +3,9 @@
 幂等：CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS。
 """
 from __future__ import annotations
-import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
-from db import connect  # noqa: E402
+from stock_codex.infra.db import connect  # noqa: E402
+from stock_codex.paths import DB_FILE
 
 DDL = """
 CREATE TABLE IF NOT EXISTS tg_inbound (
@@ -33,7 +30,7 @@ CREATE INDEX IF NOT EXISTS idx_tg_inbound_command ON tg_inbound(parsed_command);
 
 
 def main() -> None:
-    db_path = ROOT / "data" / "daily.db"
+    db_path = DB_FILE
     if not db_path.exists():
         print(f"⚠️  {db_path} 不存在，跳过（首次 setup 会通过 init_db.sql 建表）")
         return

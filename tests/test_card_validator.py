@@ -12,7 +12,7 @@
 """
 from __future__ import annotations
 import pytest
-from lib.card_validator import (
+from stock_codex.market.card_validator import (
     validate_card, format_violations, PCT_TOLERANCE,
 )
 

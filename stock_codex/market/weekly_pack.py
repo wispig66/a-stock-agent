@@ -17,9 +17,7 @@ try:
     import yaml  # PyYAML
 except ImportError as e:
     raise ImportError("weekly_pack 依赖 PyYAML：uv add pyyaml") from e
-
-ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DB = ROOT / "data" / "daily.db"
+from stock_codex.paths import DATA_DIR, DB_FILE as DEFAULT_DB
 
 
 def _db_path() -> Path:
@@ -142,7 +140,7 @@ def build_weekly_data_pack(end_date: date) -> dict:
         conn.close()
 
     # 异动日报路径（存在性 check）
-    anomaly_dir = ROOT / "data" / "anomaly_findings"
+    anomaly_dir = DATA_DIR / "anomaly_findings"
     for d in week_days_str:
         compact = d.replace("-", "")
         p = anomaly_dir / f"{compact}.md"

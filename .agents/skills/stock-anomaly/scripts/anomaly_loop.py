@@ -37,12 +37,11 @@ from datetime import datetime, time as dtime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT / "code"))
 sys.path.insert(0, str(ROOT / ".agents" / "skills" / "stock-intraday" / "scripts"))
 
 from fetch_realtime import load_today_watchlist, load_holdings  # noqa: E402
-from notify import push  # noqa: E402
-from logger import get_logger, init_req_id_from_env  # noqa: E402
+from stock_codex.infra.notify import push  # noqa: E402
+from stock_codex.infra.logger import get_logger, init_req_id_from_env  # noqa: E402
 
 init_req_id_from_env()
 log = get_logger("anomaly_loop")

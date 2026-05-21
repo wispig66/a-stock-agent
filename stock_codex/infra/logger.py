@@ -1,7 +1,7 @@
 """统一日志库。
 
 用法：
-    from logger import get_logger, new_req_id, set_req_id, run_subprocess
+    from stock_codex.infra.logger import get_logger, new_req_id, set_req_id, run_subprocess
 
     log = get_logger("tg_listener")
     log.info("启动")
@@ -14,7 +14,7 @@ req_id 贯穿：
     set_req_id(new_req_id())           # TG 入站时
     run_subprocess(["codex", "exec", ...], name="ask")  # 自动把 req_id 塞子进程 env
     # 子进程脚本启动时：
-    from logger import init_req_id_from_env
+    from stock_codex.infra.logger import init_req_id_from_env
     init_req_id_from_env()
 
 ERROR/CRITICAL 自动推 TG（同 daemon+异常类型 5min 节流）。
@@ -30,11 +30,10 @@ import sys
 import time
 import traceback
 import uuid
-from pathlib import Path
 from typing import Iterable
 
-ROOT = Path(__file__).resolve().parent.parent
-LOG_DIR = ROOT / "logs"
+from stock_codex.paths import LOG_DIR
+
 LOG_DIR.mkdir(exist_ok=True)
 
 _req_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("req_id", default="-")
@@ -101,8 +100,7 @@ class _TgErrorHandler(logging.Handler):
 
         _in_tg_handler = True
         try:
-            sys.path.insert(0, str(ROOT / "code"))
-            from notify import push  # type: ignore
+            from stock_codex.infra.notify import push  # type: ignore
             push(text, source=f"error:{record.name}", raw=True)
         except Exception as e:
             print(f"[logger:TgErrorHandler] 推送失败: {e}", file=sys.stderr, flush=True)

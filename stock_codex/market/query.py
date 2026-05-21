@@ -13,10 +13,8 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from db import connect
-
-ROOT = Path(__file__).resolve().parents[2]
-DB = ROOT / "data" / "daily.db"
+from stock_codex.infra.db import connect
+from stock_codex.paths import DB_FILE as DB
 
 _CODE_RE = re.compile(r"^\d{6}$")
 _PREFIX_RE = re.compile(r"^(?:sh|sz|bj)", re.IGNORECASE)

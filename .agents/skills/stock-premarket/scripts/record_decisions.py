@@ -8,9 +8,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT / "code"))
 
-from lib.decision import parse_decision_block, replace_tickets  # noqa: E402
+from stock_codex.domain.decision import parse_decision_block, replace_tickets  # noqa: E402
 
 DB = ROOT / "data" / "daily.db"
 

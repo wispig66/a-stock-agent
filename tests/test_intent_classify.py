@@ -5,9 +5,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
 
-from lib import intent  # noqa: E402
+from stock_codex.market import intent  # noqa: E402
 
 
 # 板块名词库：测试时注入；生产由 build_sector_lexicon() 从 DB 拉

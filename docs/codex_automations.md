@@ -21,8 +21,8 @@ uv sync --group dev
 cp .env.example .env
 # 编辑 .env，填 Telegram bot token / chat_id 等运行参数
 
-sqlite3 data/daily.db < code/init_db.sql
-uv run python code/refresh_calendar.py
+sqlite3 data/daily.db < stock_codex/schema/init_db.sql
+uv run python -m stock_codex.tools.refresh_calendar
 
 bash scripts/sync_codex_skills.sh
 bash scripts/install_codex_automations.sh

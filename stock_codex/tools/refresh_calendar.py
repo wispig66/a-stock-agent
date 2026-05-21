@@ -5,12 +5,10 @@
 from __future__ import annotations
 import sys
 from datetime import date
-from pathlib import Path
 
 import akshare as ak  # type: ignore
+from stock_codex.paths import TRADE_CALENDAR_FILE as CSV
 
-ROOT = Path(__file__).resolve().parents[1]
-CSV = ROOT / "data" / "trade_calendar.csv"
 
 
 def main() -> int:

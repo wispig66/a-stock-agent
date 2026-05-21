@@ -15,9 +15,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 import yaml
-
-ROOT = Path(__file__).resolve().parents[2]
-STATE_FILE = ROOT / "risk_state.yaml"
+from stock_codex.paths import RISK_STATE_FILE as STATE_FILE
 
 MAX_HISTORY = 10
 

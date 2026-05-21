@@ -24,27 +24,23 @@
 from __future__ import annotations
 import argparse
 import json
-import sys
 import time
 from collections import defaultdict
 from datetime import datetime, time as dtime, timedelta
-from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "code"))
-
-from db import connect_close as db_connect  # noqa: E402 — daemon 用自动关闭版
-from notify import push  # noqa: E402
-from logger import get_logger, init_req_id_from_env  # noqa: E402
+from stock_codex.infra.db import connect_close as db_connect  # noqa: E402 — daemon 用自动关闭版
+from stock_codex.infra.notify import push  # noqa: E402
+from stock_codex.infra.logger import get_logger, init_req_id_from_env  # noqa: E402
+from stock_codex.paths import DATA_DIR, DB_FILE
 
 init_req_id_from_env()
 log = get_logger("theme_emergence_loop")
 
-DB = ROOT / "data" / "daily.db"
-WHITELIST = ROOT / "data" / "concept_whitelist.yaml"
-RAW_DIR = ROOT / "data" / "anomaly_raw"
+DB = DB_FILE
+WHITELIST = DATA_DIR / "concept_whitelist.yaml"
+RAW_DIR = DATA_DIR / "anomaly_raw"
 
 SESSION_AM = (dtime(9, 30), dtime(11, 30))
 SESSION_PM = (dtime(13, 0), dtime(15, 0))

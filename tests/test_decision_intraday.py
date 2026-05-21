@@ -9,17 +9,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / ".agents" / "skills" / "stock-intraday" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-sys.path.insert(0, str(ROOT / "code"))
 
 import fetch_realtime  # noqa: E402
 import watch_loop  # noqa: E402
-from lib import decision  # noqa: E402
+from stock_codex.domain import decision  # noqa: E402
 
 
 def make_db(tmp_path: Path) -> Path:
     db = tmp_path / "daily.db"
     conn = sqlite3.connect(db)
-    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
     conn.close()
     return db
 

@@ -7,17 +7,15 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-sys.path.insert(0, str(ROOT / "code"))
 
-import tg_listener as tl  # noqa: E402
+from stock_codex.apps import tg_listener as tl  # noqa: E402
 
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     p = tmp_path / "t.db"
     conn = sqlite3.connect(p)
-    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
     conn.commit()
     monkeypatch.setattr(tl, "DB_PATH", p)
     return p

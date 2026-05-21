@@ -55,16 +55,16 @@ mkdir -p data logs
 if [ -f data/daily.db ]; then
     ok "data/daily.db 已存在，跳过"
 else
-    sqlite3 data/daily.db < code/init_db.sql
+    sqlite3 data/daily.db < stock_codex/schema/init_db.sql
     ok "data/daily.db 已创建"
 fi
 
 # ── Step 4: 交易日历 ──────────────────────────────────────────
 step "[4/6] 拉交易日历到 data/trade_calendar.csv"
 if [ -f data/trade_calendar.csv ]; then
-    ok "data/trade_calendar.csv 已存在，跳过（如需刷新：uv run python code/refresh_calendar.py）"
+    ok "data/trade_calendar.csv 已存在，跳过（如需刷新：uv run python -m stock_codex.tools.refresh_calendar）"
 else
-    uv run python code/refresh_calendar.py
+    uv run python -m stock_codex.tools.refresh_calendar
 fi
 
 # ── Step 5: .env ─────────────────────────────────────────────
@@ -86,7 +86,7 @@ ok ".env 已填值"
 
 # ── Step 6: 权限 + 调度安装指引 ─────────────────────────────
 step "[6/6] 给 shell 脚本加可执行权限"
-chmod +x code/run_*.sh scripts/*.sh
+chmod +x bin/run_*.sh scripts/*.sh
 ok "脚本可执行"
 
 echo
@@ -98,10 +98,10 @@ echo "  bash scripts/install_codex_automations.sh"
 echo "  bash scripts/install_runtime_services.sh"
 echo
 echo "手动触发（不等定时）："
-echo "  bash code/run_premarket.sh    # L1 盘前"
-echo "  bash code/run_intraday.sh     # L2 盘中（按系统时间路由到对应时点）"
-echo "  bash code/run_watch_loop.sh   # 中间时段轮询（前台跑）"
-echo "  bash code/run_postmarket.sh   # L4 盘后"
+echo "  bash bin/run_premarket.sh    # L1 盘前"
+echo "  bash bin/run_intraday.sh     # L2 盘中（按系统时间路由到对应时点）"
+echo "  bash bin/run_watch_loop.sh   # 中间时段轮询（前台跑）"
+echo "  bash bin/run_postmarket.sh   # L4 盘后"
 echo
 echo "跑测试："
 echo "  uv run pytest tests/"

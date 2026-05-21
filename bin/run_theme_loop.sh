@@ -23,4 +23,4 @@ done
 [ -n "$UV_BIN" ] || { echo "未找到 uv 可执行；先 brew install uv 或 curl -LsSf https://astral.sh/uv/install.sh | sh" >&2; exit 1; }
 
 echo "=== theme_emergence_loop start $(date) ===" >> "$LOG"
-exec "$UV_BIN" run code/theme_emergence_loop.py "$@" >> "$LOG" 2>&1
+exec "$UV_BIN" run python -m stock_codex.apps.theme_emergence_loop "$@" >> "$LOG" 2>&1

@@ -4,14 +4,12 @@
 """
 from __future__ import annotations
 import sqlite3
-import sys
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "code"))
 
-from theme_emergence_loop import (  # noqa: E402
+from stock_codex.apps.theme_emergence_loop import (  # noqa: E402
     PageHinkley, Whitelist, map_to_concept, pick_candidates,
     load_whitelist, _norm_seal_time,
 )

@@ -6,16 +6,15 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
 
-from lib import sector_pack  # noqa: E402
+from stock_codex.market import sector_pack  # noqa: E402
 
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     p = tmp_path / "t.db"
     conn = sqlite3.connect(p)
-    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
     # 1 条今日同花顺热点 + 1 条历史涨停题材，构成 lexicon
     conn.execute("INSERT INTO ths_hot_reason(date,code,reason) VALUES('2026-05-14','600519','光伏概念')")
     conn.execute("INSERT INTO limit_up(date,code,concept) VALUES('2026-05-14','600519','光伏')")

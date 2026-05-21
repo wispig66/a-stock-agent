@@ -15,11 +15,9 @@ import json
 import re
 import sqlite3
 import sys
-from pathlib import Path
-from db import connect as db_connect
-from lib.decision import load_tickets
-
-DB = Path(__file__).resolve().parent.parent / "data" / "daily.db"
+from stock_codex.infra.db import connect as db_connect
+from stock_codex.domain.decision import load_tickets
+from stock_codex.paths import DB_FILE as DB
 
 REVIEW_STATS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS review_stats (

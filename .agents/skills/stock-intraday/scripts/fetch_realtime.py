@@ -31,8 +31,7 @@ DB = ROOT / "data" / "daily.db"
 HOLDINGS_FILE = ROOT / "holdings.yaml"
 CACHE_DIR = ROOT / "data" / "intraday_cache"
 
-sys.path.insert(0, str(ROOT / "code"))
-from db import connect as db_connect  # noqa: E402
+from stock_codex.infra.db import connect as db_connect  # noqa: E402
 
 
 def log(*a):
@@ -54,7 +53,7 @@ def load_today_watchlist() -> list[dict]:
     """
     today = datetime.now().strftime("%Y-%m-%d")
     try:
-        from lib.decision import load_watchlist_compat
+        from stock_codex.domain.decision import load_watchlist_compat
         decision_items = load_watchlist_compat(DB, today)
         if decision_items:
             log("[info] watchlist 数据来源：decision_tickets")
@@ -137,9 +136,9 @@ def load_today_watchlist() -> list[dict]:
 
 
 def load_holdings() -> list[dict]:
-    """转调 code/lib/holdings.read_holdings，保持 list[dict] 返回兼容下游。"""
+    """转调 stock_codex/domain/holdings.read_holdings，保持 list[dict] 返回兼容下游。"""
     try:
-        from lib.holdings import read_holdings  # noqa: WPS433 局部导入避免循环
+        from stock_codex.domain.holdings import read_holdings  # noqa: WPS433 局部导入避免循环
     except ImportError as e:
         log(f"[warn] lib.holdings 不可用，回退旧读法：{e}")
         if not HOLDINGS_FILE.exists():

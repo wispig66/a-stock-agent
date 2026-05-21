@@ -1,4 +1,4 @@
-"""code/lib/query.py 元数据 / 解析单元测试。
+"""stock_codex.market.query 元数据 / 解析单元测试。
 
 注：不联网，is_suspended_today 用本地 DB 当日 daily_kline 是否有记录判断。
 """
@@ -9,16 +9,15 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
 
-from lib import query  # noqa: E402
+from stock_codex.market import query  # noqa: E402
 
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     p = tmp_path / "t.db"
     conn = sqlite3.connect(p)
-    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
     conn.executemany(
         "INSERT INTO stock_basic(code,name,board,list_date,is_st,updated_at) "
         "VALUES (?,?,?,?,?,?)",

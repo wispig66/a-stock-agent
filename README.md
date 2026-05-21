@@ -121,7 +121,7 @@ bash scripts/stop_tg_listener.sh     # 停
 - **审计落库**：所有入向 TG 命令落 `tg_inbound` 表（update_id 去重 / parsed_payload JSON / response_msg_id / handler_status / duration_ms），用于后续胜率回溯
 - **不做空建议**：风险板块仅列名提醒，散户无融券权限
 
-新增模块：`code/lib/intent.py`（意图分类）、`code/lib/sector_pack.py`（板块四面板 + Top N + 阶段）、`code/lib/event_pack.py`（事件归类 + 校准 + normal/deep）、`.agents/skills/stock-ask/SKILL.md`（路由 + 卡片模板）。
+新增模块：`stock_codex/market/intent.py`（意图分类）、`stock_codex/market/sector_pack.py`（板块四面板 + Top N + 阶段）、`stock_codex/market/event_pack.py`（事件归类 + 校准 + normal/deep）、`.agents/skills/stock-ask/SKILL.md`（路由 + 卡片模板）。
 
 设计 spec：`docs/superpowers/specs/2026-05-15-stock-ask-design.md`。
 
@@ -136,7 +136,7 @@ bash scripts/stop_tg_listener.sh     # 停
 
 手动触发：在本机 Codex 中手动运行 `stock-weekly`。`uv run scripts/weekly_loop.py --force` 仅作为 legacy fallback wrapper 保留，不是默认调度入口。
 
-新增模块：`code/lib/weekly_pack.py`（数据聚合 + 长文渲染 + YAML 读写）、`.agents/skills/stock-weekly/`（SKILL.md + aggregate.py）、Codex automation job `stock-weekly-review`，以及 legacy fallback `scripts/weekly_loop.py`。
+新增模块：`stock_codex/market/weekly_pack.py`（数据聚合 + 长文渲染 + YAML 读写）、`.agents/skills/stock-weekly/`（SKILL.md + aggregate.py）、Codex automation job `stock-weekly-review`，以及 legacy fallback `scripts/weekly_loop.py`。
 
 ### 数据扩展层
 
@@ -152,7 +152,7 @@ bash scripts/stop_tg_listener.sh     # 停
 
 ### Telegram 推送层
 
-`code/notify.py` 自动 markdown → Telegram HTML 渲染：
+`stock_codex.infra.notify` 自动 markdown → Telegram HTML 渲染：
 
 - 支持 `**bold**` `*italic*` `` `code` `` `# 标题` 与 raw `<b>` 透传
 - markdown 表格自动转 bullet 列表
@@ -218,10 +218,10 @@ cp .env.example .env
 # 编辑 .env
 
 # 5. 初始化 SQLite
-sqlite3 data/daily.db < code/init_db.sql
+sqlite3 data/daily.db < stock_codex/schema/init_db.sql
 
 # 6. 拉交易日历（T+1 unlock_date 计算依赖）
-uv run python code/refresh_calendar.py
+uv run python -m stock_codex.tools.refresh_calendar
 
 # 7. 同步 Codex skills 并安装短时 LLM automations
 bash scripts/sync_codex_skills.sh
@@ -278,17 +278,18 @@ cp risk_config.example.yaml risk_config.yaml
 │       ├── SKILL.md
 │       └── scripts/
 │           └── fetch_postmarket.py
-├── code/
-│   ├── lib/                       # 共享工具模块（T+1 改造 Batch 1 引入）
-│   │   ├── calendar.py            # 交易日历查询（is_trade_day / next_trade_day）
-│   │   └── holdings.py            # 持仓状态机（Holding + is_locked + 加权均价）
-│   ├── notify.py                  # Telegram + md→HTML 渲染
-│   ├── init_db.sql                # SQLite schema
-│   ├── refresh_calendar.py        # 拉 akshare 交易日历到 data/trade_calendar.csv
-│   ├── run_premarket.sh           # legacy fallback entry
-│   ├── run_intraday.sh            # legacy fallback entry
-│   ├── run_watch_loop.sh          # watch_loop launchd entry
-│   └── run_postmarket.sh          # legacy fallback entry
+├── stock_codex/                   # 可安装 Python 包（共享逻辑 + app/tool 实现）
+│   ├── infra/                     # SQLite / logger / Telegram notify
+│   ├── domain/                    # 交易日历 / 持仓 / 决策票 / 风控
+│   ├── market/                    # 行情 / 题材 / 事件 / 周报 / 卡片校验
+│   ├── apps/                      # tg_listener + ask/query/weekly/theme app 实现
+│   ├── tools/                     # review / refresh_calendar / download_daily 等人工工具
+│   └── schema/init_db.sql         # SQLite schema
+├── bin/                           # shell runtime entrypoints（launchd/manual fallback）
+│   ├── run_premarket.sh
+│   ├── run_intraday.sh
+│   ├── run_watch_loop.sh
+│   └── run_postmarket.sh
 ├── launchd/                       # 长时 daemon plist 模板（{{PROJECT_ROOT}} 占位符）
 ├── scripts/
 │   ├── setup.sh                   # 本地基础初始化辅助

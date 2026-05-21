@@ -8,7 +8,7 @@ env vars（从 .env 读）：
 每次 push 都自动写一条到 SQLite `push_log` 表，用于后续分析。
 
 用法：
-    from notify import push, push_md
+    from stock_codex.infra.notify import push, push_md
     push("文本", source="stock-premarket")
     push_md("**Markdown**", source="stock-postmarket")
 """
@@ -17,16 +17,14 @@ from __future__ import annotations
 import html as html_mod
 import os
 import re
-import sqlite3
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
 import requests
-from db import connect as db_connect
+from stock_codex.infra.db import connect as db_connect
+from stock_codex.paths import DB_FILE as DB, ENV_FILE
 
 # 读 .env
-ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 if ENV_FILE.exists():
     for line in ENV_FILE.read_text().splitlines():
         line = line.strip()
@@ -38,10 +36,6 @@ if ENV_FILE.exists():
 TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TG_CHAT_ID", "")
 API = f"https://api.telegram.org/bot{TOKEN}"
-
-ROOT = Path(__file__).resolve().parent.parent
-DB = ROOT / "data" / "daily.db"
-
 
 class NotifyError(RuntimeError):
     pass
@@ -264,4 +258,4 @@ if __name__ == "__main__":
                 for row in rows:
                     print(f"  #{row[0]} {row[1]} [{row[2]}] msg_id={row[3]} len={row[4]} ok={row[5]}")
     else:
-        print("用法: uv run code/notify.py [whoami|test|tail [N]]")
+        print("用法: uv run stock_codex.infra.notify [whoami|test|tail [N]]")

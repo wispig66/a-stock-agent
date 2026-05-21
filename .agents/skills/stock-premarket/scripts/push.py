@@ -1,5 +1,5 @@
 """
-Skill 内置推送 wrapper：从 stdin 或 --text 接收消息，调用项目 code/notify.py。
+Skill 内置推送 wrapper：从 stdin 或 --text 接收消息，调用项目 stock_codex.infra.notify。
 自动按 Telegram 4096 上限分段（保留 200 字符余量）。
 
 推送前先过 card_validator：卡片里的数据点必须在 data/allowed_latest_<source>.json
@@ -21,9 +21,8 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT / "code"))
 
-from notify import push  # noqa: E402
+from stock_codex.infra.notify import push  # noqa: E402
 
 CHUNK_LIMIT = 3800
 DB_PATH = ROOT / "data" / "daily.db"
@@ -52,7 +51,7 @@ def _validate(text: str, source: str, mode: str) -> tuple[bool, list]:
     if not allowed_file.exists():
         return (True, [])  # 该 skill 还没接 ALLOWED 体系，跳过（向后兼容）
     try:
-        from lib.card_validator import validate_card, load_stock_name_dict
+        from stock_codex.market.card_validator import validate_card, load_stock_name_dict
         allowed = json.loads(allowed_file.read_text(encoding="utf-8"))
         name_dict = load_stock_name_dict(DB_PATH) if DB_PATH.exists() else None
         return validate_card(text, allowed, stock_name_dict=name_dict)
@@ -126,7 +125,7 @@ def main(argv: list[str] | None = None):
     # 校验
     ok, violations = _validate(text, args.source, mode)
     if not ok:
-        from lib.card_validator import format_violations
+        from stock_codex.market.card_validator import format_violations
         log_file = _log_violations(text, args.source, mode, violations)
         summary = format_violations(violations)
         print(f"[push] ⚠️ 卡片含 {len(violations)} 处数据来源违规 "

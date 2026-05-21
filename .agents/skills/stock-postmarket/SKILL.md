@@ -86,7 +86,7 @@ L4 盘后复盘。**两个核心职责**：
 优先复盘 `decision_tickets`，评价系统今天是否真的给出可执行决策。**一条命令出表**：
 
 ```bash
-.venv/bin/python code/review.py decision-review
+.venv/bin/python -m stock_codex.tools.review decision-review
 ```
 
 输出 markdown 表 + 决策评分（主攻是否触发、潜伏是否触达低吸区、禁买是否规避风险），直接粘进卡片 Step 4 的复盘段。
@@ -94,7 +94,7 @@ L4 盘后复盘。**两个核心职责**：
 如果 `decision-review` 报"未找到 decision_tickets"，才回退旧观察池复盘：
 
 ```bash
-.venv/bin/python code/review.py review
+.venv/bin/python -m stock_codex.tools.review review
 ```
 
 旧观察池判定规则（review.py 内置）：
@@ -109,7 +109,7 @@ L4 盘后复盘。**两个核心职责**：
 
 若 review.py 报"未找到今日 premarket 推送"或"解析出 0 只"，回退手动：先 `sqlite3 data/daily.db "SELECT text FROM push_log WHERE source='stock-premarket' ORDER BY id DESC LIMIT 1"` 看推送，再用 akshare `stock_zh_a_spot_em()` 手查代码。回退后必须把失败样本贴给开发者改正则。
 
-> ⚠️ push_log 表的时间列是 `timestamp` ISO 8601 字符串（**不是** `ts` / `created_at`）；若想按今日过滤用 `WHERE date(timestamp)='YYYY-MM-DD'`，而不是 `date(ts,'localtime')` —— 后者直接报错。schema 完整字段见 `code/init_db.sql` 或 `.schema push_log`。
+> ⚠️ push_log 表的时间列是 `timestamp` ISO 8601 字符串（**不是** `ts` / `created_at`）；若想按今日过滤用 `WHERE date(timestamp)='YYYY-MM-DD'`，而不是 `date(ts,'localtime')` —— 后者直接报错。schema 完整字段见 `stock_codex/schema/init_db.sql` 或 `.schema push_log`。
 
 ## Step 2.5 · 当日 + 晚间消息扫描
 
@@ -224,7 +224,7 @@ L4 盘后复盘。**两个核心职责**：
 
 🧾 <b>今日决策评分</b>
 
-先引用 `code/review.py decision-review` 的输出，再用人话解释：
+先引用 `python -m stock_codex.tools.review decision-review` 的输出，再用人话解释：
 - 主攻：是否触发，若没触发是否让用户避免了追高
 - 潜伏：是否触达低吸区，催化逻辑是否仍有效
 - 备选：是否因为主攻作废才需要看，不能事后挑赢家
@@ -399,7 +399,7 @@ uv run --no-sync scripts/refresh_stock_basic.py
 
 # 升级路径（不必现在做）
 
-- ~~review.py 自动解析 push_log 的观察池正则~~（2026-05-13 已落地，见 `code/review.py`）
+- ~~review.py 自动解析 push_log 的观察池正则~~（2026-05-13 已落地，见 `python -m stock_codex.tools.review`）
 - 接入 mootdx 拉今日逐笔成交，验证封板时间 / 开板次数
 - LLM 生成结构化 JSON 写 `watchlist_daily` 表（替代正则解析）
 - 接入 stock-bidding skill 的 09:25 收敛记录，做"竞价筛选准确率"指标

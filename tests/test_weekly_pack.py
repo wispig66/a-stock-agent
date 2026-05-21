@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "code"))
 
 
 @pytest.fixture
@@ -19,7 +18,7 @@ def seeded_db(tmp_path, monkeypatch):
     """Seed a temp DB with one full week (2026-05-11 ~ 2026-05-15) of fake data."""
     db_path = tmp_path / "daily.db"
     conn = sqlite3.connect(db_path)
-    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
 
     # 5 个交易日 × 2 只股票（300308 算力 / 600519 白酒）
     days = ["2026-05-11", "2026-05-12", "2026-05-13", "2026-05-14", "2026-05-15"]
@@ -50,7 +49,7 @@ def seeded_db(tmp_path, monkeypatch):
 
 
 def test_build_weekly_data_pack_basic(seeded_db):
-    from lib.weekly_pack import build_weekly_data_pack
+    from stock_codex.market.weekly_pack import build_weekly_data_pack
 
     pack = build_weekly_data_pack(end_date=date(2026, 5, 17))  # Sunday
 
@@ -72,11 +71,11 @@ def test_build_weekly_data_pack_empty_week(tmp_path, monkeypatch):
     """空仓周 / 无数据：返回结构完整，weekly_trades 为空。"""
     db_path = tmp_path / "daily.db"
     conn = sqlite3.connect(db_path)
-    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
     conn.close()
     monkeypatch.setenv("STOCK_DB_PATH", str(db_path))
 
-    from lib.weekly_pack import build_weekly_data_pack
+    from stock_codex.market.weekly_pack import build_weekly_data_pack
     pack = build_weekly_data_pack(end_date=date(2026, 5, 17))
 
     assert pack["weekly_trades"] == []
@@ -85,7 +84,7 @@ def test_build_weekly_data_pack_empty_week(tmp_path, monkeypatch):
 
 
 def test_render_long_form_sections(seeded_db):
-    from lib.weekly_pack import build_weekly_data_pack, render_long_form
+    from stock_codex.market.weekly_pack import build_weekly_data_pack, render_long_form
 
     pack = build_weekly_data_pack(end_date=date(2026, 5, 17))
     parts = {
@@ -116,7 +115,7 @@ def test_render_long_form_sections(seeded_db):
 
 
 def test_parse_machine_readable_roundtrip(seeded_db, tmp_path):
-    from lib.weekly_pack import (
+    from stock_codex.market.weekly_pack import (
         build_weekly_data_pack, render_long_form, parse_machine_readable,
     )
     pack = build_weekly_data_pack(end_date=date(2026, 5, 17))
@@ -141,7 +140,7 @@ def test_parse_machine_readable_roundtrip(seeded_db, tmp_path):
 
 
 def test_parse_machine_readable_missing(tmp_path):
-    from lib.weekly_pack import parse_machine_readable
+    from stock_codex.market.weekly_pack import parse_machine_readable
     p = tmp_path / "nope.md"
     p.write_text("# 普通 markdown，没有 yaml 块\n")
     assert parse_machine_readable(p) is None

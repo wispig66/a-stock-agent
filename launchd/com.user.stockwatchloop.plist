@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>{{PROJECT_ROOT}}/code/run_watch_loop.sh</string>
+        <string>{{PROJECT_ROOT}}/bin/run_watch_loop.sh</string>
     </array>
 
     <key>StartCalendarInterval</key>

@@ -18,7 +18,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 DB = ROOT / "data" / "daily.db"
-sys.path.insert(0, str(ROOT / "code"))
 
 CODE_RE = re.compile(r"\b(\d{6})\b")
 

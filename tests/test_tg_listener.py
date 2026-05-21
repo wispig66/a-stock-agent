@@ -7,15 +7,13 @@ from unittest.mock import patch
 import requests
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-sys.path.insert(0, str(ROOT / "code"))
 
-import tg_listener as tl  # noqa: E402
+from stock_codex.apps import tg_listener as tl  # noqa: E402
 
 
 def _seed_db(path):
     conn = sqlite3.connect(path)
-    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
     conn.executemany(
         "INSERT INTO stock_basic(code,name,board,list_date,is_st,updated_at) "
         "VALUES(?,?,?,?,?,?)",
@@ -243,7 +241,7 @@ def test_build_ts_no_override():
 
 def _ensure_trades_table(db_path):
     conn = sqlite3.connect(db_path)
-    conn.executescript((ROOT / "code" / "init_db.sql").read_text())
+    conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
     conn.commit()
     conn.close()
 
