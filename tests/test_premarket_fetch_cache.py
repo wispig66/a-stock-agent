@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+FETCH_PREMARKET = ROOT / ".agents" / "skills" / "stock-premarket" / "scripts" / "fetch_data.py"
+
+
+def load_module():
+    spec = importlib.util.spec_from_file_location("premarket_fetch", FETCH_PREMARKET)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FixedDatetime:
+    @classmethod
+    def now(cls):
+        return datetime(2026, 5, 22, 8, 0, 0)
+
+
+def write_cache(path: Path, df: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "cached_at": "2026-05-21T15:44:41",
+        "data": json.loads(df.to_json(orient="split", force_ascii=False, date_format="iso")),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def test_structured_table_retries_then_caches_success(tmp_path, monkeypatch) -> None:
+    fp = load_module()
+    monkeypatch.setattr(fp, "PREMARKET_CACHE_DIR", tmp_path / "premarket_cache")
+    monkeypatch.setattr(fp, "POSTMARKET_CACHE_DIR", tmp_path / "postmarket_cache")
+    monkeypatch.setattr(fp, "INTRADAY_CACHE_DIR", tmp_path / "intraday_cache")
+    monkeypatch.setattr(fp, "datetime", FixedDatetime)
+    calls = 0
+
+    def fetcher():
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise OSError("temporary dns failure")
+        return pd.DataFrame([{"代码": "600000", "名称": "浦发银行", "涨跌幅": 10.0}])
+
+    df = fp._fetch_structured_table(
+        label="涨停池",
+        cache_name="zt",
+        date="20260521",
+        fetcher=fetcher,
+        attempts=3,
+        sleep_seconds=0,
+    )
+
+    assert calls == 3
+    assert df.to_dict("records") == [{"代码": "600000", "名称": "浦发银行", "涨跌幅": 10.0}]
+    assert (tmp_path / "premarket_cache" / "20260521_zt.json").exists()
+
+
+def test_uses_postmarket_cache_after_live_failures(tmp_path, monkeypatch) -> None:
+    fp = load_module()
+    monkeypatch.setattr(fp, "PREMARKET_CACHE_DIR", tmp_path / "premarket_cache")
+    monkeypatch.setattr(fp, "POSTMARKET_CACHE_DIR", tmp_path / "postmarket_cache")
+    monkeypatch.setattr(fp, "INTRADAY_CACHE_DIR", tmp_path / "intraday_cache")
+    original = pd.DataFrame([{"代码": "600000", "名称": "浦发银行", "连板数": 1, "涨跌幅": 10.0}])
+    write_cache(tmp_path / "postmarket_cache" / "20260521_zt.json", original)
+
+    df = fp._fetch_structured_table(
+        label="涨停池",
+        cache_name="zt",
+        date="20260521",
+        fetcher=lambda: (_ for _ in ()).throw(OSError("dns down")),
+        attempts=2,
+        sleep_seconds=0,
+    )
+
+    assert df.to_dict("records") == [{"代码": "600000", "名称": "浦发银行", "连板数": 1, "涨跌幅": 10.0}]
+    assert df.attrs["snapshot_source"] == "cache"
+    assert df.attrs["snapshot_cache"] == "postmarket_cache"
+    assert df.attrs["snapshot_at"] == "2026-05-21T15:44:41"
+
+
+def test_allowed_marks_cached_premarket_sources() -> None:
+    fp = load_module()
+    zt = pd.DataFrame([{"代码": "600000", "名称": "浦发银行", "连板数": 1, "涨跌幅": 10.0}])
+    zt.attrs["snapshot_source"] = "cache"
+    zt.attrs["snapshot_at"] = "2026-05-21T15:44:41"
+    zt.attrs["snapshot_cache"] = "postmarket_cache"
+
+    allowed = fp.build_allowed(
+        date="20260521",
+        zt=zt,
+        zb=pd.DataFrame(),
+        lhb=pd.DataFrame(),
+        hot=pd.DataFrame(),
+        news=pd.DataFrame(),
+    )
+
+    assert allowed["summary"]["limit_up"] == 1
+    assert allowed["summary"]["limit_up_snapshot_source"] == "cache"
+    assert allowed["summary"]["limit_up_snapshot_at"] == "2026-05-21T15:44:41"
+    assert allowed["summary"]["limit_up_snapshot_cache"] == "postmarket_cache"
+
+
+def test_last_trade_day_uses_latest_cached_day_after_live_probe_failures(tmp_path, monkeypatch) -> None:
+    fp = load_module()
+    monkeypatch.setattr(fp, "PREMARKET_CACHE_DIR", tmp_path / "premarket_cache")
+    monkeypatch.setattr(fp, "POSTMARKET_CACHE_DIR", tmp_path / "postmarket_cache")
+    monkeypatch.setattr(fp, "INTRADAY_CACHE_DIR", tmp_path / "intraday_cache")
+    monkeypatch.setattr(fp, "datetime", FixedDatetime)
+    write_cache(
+        tmp_path / "postmarket_cache" / "20260521_zt.json",
+        pd.DataFrame([{"代码": "600000", "名称": "浦发银行"}]),
+    )
+    monkeypatch.setattr(
+        fp.ak,
+        "stock_zt_pool_em",
+        lambda date: (_ for _ in ()).throw(OSError("dns down")),
+    )
+
+    assert fp.last_trade_day() == "20260521"
+
+
+def test_render_core_pack_fails_closed_without_limit_up_data(monkeypatch) -> None:
+    fp = load_module()
+    monkeypatch.setattr(fp, "fetch_zt_pool", lambda date: pd.DataFrame())
+
+    with pytest.raises(fp.DataUnavailable, match="涨停池无数据"):
+        fp.render_core_pack("20260521")

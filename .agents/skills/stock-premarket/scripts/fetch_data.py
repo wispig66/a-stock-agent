@@ -16,8 +16,10 @@ LLM 想看某题材详情时：
 
 from __future__ import annotations
 import argparse
+import json
 import sqlite3
 import sys
+import time
 import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -42,11 +44,130 @@ DB = ROOT / "data" / "daily.db"
 
 from stock_codex.infra.db import connect as db_connect  # noqa: E402
 OUT_DIR = ROOT / "data" / "fact_pack"
+PREMARKET_CACHE_DIR = ROOT / "data" / "premarket_cache"
+POSTMARKET_CACHE_DIR = ROOT / "data" / "postmarket_cache"
+INTRADAY_CACHE_DIR = ROOT / "data" / "intraday_cache"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def log(*a):
     print(*a, file=sys.stderr, flush=True)
+
+
+class DataUnavailable(RuntimeError):
+    pass
+
+
+def _cache_path(date: str, cache_name: str) -> Path:
+    return PREMARKET_CACHE_DIR / f"{date}_{cache_name}.json"
+
+
+def _cache_candidates(date: str, cache_name: str) -> list[Path]:
+    candidates = [_cache_path(date, cache_name)]
+    if cache_name == "zt":
+        candidates.extend([
+            POSTMARKET_CACHE_DIR / f"{date}_zt.json",
+            INTRADAY_CACHE_DIR / f"{date}_zt_pool.json",
+        ])
+    elif cache_name == "zb":
+        candidates.extend([
+            POSTMARKET_CACHE_DIR / f"{date}_zb.json",
+            INTRADAY_CACHE_DIR / f"{date}_zbgc_pool.json",
+        ])
+    return candidates
+
+
+def _write_df_cache(date: str, cache_name: str, df: pd.DataFrame) -> None:
+    if df.empty:
+        return
+    PREMARKET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "cached_at": datetime.now().replace(microsecond=0).isoformat(),
+        "data": json.loads(df.to_json(orient="split", force_ascii=False, date_format="iso")),
+    }
+    _cache_path(date, cache_name).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _read_df_cache(date: str, cache_name: str) -> tuple[pd.DataFrame, str | None, str | None]:
+    for path in _cache_candidates(date, cache_name):
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            data = payload.get("data") or {}
+            df = pd.DataFrame(data.get("data") or [], columns=data.get("columns") or [])
+            cached_at = payload.get("cached_at")
+            if not df.empty:
+                df.attrs["snapshot_source"] = "cache"
+                df.attrs["snapshot_cache"] = path.parent.name
+                if cached_at:
+                    df.attrs["snapshot_at"] = str(cached_at)
+                return df, str(cached_at) if cached_at else None, path.parent.name
+        except Exception as e:
+            log(f"缓存读取失败 {path.name}: {type(e).__name__}: {str(e)[:120]}")
+    return pd.DataFrame(), None, None
+
+
+def _fetch_structured_table(
+    *,
+    label: str,
+    cache_name: str,
+    date: str,
+    fetcher,
+    attempts: int = 3,
+    sleep_seconds: float = 1.5,
+) -> pd.DataFrame:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            df = fetcher()
+            if df is None:
+                df = pd.DataFrame()
+            if not isinstance(df, pd.DataFrame):
+                raise TypeError(f"{label} 返回非 DataFrame: {type(df).__name__}")
+            if not df.empty:
+                _write_df_cache(date, cache_name, df)
+            return df
+        except Exception as e:
+            last_error = e
+            log(f"{label} 第 {attempt}/{attempts} 次失败: {type(e).__name__}: {str(e)[:120]}")
+            if attempt < attempts:
+                time.sleep(sleep_seconds)
+
+    cached, cached_at, cache_source = _read_df_cache(date, cache_name)
+    if not cached.empty:
+        log(f"{label} 使用缓存快照 {cached_at}（{cache_source}；实时源失败: {last_error}）")
+        return cached
+
+    log(f"{label} 拉取失败且无可用缓存: {last_error}")
+    return pd.DataFrame()
+
+
+def _latest_cached_trade_day(*, before_or_equal: str) -> str | None:
+    candidates: set[str] = set()
+    for directory, suffix in (
+        (PREMARKET_CACHE_DIR, "_zt.json"),
+        (POSTMARKET_CACHE_DIR, "_zt.json"),
+        (INTRADAY_CACHE_DIR, "_zt_pool.json"),
+    ):
+        if not directory.exists():
+            continue
+        for path in directory.glob(f"*{suffix}"):
+            date = path.name.split("_", 1)[0]
+            if len(date) == 8 and date.isdigit() and date <= before_or_equal:
+                candidates.add(date)
+    return max(candidates) if candidates else None
+
+
+def _cache_note(df: pd.DataFrame) -> str:
+    if df.attrs.get("snapshot_source") != "cache":
+        return ""
+    at = df.attrs.get("snapshot_at") or "unknown"
+    cache = df.attrs.get("snapshot_cache") or "cache"
+    return f"（使用缓存快照：{at}，来源 {cache}，实时源失败）"
 
 
 def last_trade_day() -> str:
@@ -60,6 +181,7 @@ def last_trade_day() -> str:
     """
     now = datetime.now()
     start_delta = 0 if now.hour >= 15 else 1
+    latest_candidate = (now - timedelta(days=start_delta)).strftime("%Y%m%d")
     for delta in range(start_delta, start_delta + 10):
         d = (now - timedelta(days=delta)).strftime("%Y%m%d")
         try:
@@ -70,26 +192,32 @@ def last_trade_day() -> str:
         except Exception as e:
             log(f"  尝试 {d} 失败: {type(e).__name__}")
             continue
+    cached = _latest_cached_trade_day(before_or_equal=latest_candidate)
+    if cached:
+        log(f"  实时交易日探测失败，使用缓存最近完整收盘日 {cached}")
+        return cached
     return (now - timedelta(days=1)).strftime("%Y%m%d")
 
 
 # ============ 数据拉取（每个独立 try-except，单点失败不影响整体） ============
 
 def fetch_zt_pool(date: str) -> pd.DataFrame:
-    df = ak.stock_zt_pool_em(date=date)
-    if df is None or df.empty:
-        return pd.DataFrame()
-    df = df[df["涨跌幅"] >= 9.9].copy()  # 清洗异常涨跌幅
-    return df
+    def _fetch() -> pd.DataFrame:
+        df = ak.stock_zt_pool_em(date=date)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        return df[df["涨跌幅"] >= 9.9].copy()  # 清洗异常涨跌幅
+
+    return _fetch_structured_table(label="涨停池", cache_name="zt", date=date, fetcher=_fetch)
 
 
 def fetch_zb_pool(date: str) -> pd.DataFrame:
-    try:
-        df = ak.stock_zt_pool_zbgc_em(date=date)
-        return df if df is not None else pd.DataFrame()
-    except Exception as e:
-        log(f"炸板池失败: {e}")
-        return pd.DataFrame()
+    return _fetch_structured_table(
+        label="炸板池",
+        cache_name="zb",
+        date=date,
+        fetcher=lambda: ak.stock_zt_pool_zbgc_em(date=date),
+    )
 
 
 def fetch_lhb(date: str) -> pd.DataFrame:
@@ -364,8 +492,11 @@ def render_core_pack(date: str) -> tuple[str, dict]:
     lines.append("## 一、涨停结构")
     lines.append("")
     if zt.empty:
-        lines.append("- 无数据")
+        raise DataUnavailable(f"涨停池无数据且无 {date} 可用缓存，拒绝生成盘前 fact pack")
     else:
+        note = _cache_note(zt)
+        if note:
+            lines.append(f"- 数据状态：{note}")
         dist = "  ".join(f"{n}板 {c}只" for n, c in zt["连板数"].value_counts().sort_index().items())
         lines.append(f"- 涨停总数：**{len(zt)} 只**（清洗后）")
         lines.append(f"- 连板分布：{dist}")
@@ -406,6 +537,9 @@ def render_core_pack(date: str) -> tuple[str, dict]:
     if zb.empty:
         lines.append("- 无数据")
     else:
+        note = _cache_note(zb)
+        if note:
+            lines.append(f"- 数据状态：{note}")
         lines.append(f"- 炸板总数：{len(zb)} 只")
         # 显示炸板次数最多的 Top 5（炸板次数高 = 抛压重 = 退潮信号）
         if "炸板次数" in zb.columns:
@@ -601,6 +735,10 @@ def build_allowed(*, date: str, zt, zb, lhb, hot, news) -> dict:
     summary = {"date": date}
     if zt is not None and not zt.empty:
         summary["limit_up"] = int(len(zt))
+        if zt.attrs.get("snapshot_source") == "cache":
+            summary["limit_up_snapshot_source"] = "cache"
+            summary["limit_up_snapshot_at"] = str(zt.attrs.get("snapshot_at") or "")
+            summary["limit_up_snapshot_cache"] = str(zt.attrs.get("snapshot_cache") or "")
         if "连板数" in zt.columns:
             try:
                 summary["max_consec"] = int(zt["连板数"].max())
@@ -608,6 +746,10 @@ def build_allowed(*, date: str, zt, zb, lhb, hot, news) -> dict:
                 pass
     if zb is not None and not zb.empty:
         summary["broken"] = int(len(zb))
+        if zb.attrs.get("snapshot_source") == "cache":
+            summary["broken_snapshot_source"] = "cache"
+            summary["broken_snapshot_at"] = str(zb.attrs.get("snapshot_at") or "")
+            summary["broken_snapshot_cache"] = str(zb.attrs.get("snapshot_cache") or "")
 
     return {
         "schema_version": "1",
@@ -652,7 +794,11 @@ def main():
 
     date = args.date or last_trade_day()
     log(f"使用日期 {date}")
-    pack, bundle = render_core_pack(date)
+    try:
+        pack, bundle = render_core_pack(date)
+    except DataUnavailable as e:
+        log(f"数据源失败: {e}")
+        raise SystemExit(2) from e
     out_path = OUT_DIR / f"{date}_premarket.md"
     out_path.write_text(pack, encoding="utf-8")
     log(f"已写入 {out_path}")
