@@ -150,6 +150,43 @@ exit 0
     ]
 
 
+def test_runtime_services_installer_renders_tg_listener_home_from_environment(tmp_path) -> None:
+    env = base_env(tmp_path)
+    log = tmp_path / "launchctl.log"
+    env["LAUNCHCTL_LOG"] = str(log)
+    env["ENABLE_TG_LISTENER_LAUNCHD"] = "1"
+    write_executable(
+        tmp_path / "bin" / "launchctl",
+        """#!/usr/bin/env bash
+echo "$@" >> "$LAUNCHCTL_LOG"
+if [ "${1:-}" = "print" ]; then
+    exit 1
+fi
+exit 0
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "install_runtime_services.sh")],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    rendered = (
+        Path(env["HOME"])
+        / "Library"
+        / "LaunchAgents"
+        / "com.user.stocktglistener.plist"
+    ).read_text(encoding="utf-8")
+    assert "{{HOME}}" not in rendered
+    assert f"<string>{env['HOME']}</string>" in rendered
+    assert "<string>/Users/wispig</string>" not in rendered
+
+
 def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
     script = read_script("scripts/doctor_codex_runtime.sh")
 

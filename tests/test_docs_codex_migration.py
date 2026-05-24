@@ -100,7 +100,7 @@ def test_codex_runbook_documents_local_runtime_deploy():
     )
 
 
-def test_runtime_docs_and_skills_do_not_reference_personal_project_paths():
+def test_runtime_docs_skills_and_templates_do_not_reference_personal_project_paths():
     forbidden = [
         "/Users/",
         "/Users/wispig/Desktop/a-stock-agent",
@@ -108,12 +108,20 @@ def test_runtime_docs_and_skills_do_not_reference_personal_project_paths():
         "/Users/wispig/Desktop/stock",
         "~/Desktop/stock",
     ]
-    for path in (
-        "README.md",
-        "docs/codex_automations.md",
-        ".agents/skills/stock-intraday/SKILL.md",
-    ):
-        assert_contains_none(read(path), forbidden, label=path)
+    paths = sorted(
+        {
+            *ROOT.glob("*.md"),
+            *(ROOT / "docs").rglob("*.md"),
+            *(ROOT / ".agents" / "skills").rglob("SKILL.md"),
+            *(ROOT / "launchd").rglob("*.plist"),
+        }
+    )
+    for path in paths:
+        assert_contains_none(
+            path.read_text(encoding="utf-8"),
+            forbidden,
+            label=str(path.relative_to(ROOT)),
+        )
 
 
 def test_validator_doc_mentions_codex_strategy_not_only_launchd():

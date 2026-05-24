@@ -51,7 +51,7 @@ render_plist() {
     local plist_name
 
     plist_name="$(basename "$template")"
-    python3 - "$template" "$rendered_dir/$plist_name" "$PROJECT_ROOT" <<'PY'
+    python3 - "$template" "$rendered_dir/$plist_name" "$PROJECT_ROOT" "$HOME" <<'PY'
 from pathlib import Path
 import sys
 from xml.sax.saxutils import escape
@@ -59,9 +59,15 @@ from xml.sax.saxutils import escape
 template_path = Path(sys.argv[1])
 target_path = Path(sys.argv[2])
 project_root = sys.argv[3]
+home = sys.argv[4]
 
 text = template_path.read_text(encoding="utf-8")
-target_path.write_text(text.replace("{{PROJECT_ROOT}}", escape(project_root)), encoding="utf-8")
+for marker, value in {
+    "{{PROJECT_ROOT}}": project_root,
+    "{{HOME}}": home,
+}.items():
+    text = text.replace(marker, escape(value))
+target_path.write_text(text, encoding="utf-8")
 PY
 }
 
