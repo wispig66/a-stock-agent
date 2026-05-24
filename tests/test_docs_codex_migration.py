@@ -100,6 +100,22 @@ def test_codex_runbook_documents_local_runtime_deploy():
     )
 
 
+def test_runtime_docs_and_skills_do_not_reference_personal_project_paths():
+    forbidden = [
+        "/Users/",
+        "/Users/wispig/Desktop/a-stock-agent",
+        "Desktop/a-stock-agent",
+        "/Users/wispig/Desktop/stock",
+        "~/Desktop/stock",
+    ]
+    for path in (
+        "README.md",
+        "docs/codex_automations.md",
+        ".agents/skills/stock-intraday/SKILL.md",
+    ):
+        assert_contains_none(read(path), forbidden, label=path)
+
+
 def test_validator_doc_mentions_codex_strategy_not_only_launchd():
     text = read("docs/card_validator_enforce_switch.md")
     enforce_section = markdown_section(text, "## 切换 enforce 操作", exact=False)

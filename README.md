@@ -208,7 +208,7 @@ brew install uv                                  # macOS
 # 或 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. 进入仓库
-cd /Users/wispig/Desktop/stock
+cd /path/to/a-stock-agent
 
 # 3. 同步依赖（uv 自动下 Python 3.11、建 .venv、装 akshare/pandas/requests/PyYAML/filelock）
 uv sync --group dev    # 含 pytest，用于跑测试

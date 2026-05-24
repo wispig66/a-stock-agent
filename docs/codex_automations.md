@@ -15,7 +15,7 @@
 在本机执行：
 
 ```bash
-cd /Users/wispig/Desktop/stock
+cd /path/to/a-stock-agent
 
 uv sync --group dev
 cp .env.example .env
