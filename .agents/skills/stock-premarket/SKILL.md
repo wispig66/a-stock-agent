@@ -195,7 +195,7 @@ ls data/anomaly_findings/ 2>/dev/null | tail -1
 |------|------|------|----------|
 | `main` | 0-1 | 今日主攻，只能有一只 | `buy_if`，给买入区间、最多追价、截止时间 |
 | `ambush` | 0-2 | 派别 E，消息强但盘面未启动 | `buy_if`，只低吸，不追高，给等待期 |
-| `backup` | 0-2 | 主攻作废后才看 | `wait`，不能和主攻同时买 |
+| `backup` | 0-2 | 主攻作废后才看 | `wait`，若进入 `decision_tickets` 必须给完整触发区间；否则只写在人读段 |
 | `ban` | 不限 | 明确不买 | `avoid`，写清禁买理由 |
 
 **硬约束（违反即视为输出残次）**：
@@ -209,6 +209,9 @@ ls data/anomaly_findings/ 2>/dev/null | tail -1
   ```
   检查 `upcoming` 数组。如果未来 30 天内有任何一条 `float_ratio > 0.05`（占流通市值 > 5%），**剔除该候选**或在备注里红色标注。少一只无所谓，不留雷。
 - 决策单必须收敛。有效候选很多时也只能给 1 个主攻；没有好机会时 `main` 可以为空，今日总决策写空仓。
+- `decision_tickets` 是可执行机器单：`main` / `ambush` 必须包含 `entry_low`、`entry_high`、`stop_price`、`deadline_time`、`size_pct`；`main` 还必须包含 `max_chase_price`。
+- `backup` 若进入 `decision_tickets`，必须同时包含 `entry_low`、`entry_high`、`max_chase_price`、`stop_price`、`deadline_time`、`size_pct`；没有这些字段的备选只能写在人读段，不得落库。
+- 如果没有完整可执行买点，今日总决策必须写“今日无可下单信号”，不要把半成品 backup 塞进机器块。
 
 **每只可交易候选必须按下面 5 个派别之一标记**：
 
@@ -283,6 +286,7 @@ ls data/anomaly_findings/ 2>/dev/null | tail -1
 
 🎯 今日总决策：[空仓 / 只做主攻 / 主攻+潜伏]
 - 结论：[30 秒内能执行的一句话]
+- 可下单信号：[有 N 条 / 今日无可下单信号]
 - 仓位上限：[总仓位 X%，单票 X%]
 - 今日最重要作废条件：[如 10:30 前主攻不触发则空仓]
 
@@ -308,7 +312,7 @@ ls data/anomaly_findings/ 2>/dev/null | tail -1
    升级条件：[upgrade_conditions]
 
 ⏳ 备选（0-2 只）
-- [代码] [名称]：只有主攻作废后才看；触发条件 [...]
+- [代码] [名称]：只有主攻作废后才看；触发条件 [若无完整买点，明确写“仅观察，不进入机器单”]
 
 🚫 禁买
 - [代码 名称]：[位置高 / 高潮 / 沾边不纯 / 无盘面确认 / 解禁风险]

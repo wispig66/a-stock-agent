@@ -100,6 +100,32 @@ def validate_tickets(tickets: list[dict[str, Any]]) -> None:
             raise ValueError("code is required")
         if not t.get("name"):
             raise ValueError("name is required")
+        _validate_actionable_ticket(t)
+
+
+def _missing_fields(t: dict[str, Any], fields: list[str]) -> list[str]:
+    return [field for field in fields if t.get(field) is None]
+
+
+def _validate_actionable_ticket(t: dict[str, Any]) -> None:
+    lane = t.get("lane")
+    if lane in {"main", "ambush"}:
+        missing = _missing_fields(
+            t,
+            ["entry_low", "entry_high", "stop_price", "deadline_time", "size_pct"],
+        )
+        if lane == "main" and t.get("max_chase_price") is None:
+            missing.append("max_chase_price")
+        if missing:
+            raise ValueError(f"{lane} 缺少可执行字段: {', '.join(missing)}")
+
+    if lane == "backup":
+        missing = _missing_fields(
+            t,
+            ["entry_low", "entry_high", "max_chase_price", "stop_price", "deadline_time", "size_pct"],
+        )
+        if missing:
+            raise ValueError(f"backup 缺少可执行字段: {', '.join(missing)}")
 
 
 def parse_decision_block(text: str) -> tuple[str, list[dict[str, Any]]]:
@@ -218,6 +244,21 @@ def load_watchlist_compat(db: str | Path, trade_date: str) -> list[dict[str, Any
             "stop_loss": t.get("stop_price"),
             "deadline_time": t.get("deadline_time"),
             "position_max_pct": t.get("size_pct"),
+            "status": t.get("status"),
             "thesis": t.get("thesis"),
         })
     return out
+
+
+def mark_ticket_status(db: str | Path, trade_date: str, code: str, lane: str, status: str) -> bool:
+    if status not in STATUSES:
+        raise ValueError(f"unknown status: {status}")
+    ensure_schema(db)
+    with db_connect(db) as conn:
+        cur = conn.execute(
+            """UPDATE decision_tickets
+               SET status=?, updated_at=CURRENT_TIMESTAMP
+               WHERE trade_date=? AND code=? AND lane=?""",
+            (status, trade_date, code, lane),
+        )
+        return cur.rowcount > 0

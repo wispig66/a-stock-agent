@@ -4,7 +4,7 @@
 用法：
     python fetch_realtime.py              # 纪律分支（09:30 / 09:45）
     python fetch_realtime.py --halfday    # 11:30 半日分支，额外拉涨停结构 + 概念热度
-    python fetch_realtime.py --endday     # 14:30 尾盘分支，全日数据
+    python fetch_realtime.py --endday     # 14:30 尾盘快照分支（非收盘数据）
 """
 
 from __future__ import annotations
@@ -492,7 +492,7 @@ def main():
     cc = pd.DataFrame()
     label = "纪律分支"
     if args.halfday or args.endday:
-        label = "半日（11:30）" if args.halfday else "全日（14:30）"
+        label = "半日（11:30）" if args.halfday else "尾盘快照（14:30）"
         section(f"四、{label}涨停结构")
         zt = fetch_zt_pool_today()
         note = _cache_note(zt)

@@ -172,7 +172,7 @@ write_automation \
     "stock-intraday-14-30" \
     "stock intraday 14:30" \
     "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=14;BYMINUTE=30" \
-    "$(skill_prompt "stock-intraday" "the 14:30 late-session discipline reminder and Telegram card" "the 14:30 intraday run")"
+    "$(skill_prompt "stock-intraday" "the 14:30 late-session snapshot and Telegram card, not a post-close review" "the 14:30 intraday run")"
 
 write_automation \
     "stock-postmarket" \

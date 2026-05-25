@@ -9,7 +9,7 @@
     <array>
         <string>/bin/bash</string>
         <string>{{PROJECT_ROOT}}/bin/run_theme_loop.sh</string>
-        <string>--shadow</string>
+        <string>--push-level=t2</string>
     </array>
 
     <key>StartCalendarInterval</key>

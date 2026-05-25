@@ -16,6 +16,7 @@ from collections import defaultdict, Counter
 from datetime import datetime, timedelta
 
 from stock_codex.infra.db import connect as db_connect  # noqa: E402
+from stock_codex.apps.theme_emergence_loop import PH_LAMBDA  # noqa: E402
 from stock_codex.paths import DB_FILE
 
 DB = DB_FILE
@@ -166,11 +167,11 @@ def report(args):
     print(f"💡 调参建议")
     t1_per_day = len(t1) / len(dates)
     if t1_per_day > 20:
-        print(f"   T1 频率 {t1_per_day:.1f}/天偏高，建议把 PH_LAMBDA 从 10 升到 20")
+        print(f"   T1 频率 {t1_per_day:.1f}/天偏高，建议把 PH_LAMBDA 从 {PH_LAMBDA:g} 升到 {PH_LAMBDA * 2:g}")
     elif t1_per_day < 3:
-        print(f"   T1 频率 {t1_per_day:.1f}/天偏低，建议把 PH_LAMBDA 从 10 降到 5")
+        print(f"   T1 频率 {t1_per_day:.1f}/天偏低，建议把 PH_LAMBDA 从 {PH_LAMBDA:g} 降到 {PH_LAMBDA / 2:g}")
     else:
-        print(f"   T1 频率 {t1_per_day:.1f}/天在合理区间 (3-20)，PH_LAMBDA 保持 10")
+        print(f"   T1 频率 {t1_per_day:.1f}/天在合理区间 (3-20)，PH_LAMBDA 保持 {PH_LAMBDA:g}")
 
     if t1_acc < 60 and len(t1) >= 5:
         # 看常见假阳性 concept

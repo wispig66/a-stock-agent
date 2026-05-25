@@ -34,7 +34,9 @@ def test_load_today_watchlist_prefers_decision_tickets(monkeypatch, tmp_path):
             "faction": "A",
             "entry_low": 10.0,
             "entry_high": 10.3,
+            "max_chase_price": 10.4,
             "stop_price": 9.7,
+            "deadline_time": "10:30",
             "size_pct": 20,
         },
     ])
@@ -50,10 +52,11 @@ def test_load_today_watchlist_prefers_decision_tickets(monkeypatch, tmp_path):
         "buy": 10.3,
         "entry_low": 10.0,
         "entry_high": 10.3,
-        "max_chase_price": None,
+        "max_chase_price": 10.4,
         "stop_loss": 9.7,
-        "deadline_time": None,
+        "deadline_time": "10:30",
         "position_max_pct": 20,
+        "status": "pending",
         "thesis": None,
     }]
 
@@ -69,6 +72,8 @@ def test_watch_loop_ambush_alerts_only_inside_low_absorb_zone():
             "entry_low": 8.8,
             "entry_high": 9.1,
             "stop_loss": 8.5,
+            "deadline_time": "10:30",
+            "position_max_pct": 10,
         },
     }
 
@@ -87,3 +92,95 @@ def test_watch_loop_ambush_alerts_only_inside_low_absorb_zone():
 
     assert any(kind == "ambush_zone" for kind, _ in inside)
     assert not any(kind in {"ambush_zone", "watch_trigger"} for kind, _ in chased)
+    assert "✅ 可下单信号" in inside[0][1]
+    assert "仓位" in inside[0][1]
+    assert "止损" in inside[0][1]
+    assert "截止" in inside[0][1]
+
+
+def test_watch_loop_backup_waits_until_main_deadline_passes():
+    watch_map = {
+        "600000": {
+            "code": "600000",
+            "name": "主攻",
+            "genre": "A",
+            "lane": "main",
+            "buy": 10.3,
+            "entry_low": 10.0,
+            "entry_high": 10.3,
+            "max_chase_price": 10.4,
+            "stop_loss": 9.7,
+            "deadline_time": "10:30",
+            "position_max_pct": 20,
+        },
+        "000001": {
+            "code": "000001",
+            "name": "备选",
+            "genre": "A",
+            "lane": "backup",
+            "buy": 8.8,
+            "entry_low": 8.6,
+            "entry_high": 8.8,
+            "max_chase_price": 9.0,
+            "stop_loss": 8.4,
+            "deadline_time": "10:30",
+            "position_max_pct": 20,
+        },
+    }
+
+    before = watch_loop.evaluate(
+        {"代码": "000001", "名称": "备选", "最新价": 8.85, "涨跌幅": 3.0, "量比": 1.0},
+        watch_map=watch_map,
+        hold_map={},
+        today=date(2026, 5, 19),
+        now=watch_loop.datetime(2026, 5, 19, 10, 0),
+    )
+    after = watch_loop.evaluate(
+        {"代码": "000001", "名称": "备选", "最新价": 8.85, "涨跌幅": 3.0, "量比": 1.0},
+        watch_map=watch_map,
+        hold_map={},
+        today=date(2026, 5, 19),
+        now=watch_loop.datetime(2026, 5, 19, 10, 31),
+    )
+
+    assert any(kind == "backup_wait" for kind, _ in before)
+    assert not any(kind == "watch_trigger" for kind, _ in before)
+    assert any(kind == "watch_trigger" for kind, _ in after)
+    assert "✅ 可下单信号" in next(msg for kind, msg in after if kind == "watch_trigger")
+
+
+def test_watch_loop_backup_does_not_trigger_after_main_already_triggered():
+    watch_map = {
+        "600000": {
+            "code": "600000",
+            "name": "主攻",
+            "genre": "A",
+            "lane": "main",
+            "deadline_time": "10:30",
+            "status": "triggered",
+        },
+        "000001": {
+            "code": "000001",
+            "name": "备选",
+            "genre": "A",
+            "lane": "backup",
+            "buy": 8.8,
+            "entry_low": 8.6,
+            "entry_high": 8.8,
+            "max_chase_price": 9.0,
+            "stop_loss": 8.4,
+            "deadline_time": "10:30",
+            "position_max_pct": 20,
+        },
+    }
+
+    alerts = watch_loop.evaluate(
+        {"代码": "000001", "名称": "备选", "最新价": 8.85, "涨跌幅": 3.0, "量比": 1.0},
+        watch_map=watch_map,
+        hold_map={},
+        today=date(2026, 5, 19),
+        now=watch_loop.datetime(2026, 5, 19, 10, 45),
+    )
+
+    assert any(kind == "backup_wait" for kind, _ in alerts)
+    assert not any(kind == "watch_trigger" for kind, _ in alerts)

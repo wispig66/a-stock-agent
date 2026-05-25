@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+from stock_codex.apps import theme_emergence_loop as theme_loop  # noqa: E402
 from stock_codex.apps.theme_emergence_loop import (  # noqa: E402
     PageHinkley, Whitelist, map_to_concept, pick_candidates,
     load_whitelist, _norm_seal_time,
@@ -157,3 +158,51 @@ def test_pick_candidates_excludes_blown_followers():
     cands = pick_candidates("2026-05-18", "存储芯片", signals, now)
     codes = [c["code"] for c in cands]
     assert "002074" not in codes
+
+
+def _sample_signals() -> dict:
+    return {
+        "PH": True,
+        "cluster3": True,
+        "cluster_count": 3,
+        "first_seal_1030": True,
+        "second_board": False,
+        "first_leader": {"code": "301666", "name": "大普微"},
+        "first_seal_time": "10:00:00",
+        "members": [
+            {"code": "301666", "name": "大普微", "first_seal_time": "10:00:00", "open_count": 0},
+        ],
+    }
+
+
+def test_push_level_t2_suppresses_t1_and_pushes_t2(monkeypatch):
+    sent = []
+    monkeypatch.setattr(theme_loop, "PUSH_LEVEL", "t2")
+    monkeypatch.setattr(theme_loop, "push", lambda text, source: sent.append((text, source)))
+    now = datetime(2026, 5, 18, 10, 20)
+
+    theme_loop.push_t1_card("存储芯片", _sample_signals(), now)
+    assert sent == []
+
+    theme_loop.push_t2_card(
+        "存储芯片",
+        _sample_signals(),
+        [{"code": "301666", "name": "大普微", "discipline_type": "A", "action_window": "before_1030"}],
+        now,
+    )
+
+    assert len(sent) == 1
+    assert "主线确认" in sent[0][0]
+    assert sent[0][1] == "theme-loop"
+
+
+def test_push_t2_after_safe_window_is_observation_not_order_signal(monkeypatch):
+    sent = []
+    monkeypatch.setattr(theme_loop, "PUSH_LEVEL", "t2")
+    monkeypatch.setattr(theme_loop, "push", lambda text, source: sent.append(text))
+
+    theme_loop.push_t2_card("存储芯片", _sample_signals(), [], datetime(2026, 5, 18, 14, 30))
+
+    assert len(sent) == 1
+    assert "无盘中可下单候选" in sent[0]
+    assert "✅ 可下单信号" not in sent[0]

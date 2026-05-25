@@ -18,7 +18,7 @@
 用法：
   uv run theme_emergence_loop.py
   uv run theme_emergence_loop.py --once
-  uv run theme_emergence_loop.py --interval 60
+  uv run theme_emergence_loop.py --interval 60 --push-level=t2
 """
 
 from __future__ import annotations
@@ -49,8 +49,8 @@ DEFAULT_INTERVAL = 60
 
 # PH 参数（首版起点，calibration 后调）
 # 喂入是每 tick 该题材的事件计数（0/1/2/3...），lambda 表示累积值偏离 baseline 的阈值
-# 10 ≈ "短期内 ~10-20 个事件超出基线"。Day 3 看 T1 频次再调
-PH_LAMBDA = 10.0
+# 5 ≈ "短期内 ~5-10 个事件超出基线"。T1 只审计，T2 才推送，优先降低发现延迟
+PH_LAMBDA = 5.0
 PH_DELTA = 0.05
 PH_MIN_SAMPLES = 20
 
@@ -59,14 +59,14 @@ CLUSTER_WINDOW_MIN = 30
 CLUSTER_THRESHOLD = 3
 
 # T2 反身性保护
-T2_PERSISTENCE_MIN = 30   # T1 持续 30min 才能升 T2
+T2_PERSISTENCE_MIN = 10   # T1 持续 10min 才能升 T2，避免确认过晚
 T2_MIN_SIGNALS = 2        # 至少 2 个独立信号
 
 # 异动 symbol 订阅（与 anomaly_loop 一致）
 ANOMALY_SYMBOLS = ["火箭发射", "封涨停板", "打开涨停板", "60日新高"]
 
-# Shadow 模式 flag（push_t1_card/push_t2_card 检查此 flag 决定是否真推 TG）
-SHADOW = False
+# 推送级别：shadow 只审计；t2 只推主线确认；all 推 T1+T2。
+PUSH_LEVEL = "t2"
 
 # PH 状态保存节流（每 N tick 才存一次，避免每 60s 一次的高频写库）
 SAVE_PH_EVERY_N_TICKS = 5
@@ -376,44 +376,55 @@ def log_emergence(today: str, concept: str, level: str, signals: dict,
 
 
 def push_t1_card(concept: str, signals: dict, now: datetime):
-    prefix = "[SHADOW] " if SHADOW else ""
+    prefix = "[SHADOW] " if PUSH_LEVEL == "shadow" else ""
     lines = [f"{prefix}🟡 主线浮现 · 候选 · {now.strftime('%H:%M')}", "━━━━━━━━━━━━━━",
              f"🏷️ 题材：{concept}",
              f"📊 信号：PH 漂移 + 同板块 30min 内 ≥{signals['cluster_count']} 只涨停"]
     for m in (signals.get("members") or [])[:5]:
         lines.append(f"   - {m['name']} {m['code']} "
                      f"{m['first_seal_time'] or '盘中'}{'封板' if (m['open_count'] or 0) == 0 else f' (炸板{m['open_count']}次)'}")
-    lines += ["", "⏳ T2 确认条件：再持续 30min 或追加信号",
+    lines += ["", f"⏳ T2 确认条件：再持续 {T2_PERSISTENCE_MIN}min 或追加信号",
               "👀 已列入观察，未生成买点（避免追高）"]
     text = "\n".join(lines)
-    if SHADOW:
-        log.info("[SHADOW push T1 %s] %s", concept, text[:100])
+    if not _should_push("T1"):
+        log.info("[%s push T1 %s] %s", PUSH_LEVEL.upper(), concept, text[:100])
         return
     push(text, source="theme-loop")
 
 
 def push_t2_card(concept: str, signals: dict, candidates: list[dict], now: datetime):
     sig = signals
-    prefix = "[SHADOW] " if SHADOW else ""
+    prefix = "[SHADOW] " if PUSH_LEVEL == "shadow" else ""
     lines = [f"{prefix}🚨 主线确认 · {concept} · {now.strftime('%H:%M')}",
              "━━━━━━━━━━━━━━", "📊 信号命中:",
              f"   {'✅' if sig['PH'] else '⚪'} PH 漂移检测",
              f"   {'✅' if sig['cluster3'] else '⚪'} 30min 涨停 ≥3（实测 {sig['cluster_count']} 只）",
              f"   {'✅' if sig['first_seal_1030'] else '⚪'} 首封龙头 ≤10:30 不炸板"
              + (f"（{sig['first_leader']['name']} {sig['first_seal_time']}）" if sig.get('first_leader') else ""),
-             f"   {'✅' if sig['second_board'] else '⚪'} 板块内已现 2 连板",
-             "", "🎯 候选（已写入动态观察池）："]
-    for i, c in enumerate(candidates, 1):
-        lines.append(f"{i}. {c['name']} {c['code']} [{c['discipline_type']}派·窗口 {c['action_window']}]")
-        if c.get("entry_price"):
-            lines.append(f"   买点 {c['entry_price']:.2f} / 止损 {c['stop_price']:.2f} / 止盈 +{c['target_pct']:.1f}%")
-        lines.append(f"   仓位：≤{c.get('size_cap', 25)}%")
+             f"   {'✅' if sig['second_board'] else '⚪'} 板块内已现 2 连板"]
+    if candidates:
+        lines += ["", "🎯 候选（已写入动态观察池，等待后续可下单条件）："]
+        for i, c in enumerate(candidates, 1):
+            lines.append(f"{i}. {c['name']} {c['code']} [{c['discipline_type']}派·窗口 {c['action_window']}]")
+            if c.get("entry_price"):
+                lines.append(f"   买点 {c['entry_price']:.2f} / 止损 {c['stop_price']:.2f} / 止盈 +{c['target_pct']:.1f}%")
+            lines.append(f"   仓位：≤{c.get('size_cap', 25)}%")
+    else:
+        lines += ["", "📌 无盘中可下单候选：已过安全买入窗口或缺少可执行买点，记录主线，明日 L1 复核"]
     lines += ["", "📌 下次 intraday 时点强制复核"]
     text = "\n".join(lines)
-    if SHADOW:
-        log.info("[SHADOW push T2 %s] %s", concept, text[:100])
+    if not _should_push("T2"):
+        log.info("[%s push T2 %s] %s", PUSH_LEVEL.upper(), concept, text[:100])
         return
     push(text, source="theme-loop")
+
+
+def _should_push(level: str) -> bool:
+    if PUSH_LEVEL == "shadow":
+        return False
+    if PUSH_LEVEL == "all":
+        return True
+    return PUSH_LEVEL == "t2" and level == "T2"
 
 
 def pick_candidates(today: str, concept: str, signals: dict, now: datetime) -> list[dict]:
@@ -522,7 +533,7 @@ def main_tick(now: datetime, today: str, wl: Whitelist,
     pool = fetch_zt_pool(today)
     if not rows and not pool:
         state["consecutive_failures"] += 1
-        if state["consecutive_failures"] == 5 and not SHADOW:
+        if state["consecutive_failures"] == 5 and PUSH_LEVEL != "shadow":
             push(f"⚠️ theme_loop 数据源连续 5 tick 失联 · {now.strftime('%H:%M')}", source="theme-loop")
         return
     state["consecutive_failures"] = 0
@@ -595,20 +606,22 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
+    parser.add_argument("--push-level", choices=["shadow", "t2", "all"], default="t2",
+                        help="推送级别：shadow 只写日志；t2 只推主线确认；all 推 T1+T2")
     parser.add_argument("--shadow", action="store_true",
-                        help="影子模式：只写日志，不推送 TG（卡片头会标 [SHADOW]）")
+                        help="兼容旧参数：等同 --push-level=shadow")
     args = parser.parse_args()
 
-    global SHADOW
-    SHADOW = args.shadow
+    global PUSH_LEVEL
+    PUSH_LEVEL = "shadow" if args.shadow else args.push_level
 
     wl = load_whitelist()
     detectors: dict[str, PageHinkley] = {}
     state = {"consecutive_failures": 0, "tick_count": 0}
     today = datetime.now().strftime("%Y-%m-%d")
     load_ph_state(today, detectors)
-    log.warning("theme_emergence_loop 启动 · interval=%ds · SHADOW=%s · 题材=%d",
-                args.interval, SHADOW, len(wl))
+    log.warning("theme_emergence_loop 启动 · interval=%ds · push_level=%s · 题材=%d",
+                args.interval, PUSH_LEVEL, len(wl))
 
     if args.once:
         main_tick(datetime.now(), today, wl, detectors, state)

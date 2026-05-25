@@ -33,12 +33,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fetch_realtime import load_today_watchlist, load_holdings, fetch_spot  # noqa: E402
 from stock_codex.infra.notify import push  # noqa: E402
 from stock_codex.infra.logger import get_logger, init_req_id_from_env  # noqa: E402
+from stock_codex.domain import decision as decision_lib  # noqa: E402
 
 init_req_id_from_env()
 log = get_logger("watch_loop")
 
 RAW_DIR = ROOT / "data" / "watch_raw"
 SNAPSHOT_DIR = ROOT / "data" / "holdings_snapshot"
+DB = ROOT / "data" / "daily.db"
 
 
 SESSION_AM = (dtime(9, 31), dtime(11, 29))
@@ -63,6 +65,7 @@ def evaluate(
     watch_map: dict,
     hold_map: dict,
     today: date | None = None,
+    now: datetime | None = None,
 ) -> list[tuple[str, str]]:
     """对单只票，返回 [(alert_kind, message)] 列表。
 
@@ -80,6 +83,8 @@ def evaluate(
 
     if today is None:
         today = date.today()
+    if now is None:
+        now = datetime.now()
 
     alerts: list[tuple[str, str]] = []
     h = hold_map.get(code)
@@ -135,14 +140,61 @@ def evaluate(
             if entry_low and entry_high and entry_low <= price <= entry_high:
                 alerts.append((
                     "ambush_zone",
-                    f"🟡 潜伏低吸区 · {code} {name} [E] · 现价 {price} 在 {entry_low}-{entry_high} 内 · 小仓试错，不追高",
+                    _actionable_message(code, name, w, price, pct, "低吸区"),
                 ))
         elif buy and price >= buy and price <= (w.get("max_chase_price") or buy * 1.03) and pct < 9.8:
-            alerts.append(("watch_trigger", f"🚀 观察池触发买点 · {code} {name} [{w.get('genre')}] · 现价 {price} ≥ 买点 {buy}（{pct}%）"))
+            if lane == "backup" and not _backup_can_trigger(watch_map, now):
+                alerts.append((
+                    "backup_wait",
+                    f"👀 仅观察 · {code} {name} [{w.get('genre')}] · 已到备选买点 {buy}，但主攻未过截止时间，暂不下单",
+                ))
+            else:
+                alerts.append(("watch_trigger", _actionable_message(code, name, w, price, pct, "触发买点")))
         if pct >= 9.8:
-            alerts.append(("watch_zt", f"✅ 观察池封板 · {code} {name} [{w.get('genre')}] · {pct}% 已涨停"))
+            if lane == "backup" and not _backup_can_trigger(watch_map, now):
+                alerts.append(("watch_zt_observe", f"👀 仅观察封板 · {code} {name} [{w.get('genre')}] · {pct}% 已涨停；主攻未过截止时间，不追备选"))
+            else:
+                alerts.append(("watch_zt", f"✅ 观察池封板 · {code} {name} [{w.get('genre')}] · {pct}% 已涨停"))
 
     return alerts
+
+
+def _actionable_message(code: str, name: str, w: dict, price: float, pct: float, reason: str) -> str:
+    entry_low = w.get("entry_low")
+    entry_high = w.get("entry_high")
+    max_chase = w.get("max_chase_price")
+    stop = w.get("stop_loss")
+    deadline = w.get("deadline_time")
+    size = w.get("position_max_pct")
+    zone = f"{entry_low}-{entry_high}" if entry_low is not None and entry_high is not None else str(w.get("buy"))
+    chase = f"；最多追价 {max_chase}" if max_chase is not None else ""
+    return (
+        f"✅ 可下单信号 · {code} {name} [{w.get('genre')}] · {reason} · "
+        f"现价 {price}（{pct}%）· 触发价/区间 {zone}{chase} · "
+        f"仓位 ≤{size}% · 止损 {stop} · 截止 {deadline}"
+    )
+
+
+def _backup_can_trigger(watch_map: dict, now: datetime) -> bool:
+    mains = [w for w in watch_map.values() if w.get("lane") == "main"]
+    if not mains:
+        return True
+    if any(w.get("status") in {"triggered", "bought"} for w in mains):
+        return False
+    return all(_deadline_passed(w.get("deadline_time"), now) for w in mains)
+
+
+def _deadline_passed(deadline: str | None, now: datetime) -> bool:
+    if not deadline:
+        return False
+    try:
+        if len(deadline) <= 5 and ":" in deadline:
+            parts = [int(p) for p in deadline.split(":")]
+            hour, minute = parts[0], parts[1]
+            return now.time() >= dtime(hour, minute)
+        return date.fromisoformat(deadline) <= now.date()
+    except (TypeError, ValueError):
+        return False
 
 
 def _is_locked(h: dict, today: date) -> bool:
@@ -237,12 +289,27 @@ def main():
                 key = alert_key(row["代码"], kind)
                 if key in sent:
                     continue
-                sent.add(key)
+                pushed = False
                 try:
-                    r = push(f"⏱️ [{now.strftime('%H:%M')}] {msg}", source="stock-intraday-watch")
-                    log.info("PUSH %s msg_id=%s", key, r["result"]["message_id"])
+                    push_result = push(f"⏱️ [{now.strftime('%H:%M')}] {msg}", source="stock-intraday-watch")
+                    pushed = True
+                    sent.add(key)
+                    msg_id = (push_result.get("result") or {}).get("message_id") if isinstance(push_result, dict) else None
+                    log.info("PUSH %s msg_id=%s", key, msg_id)
                 except Exception:
                     log.exception("push 失败 %s", key)
+                if kind in {"watch_trigger", "ambush_zone"}:
+                    w = watch_map.get(row["代码"]) or {}
+                    lane = w.get("lane")
+                    if lane and pushed:
+                        try:
+                            updated = decision_lib.mark_ticket_status(
+                                DB, now.strftime("%Y-%m-%d"), row["代码"], lane, "triggered"
+                            )
+                            if updated:
+                                w["status"] = "triggered"
+                        except Exception:
+                            log.exception("decision_tickets 状态回写失败 %s %s", row["代码"], lane)
 
         if args.once:
             return

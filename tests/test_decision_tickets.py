@@ -106,7 +106,9 @@ def test_watchlist_compat_exposes_only_actionable_lanes(tmp_path):
             "faction": "A",
             "entry_low": 10.0,
             "entry_high": 10.3,
+            "max_chase_price": 10.4,
             "stop_price": 9.7,
+            "deadline_time": "10:30",
             "size_pct": 20,
         },
         {
@@ -118,6 +120,7 @@ def test_watchlist_compat_exposes_only_actionable_lanes(tmp_path):
             "entry_low": 8.8,
             "entry_high": 9.1,
             "stop_price": 8.5,
+            "deadline_time": "2026-05-24",
             "size_pct": 10,
         },
         {
@@ -134,6 +137,7 @@ def test_watchlist_compat_exposes_only_actionable_lanes(tmp_path):
 
     assert [w["code"] for w in compat] == ["600000", "000001"]
     assert compat[0]["buy"] == 10.3
+    assert compat[0]["status"] == "pending"
     assert compat[1]["buy"] == 8.8
     assert compat[1]["entry_high"] == 9.1
 
@@ -153,7 +157,10 @@ def test_parse_decision_block_from_card():
       "faction": "A",
       "entry_low": 10.0,
       "entry_high": 10.3,
+      "max_chase_price": 10.4,
       "stop_price": 9.7,
+      "deadline_time": "10:30",
+      "size_pct": 20,
       "evidence": {"limit_up_count": 3}
     }
   ]
@@ -167,3 +174,57 @@ def test_parse_decision_block_from_card():
     assert tickets[0]["trade_date"] == "2026-05-19"
     assert tickets[0]["lane"] == "main"
     assert tickets[0]["evidence"] == {"limit_up_count": 3}
+
+
+def test_validate_tickets_rejects_incomplete_actionable_tickets(tmp_path):
+    db = make_db(tmp_path)
+    with pytest.raises(ValueError, match="main 缺少可执行字段"):
+        decision.replace_tickets(db, "2026-05-19", [
+            {
+                "trade_date": "2026-05-19",
+                "code": "600000",
+                "name": "浦发银行",
+                "lane": "main",
+                "faction": "A",
+                "action": "buy_if",
+                "entry_low": 10.0,
+                "entry_high": 10.3,
+                "stop_price": 9.7,
+                "size_pct": 20,
+            },
+        ])
+
+    with pytest.raises(ValueError, match="backup 缺少可执行字段"):
+        decision.replace_tickets(db, "2026-05-19", [
+            {
+                "trade_date": "2026-05-19",
+                "code": "000001",
+                "name": "备选",
+                "lane": "backup",
+                "faction": "A",
+            },
+        ])
+
+
+def test_mark_ticket_status_updates_existing_ticket(tmp_path):
+    db = make_db(tmp_path)
+    decision.replace_tickets(db, "2026-05-19", [
+        {
+            "trade_date": "2026-05-19",
+            "code": "000001",
+            "name": "平安银行",
+            "lane": "ambush",
+            "faction": "E",
+            "action": "buy_if",
+            "entry_low": 8.8,
+            "entry_high": 9.1,
+            "stop_price": 8.5,
+            "deadline_time": "2026-05-24",
+            "size_pct": 10,
+        },
+    ])
+
+    assert decision.mark_ticket_status(db, "2026-05-19", "000001", "ambush", "triggered") is True
+    loaded = decision.load_tickets(db, "2026-05-19")
+
+    assert loaded[0]["status"] == "triggered"

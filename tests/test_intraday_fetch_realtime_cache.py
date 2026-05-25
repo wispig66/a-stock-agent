@@ -88,7 +88,7 @@ def test_allowed_marks_cached_structural_sources(tmp_path, monkeypatch) -> None:
         zb=pd.DataFrame(),
         cc=pd.DataFrame(),
         now=datetime(2026, 5, 21, 14, 31, 0),
-        label="全日（14:30）",
+        label="尾盘快照（14:30）",
     )
 
     assert allowed["summary"]["limit_up"] == 1

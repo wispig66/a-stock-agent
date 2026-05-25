@@ -3,8 +3,9 @@
 # 建议 09:25 由 launchd 触发；自动结束于 15:00。
 #
 # 用法：
-#   bash run_theme_loop.sh             # 正常推送
-#   bash run_theme_loop.sh --shadow    # 影子模式（只写日志不推 TG）
+#   bash run_theme_loop.sh                         # 只推 T2 主线确认
+#   bash run_theme_loop.sh --push-level=all        # 推 T1 + T2
+#   bash run_theme_loop.sh --push-level=shadow     # 影子模式（只写日志不推 TG）
 
 set -e
 cd "$(dirname "$0")/.."

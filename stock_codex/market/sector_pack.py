@@ -164,12 +164,19 @@ def _fetch_sentiment_panel(sector: str) -> dict:
 def _fetch_news_panel(sector: str) -> dict:
     """ths_hot_reason 近 10 日命中该题材的 reason Top 5，每条标利好/中性/利空。
     tone 由卡片合成层 (SKILL.md) 用 LLM 补；本函数固定 '中性'。"""
-    since = (date.today() - timedelta(days=10)).isoformat()
     with sqlite3.connect(DB) as conn:
+        anchor = _latest_table_date(
+            conn,
+            "ths_hot_reason",
+            "reason LIKE ?",
+            (f"%{sector}%",),
+        )
+        since, as_of = _window_start_from_anchor(anchor, 10)
         rows = conn.execute(
-            "SELECT date, reason FROM ths_hot_reason WHERE date >= ? AND reason LIKE ? "
+            "SELECT date, reason FROM ths_hot_reason "
+            "WHERE date >= ? AND date <= ? AND reason LIKE ? "
             "ORDER BY date DESC LIMIT 5",
-            (since, f"%{sector}%"),
+            (since, as_of, f"%{sector}%"),
         ).fetchall()
     return {
         "top_news": [
