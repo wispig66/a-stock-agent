@@ -97,6 +97,20 @@ def fetch_qs(date: str) -> pd.DataFrame:
     )
 
 
+def fetch_spot_snapshot(date: str) -> pd.DataFrame:
+    """全市场收盘快照。只做 decision-review Plan B，不参与 fact pack 结构断言。"""
+    cols_keep = ["代码", "名称", "最新价", "涨跌幅", "最高", "最低", "今开", "换手率", "成交额"]
+
+    def _fetch() -> pd.DataFrame:
+        df = ak.stock_zh_a_spot_em()
+        if df is None or df.empty:
+            return pd.DataFrame()
+        cols = [c for c in cols_keep if c in df.columns]
+        return df[cols].copy()
+
+    return _fetch_structured_table(label="全市场 spot", cache_name="spot", date=date, fetcher=_fetch)
+
+
 def _cache_path(date: str, cache_name: str) -> Path:
     return CACHE_DIR / f"{date}_{cache_name}.json"
 
@@ -666,6 +680,11 @@ def main():
     qs = fetch_qs(date)  # 注意：strong_em 是今日强势股，做晋级率用昨日数据更准，这里先粗略
     log(f"涨停 {len(zt)} 跌停 {len(zd)} 炸板 {len(zb)} 强势池 {len(qs)}")
     assert_structural_data_available(zt=zt, zd=zd, zb=zb, qs=qs)
+    spot = fetch_spot_snapshot(date)
+    if spot.empty:
+        log("全市场 spot 快照缺失；decision-review 将回退 watch_raw/结构缓存/实时接口")
+    else:
+        log(f"全市场 spot 快照 {len(spot)} 条")
 
     sent = compute_sentiment(date, zt, zd, zb, qs)
     log(f"phase={sent['phase']} max_consec={sent['max_consec']}")

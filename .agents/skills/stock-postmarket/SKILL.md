@@ -89,7 +89,7 @@ L4 盘后复盘。**两个核心职责**：
 .venv/bin/python -m stock_codex.tools.review decision-review
 ```
 
-输出 markdown 表 + 决策评分（主攻是否触发、潜伏是否触达低吸区、禁买是否规避风险），直接粘进卡片 Step 4 的复盘段。
+输出 markdown 表 + 决策评分（主攻是否触发、潜伏是否触达低吸区、禁买是否规避风险），直接粘进卡片 Step 4 的复盘段。该命令默认 `--source auto`，按 `盘后 spot 缓存 → watch_raw → 盘后结构缓存/allowed → akshare 实时接口` 降级，不要因为实时接口短暂不可用改成手动复盘。
 
 如果 `decision-review` 报"未找到 decision_tickets"，才回退旧观察池复盘：
 
@@ -107,7 +107,7 @@ L4 盘后复盘。**两个核心职责**：
 | 💥 跌破止损 | 低 ≤ 止损价 | 必须已止损出 |
 | ✅/⚪/❌ MA5派 | 按今日涨跌幅分档 | 派别 B/D 无固定买点，看强弱 |
 
-若 review.py 报"未找到今日 premarket 推送"或"解析出 0 只"，回退手动：先 `sqlite3 data/daily.db "SELECT text FROM push_log WHERE source='stock-premarket' ORDER BY id DESC LIMIT 1"` 看推送，再用 akshare `stock_zh_a_spot_em()` 手查代码。回退后必须把失败样本贴给开发者改正则。
+若 review.py 报"未找到今日 premarket 推送"或"解析出 0 只"，回退手动：先 `sqlite3 data/daily.db "SELECT text FROM push_log WHERE source='stock-premarket' ORDER BY id DESC LIMIT 1"` 看推送，再查 `data/postmarket_cache/YYYYMMDD_spot.json` 或 `data/watch_raw/YYYYMMDD.jsonl`。回退后必须把失败样本贴给开发者改正则。
 
 > ⚠️ push_log 表的时间列是 `timestamp` ISO 8601 字符串（**不是** `ts` / `created_at`）；若想按今日过滤用 `WHERE date(timestamp)='YYYY-MM-DD'`，而不是 `date(ts,'localtime')` —— 后者直接报错。schema 完整字段见 `stock_codex/schema/init_db.sql` 或 `.schema push_log`。
 

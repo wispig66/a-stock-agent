@@ -15,9 +15,19 @@ import json
 import re
 import sqlite3
 import sys
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+
 from stock_codex.infra.db import connect as db_connect
 from stock_codex.domain.decision import load_tickets
-from stock_codex.paths import DB_FILE as DB
+from stock_codex.paths import DATA_DIR, DB_FILE as DB
+
+POSTMARKET_CACHE_DIR = DATA_DIR / "postmarket_cache"
+WATCH_RAW_DIR = DATA_DIR / "watch_raw"
+ALLOWED_POSTMARKET = DATA_DIR / "allowed_latest_stock-postmarket.json"
+SPOT_COLUMNS = ["代码", "名称", "最新价", "涨跌幅", "最高", "最低", "今开", "换手率", "成交额"]
 
 REVIEW_STATS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS review_stats (
@@ -45,6 +55,233 @@ POS_RE = re.compile(r"首仓\s*[≤<]?\s*(\d+)\s*%")
 GENRE_RE = re.compile(r"\[([^\]]+)\]")
 
 SECTION_BREAK_PREFIX = ("📰", "⚠️", "---", "🎯", "🔥", "🌡️", "📋", "本系统", "fact pack")
+
+
+class ReviewDataUnavailable(RuntimeError):
+    pass
+
+
+def _iso_to_ymd(value: str) -> str:
+    return value.replace("-", "")
+
+
+def _clean_code(value) -> str:
+    return str(value).strip().zfill(6)
+
+
+def _num(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_value(value) -> bool:
+    if value is None:
+        return False
+    try:
+        return not pd.isna(value)
+    except TypeError:
+        return True
+
+
+def _read_split_cache(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    data = payload.get("data") or {}
+    df = pd.DataFrame(data.get("data") or [], columns=data.get("columns") or [])
+    if not df.empty:
+        df.attrs["snapshot_at"] = payload.get("cached_at")
+    return _normalize_spot_df(df)
+
+
+def _normalize_spot_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "代码" not in df.columns:
+        return pd.DataFrame()
+    out = df.copy()
+    out["代码"] = out["代码"].map(_clean_code)
+    cols = [c for c in SPOT_COLUMNS if c in out.columns]
+    return out[cols].reset_index(drop=True)
+
+
+def _load_spot_cache(review_date: str, codes: list[str]) -> pd.DataFrame:
+    path = POSTMARKET_CACHE_DIR / f"{_iso_to_ymd(review_date)}_spot.json"
+    df = _read_split_cache(path)
+    if df.empty:
+        return df
+    df = df[df["代码"].isin(codes)].copy()
+    df.attrs["review_source"] = f"spot-cache:{path.name}"
+    return df
+
+
+def _load_watch_raw(review_date: str, codes: list[str]) -> pd.DataFrame:
+    path = WATCH_RAW_DIR / f"{_iso_to_ymd(review_date)}.jsonl"
+    if not path.exists():
+        return pd.DataFrame()
+    wanted = set(codes)
+    agg: dict[str, dict] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        code = _clean_code(rec.get("代码"))
+        if code not in wanted:
+            continue
+        row = agg.setdefault(code, {"代码": code, "名称": rec.get("名称")})
+        high = _num(rec.get("最高"))
+        low = _num(rec.get("最低"))
+        if high is not None:
+            row["最高"] = max(_num(row.get("最高")) or high, high)
+        if low is not None:
+            prev_low = _num(row.get("最低"))
+            row["最低"] = min(prev_low if prev_low is not None else low, low)
+        if str(rec.get("round_ts") or "") >= str(row.get("_round_ts") or ""):
+            row["_round_ts"] = rec.get("round_ts")
+            row["最新价"] = _num(rec.get("最新价"))
+            row["涨跌幅"] = _num(rec.get("涨跌幅"))
+            row["今开"] = _num(rec.get("今开"))
+            row["换手率"] = _num(rec.get("换手率"))
+            row["成交额"] = _num(rec.get("成交额"))
+    rows = [{k: v for k, v in row.items() if k != "_round_ts"} for row in agg.values()]
+    df = _normalize_spot_df(pd.DataFrame(rows))
+    if not df.empty:
+        df.attrs["review_source"] = f"watch-raw:{path.name}"
+    return df
+
+
+def _load_structural_or_allowed(review_date: str, codes: list[str]) -> pd.DataFrame:
+    wanted = set(codes)
+    rows: dict[str, dict] = {}
+    ymd = _iso_to_ymd(review_date)
+    for cache_name in ("zt", "zd", "zb", "qs"):
+        df = _read_split_cache(POSTMARKET_CACHE_DIR / f"{ymd}_{cache_name}.json")
+        if df.empty:
+            continue
+        for row in df.to_dict("records"):
+            code = row.get("代码")
+            if code not in wanted:
+                continue
+            dest = rows.setdefault(code, {"代码": code})
+            for field in ("名称", "最新价", "涨跌幅", "换手率", "成交额"):
+                if not _has_value(dest.get(field)) and _has_value(row.get(field)):
+                    dest[field] = row.get(field)
+    if ALLOWED_POSTMARKET.exists():
+        allowed = json.loads(ALLOWED_POSTMARKET.read_text(encoding="utf-8"))
+        if (allowed.get("summary") or {}).get("date") == review_date:
+            for code in wanted:
+                name = (allowed.get("codes") or {}).get(code)
+                pct = (allowed.get("pct") or {}).get(code)
+                if name is None and pct is None:
+                    continue
+                dest = rows.setdefault(code, {"代码": code})
+                if name and not _has_value(dest.get("名称")):
+                    dest["名称"] = name
+                if pct is not None and not _has_value(dest.get("涨跌幅")):
+                    dest["涨跌幅"] = pct
+    df = _normalize_spot_df(pd.DataFrame(rows.values()))
+    if not df.empty:
+        df.attrs["review_source"] = "postmarket-structural-partial"
+    return df
+
+
+def _load_akshare_spot(codes: list[str]) -> pd.DataFrame:
+    import akshare as ak
+    df = _normalize_spot_df(ak.stock_zh_a_spot_em())
+    if df.empty:
+        return df
+    df = df[df["代码"].isin(codes)].copy()
+    df.attrs["review_source"] = "akshare-live"
+    return df
+
+
+def _merge_spot_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    merged: dict[str, dict] = {}
+    sources: list[str] = []
+    for df in frames:
+        if df.empty:
+            continue
+        source = df.attrs.get("review_source")
+        if source and source not in sources:
+            sources.append(str(source))
+        for row in df.to_dict("records"):
+            code = row.get("代码")
+            if not code:
+                continue
+            dest = merged.setdefault(code, {"代码": code})
+            for field, value in row.items():
+                if not _has_value(dest.get(field)) and _has_value(value):
+                    dest[field] = value
+    out = _normalize_spot_df(pd.DataFrame(merged.values()))
+    out.attrs["review_source"] = " + ".join(sources)
+    return out
+
+
+def _has_full_coverage(df: pd.DataFrame, codes: list[str]) -> bool:
+    if df.empty:
+        return False
+    by_code = df.set_index("代码")
+    for code in codes:
+        if code not in by_code.index:
+            return False
+        row = by_code.loc[code]
+        for field in ("最新价", "涨跌幅", "最高", "最低"):
+            if field not in row or not _has_value(row[field]):
+                return False
+    return True
+
+
+def _has_any_coverage(df: pd.DataFrame, codes: list[str]) -> bool:
+    if df.empty:
+        return False
+    by_code = df.set_index("代码")
+    useful_fields = ("名称", "最新价", "涨跌幅", "最高", "最低")
+    for code in codes:
+        if code not in by_code.index:
+            return False
+        row = by_code.loc[code]
+        if not any(field in row and _has_value(row[field]) for field in useful_fields):
+            return False
+    return True
+
+
+def load_decision_review_spot(review_date: str, codes: list[str], source: str = "auto") -> pd.DataFrame:
+    codes = [_clean_code(code) for code in codes]
+    loaders = {
+        "spot-cache": lambda: _load_spot_cache(review_date, codes),
+        "watch-raw": lambda: _load_watch_raw(review_date, codes),
+        "postmarket-partial": lambda: _load_structural_or_allowed(review_date, codes),
+        "akshare": lambda: _load_akshare_spot(codes),
+    }
+    order = ["spot-cache", "watch-raw", "postmarket-partial", "akshare"] if source == "auto" else [source]
+    frames: list[pd.DataFrame] = []
+    errors: list[str] = []
+    for name in order:
+        try:
+            df = loaders[name]()
+            if not df.empty:
+                frames.append(df)
+                merged = _merge_spot_frames(frames)
+                if source != "auto" or _has_full_coverage(merged, codes):
+                    return merged
+                if name == "postmarket-partial" and _has_any_coverage(merged, codes):
+                    return merged
+        except Exception as exc:
+            errors.append(f"{name}: {type(exc).__name__}: {str(exc)[:120]}")
+    if frames:
+        return _merge_spot_frames(frames)
+    detail = "; ".join(errors) if errors else "no local cache matched"
+    raise ReviewDataUnavailable(f"decision-review 行情不可用（source={source}; {detail}）")
 
 
 def parse_premarket(text: str) -> list[dict]:
@@ -185,20 +422,34 @@ def review_decision_tickets(tickets: list[dict], spot_df) -> list[dict]:
             t["status"] = "无数据"
             continue
         row = sub.loc[code]
-        high = float(row["最高"])
-        low = float(row["最低"])
-        close = float(row["最新价"])
-        pct = float(row["涨跌幅"])
-        t.update({"high": high, "low": low, "close": close, "pct": pct})
+        high = _num(row.get("最高"))
+        low = _num(row.get("最低"))
+        close = _num(row.get("最新价"))
+        pct = _num(row.get("涨跌幅"))
+        if high is not None:
+            t["high"] = high
+        if low is not None:
+            t["low"] = low
+        if close is not None:
+            t["close"] = close
+        if pct is not None:
+            t["pct"] = pct
 
         lane = t.get("lane")
         stop = t.get("stop_price")
         entry_low = t.get("entry_low")
         entry_high = t.get("entry_high")
 
-        if stop is not None and low <= float(stop):
+        if lane == "ban":
+            t["status"] = "🚫 禁买后走强" if pct is not None and pct >= 5 else "✅ 禁买规避/无强信号"
+        elif high is None or low is None or close is None:
+            t["status"] = "行情不完整，无法判定触发"
+        elif stop is not None and low <= float(stop):
             t["status"] = "💥 跌破止损/失效"
         elif lane in {"main", "backup"}:
+            if entry_high is None:
+                t["status"] = "不可执行：缺少买点"
+                continue
             trigger = entry_high is not None and high >= float(entry_high)
             red = entry_high is not None and close >= float(entry_high)
             if trigger and red:
@@ -208,6 +459,9 @@ def review_decision_tickets(tickets: list[dict], spot_df) -> list[dict]:
             else:
                 t["status"] = "❌ 未触发"
         elif lane == "ambush":
+            if entry_low is None or entry_high is None:
+                t["status"] = "不可执行：缺少低吸区"
+                continue
             touched = (
                 entry_low is not None
                 and entry_high is not None
@@ -215,8 +469,6 @@ def review_decision_tickets(tickets: list[dict], spot_df) -> list[dict]:
                 and high >= float(entry_low)
             )
             t["status"] = "🟡 潜伏触达低吸区" if touched else "⏳ 潜伏未到低吸区"
-        elif lane == "ban":
-            t["status"] = "🚫 禁买后走强" if pct >= 5 else "✅ 禁买规避/无强信号"
         else:
             t["status"] = "未分类"
     return tickets
@@ -285,8 +537,11 @@ def render_markdown(reviewed: list[dict]) -> str:
     return "\n".join(out)
 
 
-def render_decision_markdown(reviewed: list[dict]) -> str:
-    out = [
+def render_decision_markdown(reviewed: list[dict], source_note: str | None = None) -> str:
+    out = []
+    if source_note:
+        out += [f"数据源：{source_note}", ""]
+    out += [
         "| lane | 代码 | 名称 | 派 | 区间/触发 | 今收 | 涨跌% | 状态 |",
         "|---|------|------|----|------|------|-------|------|",
     ]
@@ -323,23 +578,26 @@ def main():
     ap.add_argument("cmd", choices=["parse", "review", "decision-review"])
     ap.add_argument("--date", help="YYYY-MM-DD，默认今日")
     ap.add_argument("--format", choices=["json", "markdown"])
+    ap.add_argument("--source", choices=["auto", "spot-cache", "watch-raw", "postmarket-partial", "akshare"],
+                    default="auto", help="decision-review 行情来源，默认 auto 多级降级")
     ap.add_argument("--no-persist", action="store_true", help="review 子命令默认入 review_stats 表")
     args = ap.parse_args()
 
     if args.cmd == "decision-review":
-        import akshare as ak
-        from datetime import date
         rd = args.date or date.today().isoformat()
         tickets = load_tickets(DB, rd)
         if not tickets:
             sys.exit(f"[review] 未找到 {rd} 的 decision_tickets")
-        df = ak.stock_zh_a_spot_em()
+        try:
+            df = load_decision_review_spot(rd, [t["code"] for t in tickets], args.source)
+        except ReviewDataUnavailable as exc:
+            sys.exit(f"[review] {exc}")
         reviewed = review_decision_tickets(tickets, df)
         fmt = args.format or "markdown"
         if fmt == "json":
             print(json.dumps(reviewed, ensure_ascii=False, indent=2, default=str))
         else:
-            print(render_decision_markdown(reviewed))
+            print(render_decision_markdown(reviewed, df.attrs.get("review_source")))
         return
 
     row = fetch_premarket(args.date)
@@ -361,7 +619,6 @@ def main():
     else:
         reviewed = review_today(entries)
         if not args.no_persist:
-            from datetime import date
             rd = args.date or date.today().isoformat()
             n = persist_stats(reviewed, rd)
             print(f"[review] 写入 review_stats {n} 行（{rd}）", file=sys.stderr)

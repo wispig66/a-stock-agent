@@ -53,6 +53,26 @@ def test_structured_table_retries_then_caches_success(tmp_path, monkeypatch) -> 
     assert (tmp_path / "20260521_zt.json").exists()
 
 
+def test_spot_snapshot_caches_pruned_full_market_snapshot(tmp_path, monkeypatch) -> None:
+    fp = load_module()
+    monkeypatch.setattr(fp, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(fp, "datetime", FixedDatetime)
+    monkeypatch.setattr(
+        fp.ak,
+        "stock_zh_a_spot_em",
+        lambda: pd.DataFrame([
+            {"代码": "600000", "名称": "浦发银行", "最新价": 10.4, "涨跌幅": 3.0, "最高": 10.5, "最低": 9.9, "无关列": "x"},
+        ]),
+    )
+
+    df = fp.fetch_spot_snapshot("20260521")
+
+    assert df.to_dict("records") == [
+        {"代码": "600000", "名称": "浦发银行", "最新价": 10.4, "涨跌幅": 3.0, "最高": 10.5, "最低": 9.9},
+    ]
+    assert (tmp_path / "20260521_spot.json").exists()
+
+
 def test_structured_table_uses_same_day_cache_after_failures(tmp_path, monkeypatch) -> None:
     fp = load_module()
     monkeypatch.setattr(fp, "CACHE_DIR", tmp_path)
