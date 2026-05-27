@@ -3,6 +3,7 @@
 不打 akshare、不依赖本机 data/ 下的运行态文件。
 """
 from __future__ import annotations
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -79,7 +80,7 @@ def test_norm_seal_time_datetime_object():
 
 
 # ─── Concept whitelist ───
-def _load_sample_whitelist(tmp_path: Path, monkeypatch) -> Whitelist:
+def _load_sample_whitelist(tmp_path: Path, monkeypatch, *, init_ths_table: bool = True) -> Whitelist:
     whitelist = tmp_path / "concept_whitelist.yaml"
     whitelist.write_text(
         """
@@ -92,8 +93,12 @@ def _load_sample_whitelist(tmp_path: Path, monkeypatch) -> Whitelist:
 """.lstrip(),
         encoding="utf-8",
     )
+    db = tmp_path / "daily.db"
+    if init_ths_table:
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE ths_hot_reason (date TEXT, code TEXT, reason TEXT)")
     monkeypatch.setattr(theme_loop, "WHITELIST", whitelist)
-    monkeypatch.setattr(theme_loop, "DB", tmp_path / "daily.db")
+    monkeypatch.setattr(theme_loop, "DB", db)
     return load_whitelist()
 
 
@@ -111,6 +116,17 @@ def test_whitelist_keyword_fallback_on_name(tmp_path, monkeypatch):
 def test_whitelist_no_match_returns_none(tmp_path, monkeypatch):
     wl = _load_sample_whitelist(tmp_path, monkeypatch)
     assert map_to_concept("999999", "完全无关名字", "无关概念", wl) is None
+
+
+def test_load_whitelist_missing_ths_table_does_not_log_exception(tmp_path, monkeypatch):
+    sqlite3.connect(tmp_path / "daily.db").close()
+    exceptions = []
+    monkeypatch.setattr(theme_loop.log, "exception", lambda *args, **kwargs: exceptions.append(args))
+
+    wl = _load_sample_whitelist(tmp_path, monkeypatch, init_ths_table=False)
+
+    assert len(wl) == 2
+    assert exceptions == []
 
 
 def test_whitelist_uses_concept_cache():

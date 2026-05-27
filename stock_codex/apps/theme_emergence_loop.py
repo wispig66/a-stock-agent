@@ -161,18 +161,29 @@ def load_whitelist() -> Whitelist:
             code_idx[str(c).zfill(6)] = tag
         for kw in (conf or {}).get("keywords") or []:
             kw_idx.append((kw, tag))
-    # 从 ths_hot_reason 拉近 30 日 code → reason，作为 keyword 匹配的语料
+    # 从 ths_hot_reason 拉近 30 日 code → reason，作为 keyword 匹配的语料。
+    # 这只是增强匹配的可选缓存；新环境、测试库或未初始化 DB 可以没有这张表。
     concept_cache: dict[str, str] = {}
-    try:
-        with db_connect(DB) as conn:
-            cur = conn.execute(
-                """SELECT code, GROUP_CONCAT(reason, ' ') FROM ths_hot_reason
-                   WHERE date >= date('now', '-30 day')
-                   GROUP BY code""")
-            for code, reason in cur.fetchall():
-                concept_cache[str(code).zfill(6)] = reason or ""
-    except Exception:
-        log.exception("加载 ths_hot_reason 失败，concept_cache 为空")
+    if not DB.exists():
+        log.warning("daily.db 不存在，concept_cache 为空: %s", DB)
+    else:
+        try:
+            with db_connect(DB) as conn:
+                has_table = conn.execute(
+                    """SELECT 1 FROM sqlite_master
+                       WHERE type='table' AND name='ths_hot_reason'"""
+                ).fetchone()
+                if has_table:
+                    cur = conn.execute(
+                        """SELECT code, GROUP_CONCAT(reason, ' ') FROM ths_hot_reason
+                           WHERE date >= date('now', '-30 day')
+                           GROUP BY code""")
+                    for code, reason in cur.fetchall():
+                        concept_cache[str(code).zfill(6)] = reason or ""
+                else:
+                    log.warning("ths_hot_reason 表不存在，concept_cache 为空")
+        except Exception:
+            log.exception("加载 ths_hot_reason 失败，concept_cache 为空")
     log.info("白名单 %d 题材 / %d 成员 / %d 关键词 / cache %d 只股票",
              len(themes), len(code_idx), len(kw_idx), len(concept_cache))
     return Whitelist(themes, code_idx, kw_idx, concept_cache)
