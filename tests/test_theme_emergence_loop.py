@@ -1,9 +1,8 @@
 """theme_emergence_loop 核心逻辑 smoke test。
 
-不打 akshare、不读真实 DB（除 load_whitelist 会读 daily.db 的 ths_hot_reason）。
+不打 akshare、不依赖本机 data/ 下的运行态文件。
 """
 from __future__ import annotations
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -80,19 +79,37 @@ def test_norm_seal_time_datetime_object():
 
 
 # ─── Concept whitelist ───
-def test_whitelist_member_first():
-    wl = load_whitelist()
+def _load_sample_whitelist(tmp_path: Path, monkeypatch) -> Whitelist:
+    whitelist = tmp_path / "concept_whitelist.yaml"
+    whitelist.write_text(
+        """
+存储芯片:
+  keywords: [存储芯片, HBM]
+  members: [301666]
+人形机器人:
+  keywords: [人形机器人]
+  members: []
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(theme_loop, "WHITELIST", whitelist)
+    monkeypatch.setattr(theme_loop, "DB", tmp_path / "daily.db")
+    return load_whitelist()
+
+
+def test_whitelist_member_first(tmp_path, monkeypatch):
+    wl = _load_sample_whitelist(tmp_path, monkeypatch)
     assert map_to_concept("301666", "大普微", "", wl) == "存储芯片"
 
 
-def test_whitelist_keyword_fallback_on_name():
-    wl = load_whitelist()
+def test_whitelist_keyword_fallback_on_name(tmp_path, monkeypatch):
+    wl = _load_sample_whitelist(tmp_path, monkeypatch)
     tag = map_to_concept("999999", "未知人形机器人公司", "", wl)
     assert tag == "人形机器人"
 
 
-def test_whitelist_no_match_returns_none():
-    wl = load_whitelist()
+def test_whitelist_no_match_returns_none(tmp_path, monkeypatch):
+    wl = _load_sample_whitelist(tmp_path, monkeypatch)
     assert map_to_concept("999999", "完全无关名字", "无关概念", wl) is None
 
 
