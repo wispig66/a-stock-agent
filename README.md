@@ -132,6 +132,10 @@ Feishu 运行时特性：
 - 入站 message id 持久化去重，重启后仍避免重复处理
 - 群聊默认必须 @bot；私聊直接响应
 - Feishu v1 不做 streaming edit，只发送 ack + final，避免刷屏
+- 支持机器人自定义菜单事件。菜单需要在飞书开放平台控制台配置，建议：
+  - 帮助：`event_key=help`
+  - 单股分析：`event_key=query`
+  - 随时分析：`event_key=ask`
 
 ### TG 随时分析 · stock-ask（全天候）
 

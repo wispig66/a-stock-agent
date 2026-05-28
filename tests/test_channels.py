@@ -161,6 +161,32 @@ def test_feishu_send_text_fetches_token_and_posts_message(monkeypatch):
     assert calls[1][1]["json"]["content"] == '{"text": "hello 飞书"}'
 
 
+def test_feishu_send_text_can_target_open_id(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/auth/v3/tenant_access_token/internal"):
+            return FakeResponse({"code": 0, "tenant_access_token": "t-1", "expire": 7200})
+        return FakeResponse({"code": 0, "data": {"message_id": "om_1"}})
+
+    monkeypatch.setattr("stock_codex.channels.core.requests.post", fake_post)
+    adapter = FeishuAdapter(app_id="cli_x", app_secret="secret", default_conversation_id="oc_1")
+
+    delivery = adapter.send_text("open_id:ou_1", "hello")
+
+    assert delivery.provider_message_id == "om_1"
+    assert calls[1][1]["params"] == {"receive_id_type": "open_id"}
+    assert calls[1][1]["json"]["receive_id"] == "ou_1"
+
+
 def test_telegram_edit_only_ignores_message_not_modified(monkeypatch):
     calls = []
 

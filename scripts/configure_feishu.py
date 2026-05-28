@@ -63,8 +63,13 @@ def main() -> None:
     print("\nFeishu 控制台最小检查项：")
     print("- 凭证与基础信息：App ID / App Secret 与 .env 一致")
     print("- 事件订阅：启用机器人接收消息事件 im.message.receive_v1")
+    print("- 事件订阅：如需菜单，启用机器人自定义菜单事件 application.bot.menu_v6")
     print("- 连接方式：启用长连接 / WebSocket")
     print("- 权限：允许机器人发送和接收消息；把机器人加入目标群或私聊")
+    print("\n建议配置 3 个机器人自定义菜单项：")
+    print("- 帮助：event_key=help")
+    print("- 单股分析：event_key=query")
+    print("- 随时分析：event_key=ask")
 
 
 def _prompt(name: str, default: str) -> str:

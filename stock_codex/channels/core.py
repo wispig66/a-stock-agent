@@ -268,14 +268,15 @@ class FeishuAdapter:
 
     def send_text(self, target: str, text: str, *, format: str = "plain") -> Delivery:
         token = self._tenant_access_token()
+        receive_id, receive_id_type = self._resolve_receive_id(target)
         payload = {
-            "receive_id": target,
+            "receive_id": receive_id,
             "msg_type": "text",
             "content": json.dumps({"text": text}, ensure_ascii=False),
         }
         r = requests.post(
             f"{self.api_base}/im/v1/messages",
-            params={"receive_id_type": self.receive_id_type},
+            params={"receive_id_type": receive_id_type},
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json; charset=utf-8",
@@ -298,6 +299,17 @@ class FeishuAdapter:
             editable=False,
             raw=data,
         )
+
+    def _resolve_receive_id(self, target: str) -> tuple[str, str]:
+        for prefix, receive_id_type in (
+            ("open_id:", "open_id"),
+            ("user_id:", "user_id"),
+            ("union_id:", "union_id"),
+            ("chat_id:", "chat_id"),
+        ):
+            if target.startswith(prefix):
+                return target[len(prefix):], receive_id_type
+        return target, self.receive_id_type
 
     def edit_text(self, delivery: Delivery, text: str, *, format: str = "plain") -> bool:
         return False

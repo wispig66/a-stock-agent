@@ -28,6 +28,14 @@ log = get_logger("channel_listener")
 GATEWAY_LOCK_FILE = DATA_DIR / "channel_gateway.lock"
 GATEWAY_STATE_FILE = DATA_DIR / "channel_gateway_state.json"
 FEISHU_DEDUP_FILE = DATA_DIR / "feishu_seen_message_ids.json"
+FEISHU_MENU_TEXTS = {
+    "help": tg_listener.HELP_TEXT,
+    "menu_help": tg_listener.HELP_TEXT,
+    "query": "直接发送 6 位股票代码或股票名称，例如：600519 或 贵州茅台。",
+    "menu_query": "直接发送 6 位股票代码或股票名称，例如：600519 或 贵州茅台。",
+    "ask": "发送 /ask <问题> 或 /ask+ <问题>，例如：/ask 光伏怎么样。",
+    "menu_ask": "发送 /ask <问题> 或 /ask+ <问题>，例如：/ask 光伏怎么样。",
+}
 
 
 def enabled_channels() -> set[str]:
@@ -355,6 +363,9 @@ def run_feishu_ws(runtime: GatewayRuntime | None = None) -> None:
     def on_p2p_entered(data):
         log.info("Feishu bot p2p entered event received")
 
+    def on_bot_menu(data):
+        handle_feishu_menu_event(data, adapter)
+
     event_handler = (
         lark.EventDispatcherHandler.builder(
             os.environ.get("FEISHU_ENCRYPT_KEY", ""),
@@ -362,6 +373,7 @@ def run_feishu_ws(runtime: GatewayRuntime | None = None) -> None:
         )
         .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(on_p2p_entered)
         .register_p2_im_message_receive_v1(on_message)
+        .register_p2_application_bot_menu_v6(on_bot_menu)
         .build()
     )
     ws_client = lark.ws.Client(
@@ -374,6 +386,30 @@ def run_feishu_ws(runtime: GatewayRuntime | None = None) -> None:
     runtime.write_state(adapters={"feishu": "running"}, last_error=None)
     log.info("Feishu WebSocket listener starting")
     ws_client.start()
+
+
+def handle_feishu_menu_event(data: Any, adapter: FeishuAdapter) -> bool:
+    event = getattr(data, "event", None)
+    event_key = str(getattr(event, "event_key", "") or "").strip()
+    operator = getattr(event, "operator", None)
+    operator_id = getattr(operator, "operator_id", None)
+    open_id = getattr(operator_id, "open_id", None)
+    if not event_key:
+        log.info("Feishu bot menu event ignored: empty event_key")
+        return False
+    text = FEISHU_MENU_TEXTS.get(event_key)
+    if not text:
+        text = f"暂不支持的菜单：{event_key}\n\n{tg_listener.HELP_TEXT}"
+    target = f"open_id:{open_id}" if open_id else adapter.default_target()
+    log.info("Feishu bot menu clicked key=%s target=%s", event_key, "open_id" if open_id else "home")
+    get_default_gateway().send_text(
+        text,
+        source=f"feishu-menu:{event_key}",
+        channel="feishu",
+        target=target,
+        format="plain",
+    )
+    return True
 
 
 def run_telegram_poll(runtime: GatewayRuntime | None = None) -> None:

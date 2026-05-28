@@ -213,6 +213,38 @@ def test_gateway_runtime_start_writes_json_state(tmp_path):
     assert '"channels": [\n    "telegram"\n  ]' in (tmp_path / "state.json").read_text()
 
 
+def test_feishu_menu_texts_cover_recommended_event_keys():
+    assert "交易流水命令" in channel_listener.FEISHU_MENU_TEXTS["help"]
+    assert "600519" in channel_listener.FEISHU_MENU_TEXTS["query"]
+    assert "/ask" in channel_listener.FEISHU_MENU_TEXTS["ask"]
+
+
+def test_handle_feishu_menu_event_sends_to_operator_open_id(monkeypatch):
+    calls = []
+
+    class FakeGateway:
+        def send_text(self, text, *, source, channel, target, format):
+            calls.append((text, source, channel, target, format))
+
+    monkeypatch.setattr(channel_listener, "get_default_gateway", lambda: FakeGateway())
+    adapter = FeishuAdapter(app_id="cli_x", app_secret="secret", default_conversation_id="oc_1")
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            event_key="query",
+            operator=SimpleNamespace(operator_id=SimpleNamespace(open_id="ou_1")),
+        )
+    )
+
+    assert channel_listener.handle_feishu_menu_event(data, adapter) is True
+    assert calls == [(
+        channel_listener.FEISHU_MENU_TEXTS["query"],
+        "feishu-menu:query",
+        "feishu",
+        "open_id:ou_1",
+        "plain",
+    )]
+
+
 def _feishu_msg(*, message_id: str = "om_1", raw: dict | None = None):
     return channel_listener.ChannelMessage(
         channel="feishu",
