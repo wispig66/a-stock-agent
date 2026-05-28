@@ -94,3 +94,24 @@ def test_allowed_marks_cached_structural_sources(tmp_path, monkeypatch) -> None:
     assert allowed["summary"]["limit_up"] == 1
     assert allowed["summary"]["limit_up_snapshot_source"] == "cache"
     assert allowed["summary"]["limit_up_snapshot_at"] == "2026-05-21T14:30:00"
+
+
+def test_allowed_collects_concepts_from_eastmoney_shape() -> None:
+    fr = load_module()
+    cc = pd.DataFrame([
+        {"板块名称": "昨日连板", "涨跌幅": 3.71},
+        {"板块名称": "蓝宝石", "涨跌幅": 3.24},
+    ])
+
+    allowed = fr._build_allowed(
+        watchlist=[],
+        holdings=[],
+        spot=pd.DataFrame(),
+        zt=pd.DataFrame(),
+        zb=pd.DataFrame(),
+        cc=cc,
+        now=datetime(2026, 5, 21, 14, 31, 0),
+        label="尾盘快照（14:30）",
+    )
+
+    assert allowed["concepts"] == ["昨日连板", "蓝宝石"]

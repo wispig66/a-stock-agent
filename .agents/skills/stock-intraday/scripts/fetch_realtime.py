@@ -273,8 +273,18 @@ def fetch_concept_hot() -> pd.DataFrame:
     def _fetch() -> pd.DataFrame:
         df = ak.stock_board_concept_name_ths()
         if "涨跌幅" in df.columns:
-            df = df.sort_values("涨跌幅", ascending=False).head(15)
-        return df
+            return df.sort_values("涨跌幅", ascending=False).head(15)
+        if "概念名称" in df.columns:
+            return df.head(15)
+
+        # AkShare 近期将同花顺接口降级为仅返回 name/code；此时改走东财实时榜，
+        # 保住 11:30 / 14:30 对概念热度排序和涨跌幅解释的硬依赖。
+        em_df = ak.stock_board_concept_name_em()
+        if "涨跌幅" in em_df.columns:
+            return em_df.sort_values("涨跌幅", ascending=False).head(15)
+        if "板块名称" in em_df.columns:
+            return em_df.head(15)
+        return em_df
 
     return _fetch_structured_table(
         label="概念热度",
@@ -414,6 +424,10 @@ def _build_allowed(
     if cc is not None and not cc.empty:
         if "概念名称" in cc.columns:
             concepts = [str(x) for x in cc["概念名称"].tolist()[:30]]
+        elif "板块名称" in cc.columns:
+            concepts = [str(x) for x in cc["板块名称"].tolist()[:30]]
+        elif "name" in cc.columns:
+            concepts = [str(x) for x in cc["name"].tolist()[:30]]
 
     summary: dict[str, int | str] = {
         "date": now.strftime("%Y-%m-%d"),
@@ -530,7 +544,7 @@ def main():
         if cc.empty:
             print("（概念热度暂无数据）")
         else:
-            cols = [c for c in ["概念名称", "涨跌幅", "上涨家数", "领涨股", "领涨股-涨跌幅"] if c in cc.columns]
+            cols = [c for c in ["概念名称", "板块名称", "涨跌幅", "上涨家数", "下跌家数", "领涨股", "领涨股票", "领涨股-涨跌幅", "领涨股票-涨跌幅"] if c in cc.columns]
             print(cc[cols].to_string(index=False))
 
     print("\n=== fetch_realtime done ===")
