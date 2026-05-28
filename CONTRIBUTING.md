@@ -1,8 +1,8 @@
-# Contributing
+# 贡献指南
 
-Thanks for considering a contribution. This project is a local-first research and notification workflow for A-share market analysis. Changes should keep that scope clear: no brokerage execution, no automated trading, and no hidden network side effects.
+感谢你关注这个项目。A Stock Agent 是一个本地优先的 A 股研究和通知工作流，不是券商接口，也不是自动交易系统。任何改动都应保持这个边界：不自动下单、不隐藏网络副作用、不承诺收益。
 
-## Development Setup
+## 开发环境
 
 ```bash
 uv sync --group dev
@@ -11,30 +11,36 @@ sqlite3 data/daily.db < stock_codex/schema/init_db.sql
 uv run --no-sync pytest -q
 ```
 
-Do not commit `.env`, `data/`, `logs/`, `holdings.yaml`, `risk_config.yaml`, or `risk_state.yaml`.
+不要提交 `.env`、`data/`、`logs/`、`holdings.yaml`、`risk_config.yaml`、`risk_state.yaml`。
 
-## Pull Request Guidelines
+## PR 要求
 
-- Keep changes scoped. Split unrelated fixes into separate commits.
-- Prefer existing project patterns over new abstractions.
-- Add tests for behavior changes, especially gateway, notification, risk, and data parser logic.
-- Do not commit generated runtime data, private holdings, chat ids, bot tokens, or logs.
-- Keep financial language factual and non-promissory. Avoid wording that implies guaranteed returns.
+- 保持改动范围清晰。无关修复请拆成不同提交。
+- 优先沿用现有模块和模式，不要为小改动引入新抽象。
+- 行为变更需要补测试，尤其是 Codex skill contract、IM gateway、通知、风险、数据源解析和卡片校验。
+- 不要提交生成数据、私有持仓、chat id、bot token 或日志。
+- 金融相关措辞必须客观，不要写成收益承诺或荐股宣传。
 
-## Code Style
+## 代码风格
 
-- Python code targets Python 3.11-3.12.
-- Use `uv run --no-sync pytest -q` before submitting.
-- Keep comments concise and only where they clarify non-obvious behavior.
+- Python 目标版本：3.11-3.12。
+- 提交前至少运行：
 
-## Data Source Changes
+```bash
+git diff --check
+uv run --no-sync pytest -q
+```
 
-Market data providers often change schemas without notice. When changing fetchers:
+- 注释只解释非显而易见的约束、边界或失败模式。
 
-- Add fixtures or tests for the observed schema.
-- Preserve graceful degradation where possible.
-- Do not hard-code private cookies or account-specific headers.
+## 数据源变更
 
-## Security
+A 股数据源经常限流、改字段或受代理规则影响。修改 fetcher 时：
 
-If you find a token leak, credential handling issue, or unsafe logging path, follow `SECURITY.md` instead of opening a public issue.
+- 为观察到的 schema 增加测试或 fixture。
+- 尽量保留降级路径，不要因为单个源失败阻断整个工作流。
+- 不要写死私有 cookie、账号相关 header 或本机代理配置。
+
+## 安全问题
+
+如果发现 token 泄露、日志泄密或凭证处理问题，请按 [SECURITY.md](SECURITY.md) 处理，不要在公开 issue 里贴敏感信息。

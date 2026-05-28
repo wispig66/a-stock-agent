@@ -13,6 +13,28 @@
   <img src="https://img.shields.io/badge/runtime-macOS-lightgrey" alt="macOS runtime">
 </p>
 
+## 项目状态
+
+当前项目处于 **个人本地运行 / 早期开源** 阶段：
+
+- Telegram 是默认稳定通道。
+- 飞书已支持 WebSocket 接入，仍建议先灰度使用。
+- Codex automations 是完整自动化流程的核心依赖。
+- macOS 是主要支持环境；Linux 可运行部分 Python 逻辑，但 launchd 调度不适用。
+
+如果你只是想体验单股/题材问答，先跑 `quickstart.sh` 即可。如果你想让它每天自动跑盘前、盘中、盘后和周复盘，需要安装 Codex automations。
+
+## 目录
+
+- [核心定位](#核心定位)
+- [适合谁](#适合谁)
+- [功能概览](#功能概览)
+- [三分钟快速开始](#三分钟快速开始)
+- [完整自动化运行](#完整自动化运行)
+- [IM 接入](#im-接入)
+- [数据可信度和校验](#数据可信度和校验)
+- [开发者](#开发者)
+
 ## 核心定位
 
 A Stock Agent 不是普通行情脚本，也不是聊天机器人。它的核心是一个本机运行的 **Codex Agent 工作流**：
@@ -67,7 +89,7 @@ launchd 运行长时 daemon
 
 ## 三分钟快速开始
 
-新用户可以先跑快速安装脚本，把本地依赖、数据库、Telegram 配置和 IM 网关跑起来：
+新用户建议先跑 IM 问答模式，把本地依赖、数据库、Telegram 配置和 IM 网关跑起来：
 
 ```bash
 git clone https://github.com/wispig66/a-stock-agent.git
@@ -77,18 +99,12 @@ bash scripts/quickstart.sh
 
 脚本会检查或安装 `uv`，同步 Python 依赖，初始化 SQLite，创建 `.env`，引导你填写 Telegram Bot Token 和 Chat ID，设置 Telegram 菜单，并启动统一 IM gateway。
 
-这一步只代表 **随时问答入口可用**。你可以在 Telegram 里发送：
+这一步只代表 **随时问答入口可用**。启动成功后，你可以在 Telegram 里发送：
 
 ```text
 /help
 600519
 /ask 光伏今天能不能看
-```
-
-如果你要让系统每天自动跑盘前、盘中、盘后和周复盘，还需要安装 Codex automations 和长时 daemon：
-
-```bash
-bash scripts/quickstart.sh --install-schedule
 ```
 
 常用选项：
@@ -105,6 +121,28 @@ bash scripts/quickstart.sh --test
 
 # 非交互安装，适合脚本化部署
 TG_BOT_TOKEN=xxx TG_CHAT_ID=yyy bash scripts/quickstart.sh
+```
+
+## 完整自动化运行
+
+如果你要让系统每天自动跑盘前、盘中、盘后和周复盘，需要安装 Codex automations 和本地长时 daemon：
+
+```bash
+bash scripts/quickstart.sh --install-schedule
+```
+
+等价的手动步骤：
+
+```bash
+bash scripts/sync_codex_skills.sh
+bash scripts/install_codex_automations.sh
+bash scripts/install_runtime_services.sh
+```
+
+安装后运行诊断：
+
+```bash
+bash scripts/doctor_codex_runtime.sh
 ```
 
 ## 前置条件
@@ -177,23 +215,9 @@ bash scripts/stop_tg_listener.sh
 | launchd 运行长时 daemon | 题材冒头监控 | `com.user.stockthemeloop` |
 | launchd 运行长时 daemon | 可选 IM gateway 常驻 | `com.user.stocktglistener` |
 
-安装调度：
-
-```bash
-bash scripts/sync_codex_skills.sh
-bash scripts/install_codex_automations.sh
-bash scripts/install_runtime_services.sh
-```
-
-诊断：
-
-```bash
-bash scripts/doctor_codex_runtime.sh
-```
-
 注意：如果仓库放在 `~/Desktop` 等受 macOS TCC 保护的目录，launchd 后台进程可能无法正常读取当前目录。更推荐放在 `~/code/a-stock-agent`，或者用 `bash scripts/start_tg_listener.sh` 在交互式终端里启动 IM gateway。
 
-## Telegram 和飞书
+## IM 接入
 
 ### Telegram
 
@@ -310,16 +334,9 @@ uv run --no-sync python -m stock_codex.tools.refresh_calendar
 uv run --no-sync pytest -q
 ```
 
-## 本地配置和隐私
+## 安全与隐私
 
-这些是模板文件，可以提交：
-
-- `.env.example`
-- `holdings.example.yaml`
-- `risk_config.example.yaml`
-- `risk_state.example.yaml`
-
-这些是本地私有文件，不要提交：
+本项目会在本机保存 IM token、chat id、持仓、运行日志和 SQLite 数据库。开源或推送前，请确认这些文件没有被提交：
 
 - `.env`
 - `data/`
@@ -337,13 +354,14 @@ git grep -n -I -E 'TG_BOT_TOKEN=[0-9]{6,}:[A-Za-z0-9_-]{20,}|FEISHU_APP_SECRET=[
 
 如果 token 曾经出现在日志、截图、聊天记录或提交历史里，应该直接轮换。
 
+更完整的披露和处理方式见 [SECURITY.md](SECURITY.md)。
+
 ## 数据源
 
 | 数据源 | 用途 |
 |--------|------|
 | AKShare | A 股行情、交易日历、涨跌停、异动等基础数据。 |
 | 同花顺/东方财富/财联社 | 题材归因、榜单、新闻和行情 fallback。 |
-| a-stock-data 相关封装 | 部分扩展数据源封装参考，源码内保留 Apache 2.0 attribution。 |
 
 数据源可能限流、变更字段、受代理规则影响。项目会尽量降级处理，但不能保证任何第三方数据源永远可用。
 
