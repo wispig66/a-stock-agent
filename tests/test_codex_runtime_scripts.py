@@ -101,6 +101,43 @@ def test_setup_delegates_runtime_and_codex_installation() -> None:
     )
 
 
+def test_quickstart_installs_initializes_and_starts_gateway() -> None:
+    script = read_script("scripts/quickstart.sh")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert_contains_all(
+        readme,
+        [
+            "bash scripts/quickstart.sh",
+            "三分钟快速开始",
+            "Telegram Bot Token",
+        ],
+        label="README quickstart",
+    )
+    assert_contains_all(
+        script,
+        [
+            "uv sync --group dev",
+            "stock_codex/schema/init_db.sql",
+            "scripts/migrate_channels.py",
+            "scripts/set_tg_commands.py",
+            "scripts/start_tg_listener.sh",
+            "--install-schedule",
+            "--with-feishu",
+        ],
+        label="scripts/quickstart.sh",
+    )
+    assert_contains_none(
+        script,
+        [
+            "TG_BOT_TOKEN=$TG_BOT_TOKEN",
+            "echo $TG_BOT_TOKEN",
+            "echo \"$TG_BOT_TOKEN\"",
+        ],
+        label="scripts/quickstart.sh",
+    )
+
+
 def test_runtime_services_installer_only_bootstraps_long_running_templates(tmp_path) -> None:
     script = read_script("scripts/install_runtime_services.sh")
     env = base_env(tmp_path)
