@@ -86,7 +86,7 @@ L2 4 时点：09:30 / 09:45 纪律提醒卡（轻、状态机） + 11:30 / 14:30
 
 ### TG 单股查询 · stock-query（全天候）
 
-在 Telegram 直接发股票代码或名称（主板/创业板），常驻 daemon `scripts/tg_listener.py` 10s 长轮询 → 调 `codex exec` 跑 `stock-query` skill → 30–90s 内回一张题材派决策卡。
+在 Telegram 直接发股票代码或名称（主板/创业板），统一 IM gateway daemon `scripts/channel_listener.py` 10s 长轮询 → 调 `codex exec` 跑 `stock-query` skill → 30–90s 内回一张题材派决策卡。
 
 - **fresh 分支**：未持仓 → 三档明确表态 [买入 / 观察 / 回避]；观察档必须给"什么信号出现升级为买入"
 - **holding 分支**：在 `holdings.yaml` 里的票自动切换为 [加仓 / 持有 / 减仓清仓]
@@ -105,6 +105,33 @@ bash scripts/stop_tg_listener.sh     # 停
 `stock_basic` 表（代码 → 名称 / 板块 / ST 标志）由 `scripts/refresh_stock_basic.py` 每日刷新，已挂到 postmarket 流程末尾。
 
 **注意（macOS TCC/FDA）**：launchd 模板 `launchd/disabled/com.user.stocktglistener.plist` 默认保持禁用，`scripts/install_runtime_services.sh` 不会自动注册它。原因：项目在 `~/Desktop` 下时 launchd 拉起的 `uv` 进程会在 `getcwd` 阻塞（Desktop 是受 TCC 保护的目录，背景守护进程拿不到 Full Disk Access），表现为 `uv` 卡死无子进程。如果你把项目搬到 `~/code` 之类无 TCC 限制的目录，可以保留模板在 disabled 路径，并显式执行 `ENABLE_TG_LISTENER_LAUNCHD=1 bash scripts/install_runtime_services.sh`；否则一律用 `start_tg_listener.sh` 在交互式终端里拉起（继承终端 TCC 权限）。
+
+### IM Gateway · Feishu 灰度入口
+
+`stock-channel-listener` 是新的跨 IM gateway 入口。当前生产默认仍是 Telegram；Feishu 先按灰度模式启用，固定走 Feishu/Lark WebSocket 长连接，不需要公网 webhook。
+
+Feishu 配置遵循 Hermes 风格：用户侧只暴露少量必填项，复杂默认值由脚本写入。
+
+```bash
+uv run python scripts/configure_feishu.py
+```
+
+最小配置：
+
+- `FEISHU_APP_ID`
+- `FEISHU_APP_SECRET`
+- `FEISHU_HOME_CHANNEL`
+- `FEISHU_ALLOWED_CHAT_IDS`
+
+脚本会校验 `lark-oapi`、App ID/Secret 的 tenant token 获取，并写入默认值：`FEISHU_CONNECTION_MODE=websocket`、`FEISHU_REQUIRE_MENTION=true`、`FEISHU_REACTIONS=false`。测试消息默认不发送；需要时加 `--send-test`。
+
+Feishu 运行时特性：
+
+- SDK 回调只入队，不直接跑 Codex 长任务
+- 同一个 chat 串行处理，不同 chat 可并发
+- 入站 message id 持久化去重，重启后仍避免重复处理
+- 群聊默认必须 @bot；私聊直接响应
+- Feishu v1 不做 streaming edit，只发送 ack + final，避免刷屏
 
 ### TG 随时分析 · stock-ask（全天候）
 

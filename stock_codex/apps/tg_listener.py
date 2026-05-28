@@ -5,7 +5,9 @@
 进程崩溃由 launchd KeepAlive 拉起；offset 持久化到 data/tg_offset.txt。
 """
 from __future__ import annotations
+import contextvars
 import fcntl
+import html as html_mod
 import json
 import os
 import sqlite3
@@ -21,12 +23,13 @@ import re
 import requests
 import yaml
 
+from stock_codex.channels import ChannelMessage, Delivery, get_default_gateway
 from stock_codex.market import query  # noqa: E402
 from stock_codex.domain import holdings as holdings_lib  # noqa: E402
 from stock_codex.market.card_validator import (  # noqa: E402
     validate_card, load_stock_name_dict, format_violations,
 )
-from stock_codex.infra.notify import push_md, md_to_tg_html  # noqa: E402
+from stock_codex.infra.notify import md_to_tg_html  # noqa: E402
 from stock_codex.infra.db import connect  # noqa: E402
 from stock_codex.infra.logger import get_logger, new_req_id, set_req_id, get_req_id  # noqa: E402
 from stock_codex.paths import DATA_DIR, DB_FILE, HOLDINGS_FILE, PROJECT_ROOT
@@ -54,6 +57,7 @@ TG_API = f"https://api.telegram.org/bot{TG_TOKEN}"
 ROOT = PROJECT_ROOT
 OFFSET_FILE = DATA_DIR / "tg_offset.txt"
 LOCK_FILE = "/tmp/stock-query.lock"
+POLL_LOCK_FILE = DATA_DIR / "tg_listener.lock"
 MAX_QUEUE = 3
 _SKILL_TIMEOUT_NORMAL = 180
 _SKILL_TIMEOUT_DEEP = 300
@@ -65,6 +69,11 @@ POLL_ALERT_EVERY_FAILURES = int(os.environ.get("TG_POLL_ALERT_EVERY_FAILURES", "
 
 _running = 0
 _waiting = 0
+_channel_inbound_ids: dict[int, int] = {}
+_CURRENT_CHANNEL: contextvars.ContextVar[str] = contextvars.ContextVar("channel", default="telegram")
+_CURRENT_TARGET: contextvars.ContextVar[str | None] = contextvars.ContextVar("target", default=None)
+_CURRENT_ACCOUNT: contextvars.ContextVar[str] = contextvars.ContextVar("account", default="default")
+_response_deliveries: dict[str, Delivery] = {}
 
 
 def _safe_error_text(exc: Exception) -> str:
@@ -141,9 +150,25 @@ def log_inbound_start(*, update_id: int, chat_id, user_msg_id: int, raw_text: st
                 (ts, update_id, str(chat_id), user_msg_id, raw_text),
             )
             conn.commit()
-            return cur.lastrowid
+            inbound_id = cur.lastrowid
     except sqlite3.IntegrityError:
         return None
+    channel_id = get_default_gateway().log_inbound_start(
+        ChannelMessage(
+            channel="telegram",
+            account_id="default",
+            conversation_id=str(chat_id),
+            sender_id=str(chat_id),
+            message_id=str(user_msg_id),
+            event_id=str(update_id),
+            text=raw_text,
+            raw={"update_id": update_id, "chat_id": chat_id, "user_msg_id": user_msg_id},
+        ),
+        db_path=DB_PATH,
+    )
+    if channel_id:
+        _channel_inbound_ids[inbound_id] = channel_id
+    return inbound_id
 
 
 def log_inbound_update_parsed(inbound_id: int, *, parsed_command: str,
@@ -156,58 +181,122 @@ def log_inbound_update_parsed(inbound_id: int, *, parsed_command: str,
             (parsed_command, parsed_intent, payload_json, inbound_id),
         )
         conn.commit()
+    get_default_gateway().log_inbound_update_parsed(
+        _channel_inbound_ids.get(inbound_id),
+        parsed_command=parsed_command,
+        parsed_intent=parsed_intent,
+        parsed_payload=parsed_payload,
+        db_path=DB_PATH,
+    )
 
 
-def log_inbound_finish(inbound_id: int, *, response_msg_id: Optional[int],
+def log_inbound_finish(inbound_id: int, *, response_msg_id: Optional[object],
                        status: str, duration_ms: int, error: Optional[str] = None) -> None:
+    legacy_msg_id = _int_or_none(response_msg_id)
     with connect(DB_PATH) as conn:
         conn.execute(
             "UPDATE tg_inbound SET response_msg_id=?, handler_status=?, "
             "duration_ms=?, handler_error=? WHERE id=?",
-            (response_msg_id, status, duration_ms, error, inbound_id),
+            (legacy_msg_id, status, duration_ms, error, inbound_id),
         )
         conn.commit()
+    response = _delivery_for_response(response_msg_id)
+    get_default_gateway().log_inbound_finish(
+        _channel_inbound_ids.pop(inbound_id, None),
+        response=response,
+        status=status,
+        duration_ms=duration_ms,
+        error=error,
+        db_path=DB_PATH,
+    )
+
+
+def _int_or_none(value: object | None) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _delivery_for_response(response_msg_id: object | None) -> Delivery | None:
+    if response_msg_id is None:
+        return None
+    key = str(response_msg_id)
+    if key in _response_deliveries:
+        return _response_deliveries[key]
+    return Delivery(
+        channel=_CURRENT_CHANNEL.get(),
+        account_id=_CURRENT_ACCOUNT.get(),
+        conversation_id=str(_CURRENT_TARGET.get() or TG_CHAT_ID),
+        provider_message_id=key,
+        editable=True,
+    )
 
 
 # ============================================================
 # Telegram 低层 API（发送 / 编辑）
 # ============================================================
 
-def _tg_send(text: str, parse_mode: Optional[str] = None) -> int:
+def _tg_send(text: str, parse_mode: Optional[str] = None) -> int | str:
     """发新消息，返回 message_id。"""
-    r = requests.post(f"{TG_API}/sendMessage", json={
-        "chat_id": TG_CHAT_ID, "text": text[:TG_MAX_LEN],
-        "disable_web_page_preview": True,
-        **({"parse_mode": parse_mode} if parse_mode else {}),
-    }, timeout=10)
-    r.raise_for_status()
-    return r.json()["result"]["message_id"]
+    channel = _CURRENT_CHANNEL.get()
+    target = str(_CURRENT_TARGET.get() or TG_CHAT_ID)
+    body, fmt = _format_for_channel(text[:TG_MAX_LEN], parse_mode=parse_mode, channel=channel)
+    delivery = get_default_gateway().send_text(
+        body,
+        source=f"{channel}-listener",
+        channel=channel,
+        target=target,
+        format=fmt,
+    )
+    _response_deliveries[delivery.provider_message_id] = delivery
+    return int(delivery.provider_message_id) if delivery.provider_message_id.isdigit() else delivery.provider_message_id
 
 
-def _tg_edit(message_id: int, text: str, parse_mode: Optional[str] = None) -> None:
+def _tg_edit(message_id: int | str, text: str, parse_mode: Optional[str] = None) -> None:
     """编辑已发消息。HTML parse 失败时回退纯文本（流式过程中 markdown 半截不可避免）。"""
-    payload = {
-        "chat_id": TG_CHAT_ID, "message_id": message_id,
-        "text": text[:TG_MAX_LEN], "disable_web_page_preview": True,
-    }
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-    r = requests.post(f"{TG_API}/editMessageText", json=payload, timeout=10)
-    if r.status_code == 400 and parse_mode:
-        # HTML 半截解析失败 → 纯文本重试
-        payload.pop("parse_mode", None)
-        r = requests.post(f"{TG_API}/editMessageText", json=payload, timeout=10)
-    # 忽略 "message is not modified"（内容没变）和 429 限流，不影响主流程
-    if r.status_code not in (200, 400, 429):
-        r.raise_for_status()
+    delivery = _delivery_for_response(message_id)
+    if delivery is None:
+        return
+    if delivery.channel != "telegram" and not delivery.editable:
+        # Feishu v1 has no edit/streaming path. Keep the first ack message,
+        # drop transient progress updates, and only send final/error text.
+        if parse_mode is None and not text.startswith(("❌", "⚠️", "⌛")):
+            return
+    new_delivery = get_default_gateway().edit_text(
+        delivery,
+        _format_for_channel(text[:TG_MAX_LEN], parse_mode=parse_mode, channel=delivery.channel)[0],
+        source="tg-listener-edit",
+        format=_format_for_channel(text[:TG_MAX_LEN], parse_mode=parse_mode, channel=delivery.channel)[1],
+    )
+    _response_deliveries[str(message_id)] = new_delivery
+    _response_deliveries[new_delivery.provider_message_id] = new_delivery
 
 
 def push_reply(text: str) -> None:
     """非流式回 TG（拒绝卡 / 错误提示 用）。"""
     try:
-        push_md(text, source="stock-query")
+        if _CURRENT_CHANNEL.get() == "telegram":
+            _tg_send(md_to_tg_html(text), parse_mode="HTML")
+        else:
+            _tg_send(text)
     except Exception:
         log.exception("push_reply 失败")
+
+
+def _format_for_channel(text: str, *, parse_mode: Optional[str], channel: str) -> tuple[str, str]:
+    if parse_mode == "HTML" and channel == "telegram":
+        return text, "html"
+    if parse_mode == "HTML":
+        return _tg_html_to_plain_text(text), "plain"
+    return text, "plain"
+
+
+def _tg_html_to_plain_text(text: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</(p|div|pre|blockquote)>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    return html_mod.unescape(text).strip()
 
 
 # ============================================================
@@ -532,14 +621,27 @@ def handle_trade(parsed: dict, source_msg_id: Optional[int]) -> str:
 def handle(text: str, chat_id, today: Optional[str] = None,
            reply_to_msg_id: Optional[int] = None,
            update_id: Optional[int] = None,
-           user_msg_id: Optional[int] = None) -> None:
+           user_msg_id: Optional[int] = None,
+           channel: str = "telegram",
+           account_id: str = "default",
+           channel_message: Optional[ChannelMessage] = None) -> None:
     """处理一条入站消息。出口只有 silent / push_reply / 流式 edit。"""
-    if str(chat_id) != str(ALLOWED_CHAT_ID):
+    if not _is_allowed_chat(channel, chat_id):
         return
+
+    token_channel = _CURRENT_CHANNEL.set(channel)
+    token_target = _CURRENT_TARGET.set(str(chat_id))
+    token_account = _CURRENT_ACCOUNT.set(account_id)
+
+    def _reset_context() -> None:
+        _CURRENT_CHANNEL.reset(token_channel)
+        _CURRENT_TARGET.reset(token_target)
+        _CURRENT_ACCOUNT.reset(token_account)
 
     set_req_id(new_req_id())
     started = time.time()
     inbound_id = None
+    channel_inbound_id = None
     log.info("INBOUND update_id=%s chat=%s text=%s", update_id, chat_id, text[:100].replace("\n", " "))
     if update_id is not None:
         inbound_id = log_inbound_start(
@@ -548,13 +650,47 @@ def handle(text: str, chat_id, today: Optional[str] = None,
         )
         if inbound_id is None:
             log.info("DEDUP update_id=%s 已处理过，跳过", update_id)
+            _reset_context()
             return  # 已处理过的 update_id，跳过
+    elif channel_message is not None:
+        channel_inbound_id = get_default_gateway().log_inbound_start(channel_message, db_path=DB_PATH)
+        if channel_inbound_id is None:
+            log.info("DEDUP channel message=%s 已处理过，跳过", channel_message.dedupe_key())
+            _reset_context()
+            return
 
-    def _finish(status: str, response_msg_id: Optional[int] = None, error: Optional[str] = None):
+    def _finish(status: str, response_msg_id: Optional[object] = None, error: Optional[str] = None):
         if inbound_id is not None:
             log_inbound_finish(inbound_id, response_msg_id=response_msg_id,
                                status=status, duration_ms=int((time.time()-started)*1000),
                                error=error)
+        elif channel_inbound_id is not None:
+            get_default_gateway().log_inbound_finish(
+                channel_inbound_id,
+                response=_delivery_for_response(response_msg_id),
+                status=status,
+                duration_ms=int((time.time()-started)*1000),
+                error=error,
+                db_path=DB_PATH,
+            )
+
+    def _parsed(parsed_command: str, parsed_intent: Optional[str] = None,
+                parsed_payload: Optional[dict] = None):
+        if inbound_id is not None:
+            log_inbound_update_parsed(
+                inbound_id,
+                parsed_command=parsed_command,
+                parsed_intent=parsed_intent,
+                parsed_payload=parsed_payload,
+            )
+        elif channel_inbound_id is not None:
+            get_default_gateway().log_inbound_update_parsed(
+                channel_inbound_id,
+                parsed_command=parsed_command,
+                parsed_intent=parsed_intent,
+                parsed_payload=parsed_payload,
+                db_path=DB_PATH,
+            )
 
     # 1. /help：用法说明
     stripped = text.lstrip()
@@ -562,6 +698,7 @@ def handle(text: str, chat_id, today: Optional[str] = None,
     if low in ("/help", "/start", "/?", "help", "帮助"):
         push_reply(HELP_TEXT)
         _finish("ok")
+        _reset_context()
         return
 
     # 1.5. /ask /ask+ 随时分析
@@ -570,13 +707,12 @@ def handle(text: str, chat_id, today: Optional[str] = None,
         if parsed is None:
             push_reply("❌ /ask 后面要带 query，例如 /ask 光伏怎么样")
             _finish("rejected", error="/ask 无 payload")
+            _reset_context()
             return
-        if inbound_id is not None:
-            log_inbound_update_parsed(
-                inbound_id,
-                parsed_command="/ask+" if parsed["mode"] == "deep" else "/ask",
-                parsed_payload=parsed,
-            )
+        _parsed(
+            "/ask+" if parsed["mode"] == "deep" else "/ask",
+            parsed_payload=parsed,
+        )
         timeout = skill_timeout_for(parsed["mode"])
         prompt = (f'请使用 stock-ask skill。严格按 SKILL.md 执行。'
                   f' text="{parsed["payload"]}" mode={parsed["mode"]}')
@@ -629,9 +765,13 @@ def handle(text: str, chat_id, today: Optional[str] = None,
         except subprocess.TimeoutExpired:
             _tg_edit(msg_id, "❌ 分析超时，请重试或换 /ask+")
             _finish("timeout", response_msg_id=msg_id, error="subprocess timeout")
+            _reset_context()
         except Exception as e:
             _tg_edit(msg_id, f"❌ 分析失败：{e}")
             _finish("error", response_msg_id=msg_id, error=str(e))
+            _reset_context()
+        else:
+            _reset_context()
         return
 
     # 2. /buy /sell 交易流水命令，优先尝试
@@ -641,12 +781,14 @@ def handle(text: str, chat_id, today: Optional[str] = None,
         if len(bare) == 1 and bare[0] in ("/buy", "/sell"):
             push_reply(_trade_usage(bare[0][1:]))
             _finish("ok")
+            _reset_context()
             return
         try:
             parsed = parse_trade_command(text)
         except ValueError as e:
             push_reply(f"❌ {e}")
             _finish("rejected", error=str(e))
+            _reset_context()
             return
         if parsed is not None:
             try:
@@ -654,14 +796,17 @@ def handle(text: str, chat_id, today: Optional[str] = None,
             except Exception as e:
                 push_reply(f"⚠️ 落库失败：{e}")
                 _finish("error", error=str(e))
+                _reset_context()
                 return
             push_reply(ack)
             _finish("ok")
+            _reset_context()
             return
 
     kind, val = query.parse_input(text)
     if kind == "unknown":
         _finish("rejected", error="unknown input")
+        _reset_context()
         return
 
     today = today or date.today().isoformat()
@@ -671,11 +816,13 @@ def handle(text: str, chat_id, today: Optional[str] = None,
         if not hits:
             push_reply(_reject(val, "未找到该名称"))
             _finish("rejected", error="name not found")
+            _reset_context()
             return
         if len(hits) > 1:
             lines = "\n".join(f"  {c}  {n}" for c, n in hits[:8])
             push_reply(f"❓ 找到多只，请发代码：\n{lines}")
             _finish("rejected", error="ambiguous name")
+            _reset_context()
             return
         code = hits[0][0]
     else:
@@ -685,15 +832,18 @@ def handle(text: str, chat_id, today: Optional[str] = None,
     if board is None:
         push_reply(_reject(code, "未找到该代码"))
         _finish("rejected", error="code not found")
+        _reset_context()
         return
     if board in ("star", "bse"):
         label = "科创板" if board == "star" else "北交所"
         push_reply(_reject(code, f"暂不支持{label}"))
         _finish("rejected", error=f"unsupported board: {board}")
+        _reset_context()
         return
     if query.is_st(code):
         push_reply(_reject(code, "ST 票风险过高，本助手不分析"))
         _finish("rejected", error="ST stock")
+        _reset_context()
         return
 
     mode = "holding" if code in held_codes() else "fresh"
@@ -702,6 +852,7 @@ def handle(text: str, chat_id, today: Optional[str] = None,
     if _running and _waiting >= MAX_QUEUE:
         push_reply(f"⏳ {code}\n忙，稍后再问")
         _finish("rejected", error="queue full")
+        _reset_context()
         return
     queued = bool(_running)
     initial = (f"🔍 {code} 排队中（前面 {_running + _waiting} 个）…"
@@ -712,6 +863,7 @@ def handle(text: str, chat_id, today: Optional[str] = None,
     except Exception as e:
         log.exception("占位发送失败 code=%s", code)
         _finish("error", error=str(e))
+        _reset_context()
         return
 
     _waiting += 1
@@ -794,6 +946,37 @@ def handle(text: str, chat_id, today: Optional[str] = None,
     except Exception:
         _waiting = max(0, _waiting - 1)
         raise
+    finally:
+        _reset_context()
+
+
+def _is_allowed_chat(channel: str, chat_id) -> bool:
+    if channel == "telegram":
+        return str(chat_id) == str(ALLOWED_CHAT_ID)
+    if channel == "feishu":
+        raw = (
+            os.environ.get("FEISHU_ALLOWED_CHAT_IDS")
+            or os.environ.get("FEISHU_HOME_CHANNEL")
+            or os.environ.get("FEISHU_DEFAULT_CHAT_ID", "")
+        )
+        if raw.strip() == "*":
+            return True
+        allowed = {x.strip() for x in raw.split(",") if x.strip()}
+        return bool(allowed) and str(chat_id) in allowed
+    return False
+
+
+def handle_channel_message(message: ChannelMessage, today: Optional[str] = None) -> None:
+    handle(
+        message.text,
+        chat_id=message.conversation_id,
+        today=today,
+        update_id=None,
+        user_msg_id=None,
+        channel=message.channel,
+        account_id=message.account_id,
+        channel_message=message,
+    )
 
 
 # ============================================================
@@ -814,6 +997,21 @@ def _save_offset(v: int) -> None:
     OFFSET_FILE.write_text(str(v))
 
 
+def _acquire_poll_lock():
+    POLL_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock = open(POLL_LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        log.critical("tg_listener already running; refuse duplicate getUpdates poller")
+        sys.exit(78)
+    lock.write(str(os.getpid()))
+    lock.truncate()
+    lock.flush()
+    return lock
+
+
 def _get_updates(offset: int) -> list[dict]:
     r = requests.get(
         f"{TG_API}/getUpdates",
@@ -831,6 +1029,7 @@ def main() -> None:
     if not TG_TOKEN or not ALLOWED_CHAT_ID:
         log.critical("TG_BOT_TOKEN / ALLOWED_CHAT_ID 未配置，退出")
         sys.exit(2)
+    _poll_lock = _acquire_poll_lock()
     offset = _load_offset()
     log.info("启动 offset=%d", offset)
     backoff = 1

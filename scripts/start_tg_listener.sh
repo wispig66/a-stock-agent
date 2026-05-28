@@ -27,8 +27,8 @@ for candidate in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv
 done
 [ -n "${UV_BIN:-}" ] || { echo "未找到 uv" >&2; exit 1; }
 
-echo "=== tg_listener start $(date) ===" >> "$LOG"
+echo "=== channel_listener start $(date) ===" >> "$LOG"
 export PYTHONUNBUFFERED=1
-nohup "$UV_BIN" run --no-sync scripts/tg_listener.py >> "$LOG" 2>&1 &
+nohup "$UV_BIN" run --no-sync scripts/channel_listener.py >> "$LOG" 2>&1 &
 echo $! > "$PIDFILE"
 echo "tg_listener 启动 PID=$!，日志 → $LOG"

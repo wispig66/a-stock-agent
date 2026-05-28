@@ -9,6 +9,7 @@ dependencies = [
     "requests>=2.31",
     "PyYAML>=6.0",
     "filelock>=3.13",
+    "lark-oapi>=1.6.6",
 ]
 
 [build-system]
@@ -22,6 +23,7 @@ packages = ["stock_codex"]
 stock-ask-pack = "stock_codex.apps.stock_ask_pipeline:main"
 stock-query-pack = "stock_codex.apps.stock_query_pipeline:main"
 stock-tg-listener = "stock_codex.apps.tg_listener:main"
+stock-channel-listener = "stock_codex.apps.channel_listener:main"
 stock-weekly = "stock_codex.apps.weekly_loop:main"
 stock-review = "stock_codex.tools.review:main"
 stock-refresh-calendar = "stock_codex.tools.refresh_calendar:main"

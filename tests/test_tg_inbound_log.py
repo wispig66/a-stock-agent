@@ -64,6 +64,15 @@ def test_log_inbound_round_trip(db):
     assert row[4] == 200
     assert row[5] == "ok"
     assert row[6] == 12345
+    with sqlite3.connect(db) as conn:
+        channel_row = conn.execute(
+            "SELECT channel, conversation_id, provider_msg_id, provider_event_id, "
+            "parsed_command, parsed_intent, parsed_payload, response_msg_id, handler_status "
+            "FROM channel_inbound_log"
+        ).fetchone()
+    assert channel_row[:6] == ("telegram", "c1", "100", "42", "/ask", "sector")
+    assert json.loads(channel_row[6])["sector"] == "光伏"
+    assert channel_row[7:] == ("200", "ok")
 
 
 def test_log_inbound_duplicate_update_id(db):

@@ -78,6 +78,54 @@ CREATE TABLE IF NOT EXISTS push_log (
 CREATE INDEX IF NOT EXISTS idx_push_log_ts ON push_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_push_log_source ON push_log(source);
 
+-- 跨 IM 出站日志：新 channels/gateway 主表。push_log 继续兼容写入，供旧复盘逻辑读取。
+CREATE TABLE IF NOT EXISTS channel_outbound_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    account_id TEXT,
+    conversation_id TEXT NOT NULL,
+    thread_id TEXT,
+    provider_msg_id TEXT,
+    source TEXT,
+    text TEXT NOT NULL,
+    format TEXT DEFAULT 'plain',
+    chunks INTEGER DEFAULT 1,
+    success INTEGER DEFAULT 1,
+    error TEXT,
+    raw TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_channel_outbound_ts ON channel_outbound_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_channel_outbound_channel ON channel_outbound_log(channel, conversation_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_channel_outbound_source ON channel_outbound_log(source);
+
+-- 跨 IM 入站日志：后续替代 tg_inbound。Telegram v1 会 dual-write 兼容 tg_inbound。
+CREATE TABLE IF NOT EXISTS channel_inbound_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    account_id TEXT,
+    conversation_id TEXT NOT NULL,
+    thread_id TEXT,
+    sender_id TEXT,
+    provider_msg_id TEXT NOT NULL,
+    provider_event_id TEXT,
+    dedupe_key TEXT UNIQUE,
+    raw_text TEXT NOT NULL,
+    parsed_command TEXT,
+    parsed_intent TEXT,
+    parsed_payload TEXT,
+    response_channel TEXT,
+    response_msg_id TEXT,
+    handler_status TEXT,
+    handler_error TEXT,
+    duration_ms INTEGER,
+    raw TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_channel_inbound_ts ON channel_inbound_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_channel_inbound_channel ON channel_inbound_log(channel, conversation_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_channel_inbound_command ON channel_inbound_log(parsed_command);
+
 -- 用户实盘交易流水：TG /buy /sell 命令落库，用于复盘进出场决策
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

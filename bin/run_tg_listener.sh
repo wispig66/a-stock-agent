@@ -31,8 +31,8 @@ if [ -f "$LOG" ]; then
   fi
 fi
 
-echo "=== tg_listener start $(date) ===" >> "$LOG"
+echo "=== channel_listener start $(date) ===" >> "$LOG"
 export PYTHONUNBUFFERED=1
 # --no-sync 避免与其它 uv-run 常驻进程（anomaly_loop / watch_loop）抢 uv cache lock；
 # 依赖 .venv 已通过 uv sync 准备好（首次安装由 scripts/setup.sh 处理）
-exec "$UV_BIN" run --no-sync scripts/tg_listener.py
+exec "$UV_BIN" run --no-sync scripts/channel_listener.py

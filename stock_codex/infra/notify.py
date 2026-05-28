@@ -21,6 +21,7 @@ import sys
 import time
 from datetime import datetime
 import requests
+from stock_codex.channels import Delivery, get_default_gateway
 from stock_codex.infra.db import connect as db_connect
 from stock_codex.paths import DB_FILE as DB, ENV_FILE
 
@@ -188,26 +189,45 @@ def push(text: str, source: str = "manual", raw: bool = False) -> dict:
     raw=True 跳过转换，按纯文本发送（emoji / 纯文本 / 调试用）。
     """
     body = text if raw else md_to_tg_html(text)
-    parse = None if raw else "HTML"
+    fmt = "plain" if raw else "html"
     try:
-        r = _send(body, parse_mode=parse)
-        msg_id = r["result"]["message_id"]
+        delivery = get_default_gateway().send_text(body, source=source, format=fmt)
+        msg_id = _provider_msg_id_as_int(delivery)
         _log_to_db(source, text, msg_id, 1, True, None)
-        return r
+        return _delivery_to_response(delivery)
     except Exception as e:
         # HTML 解析失败时降级为纯文本兜底（避免推送丢失）
         if not raw and "can't parse" in str(e).lower():
             try:
-                r = _send(text, parse_mode=None)
-                msg_id = r["result"]["message_id"]
+                delivery = get_default_gateway().send_text(text, source=source, format="plain")
+                msg_id = _provider_msg_id_as_int(delivery)
                 _log_to_db(source, text, msg_id, 1, True,
                            "HTML parse failed, fallback to plaintext")
-                return r
+                return _delivery_to_response(delivery)
             except Exception as e2:
                 _log_to_db(source, text, None, 1, False, _safe_error_text(e2)[:500])
                 raise
         _log_to_db(source, text, None, 1, False, _safe_error_text(e)[:500])
         raise
+
+
+def _provider_msg_id_as_int(delivery: Delivery) -> int | None:
+    try:
+        return int(delivery.provider_message_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _delivery_to_response(delivery: Delivery) -> dict:
+    if delivery.raw:
+        return delivery.raw
+    return {
+        "ok": True,
+        "result": {
+            "message_id": delivery.provider_message_id,
+            "chat": {"id": delivery.conversation_id},
+        },
+    }
 
 
 def push_md(text: str, source: str = "manual") -> dict:

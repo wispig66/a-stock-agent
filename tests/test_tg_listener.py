@@ -9,6 +9,7 @@ import requests
 ROOT = Path(__file__).resolve().parents[1]
 
 from stock_codex.apps import tg_listener as tl  # noqa: E402
+from stock_codex.channels import ChannelMessage, Delivery  # noqa: E402
 
 
 def _seed_db(path):
@@ -138,6 +139,101 @@ def test_handle_wrong_chat_id_silent(tmp_path, monkeypatch):
     p.assert_not_called()
     send.assert_not_called()
     r.assert_not_called()
+
+
+def test_feishu_channel_message_replies_to_feishu_and_resets_context(monkeypatch):
+    monkeypatch.setenv("FEISHU_ALLOWED_CHAT_IDS", "oc_1")
+    monkeypatch.setattr(tl, "TG_CHAT_ID", "tg-chat")
+    sent = []
+
+    class FakeGateway:
+        def send_text(self, text, *, source, channel, target, format):
+            msg_id = "om_1" if channel == "feishu" else "42"
+            sent.append((channel, target, text, format, source))
+            return Delivery(
+                channel=channel,
+                account_id="fake",
+                conversation_id=target,
+                provider_message_id=msg_id,
+                editable=channel == "telegram",
+            )
+
+        def edit_text(self, delivery, text, *, source, format):
+            return delivery
+
+        def log_inbound_start(self, message, *, db_path=None):
+            return 1
+
+        def log_inbound_finish(self, *_args, **_kwargs):
+            return None
+
+        def log_inbound_update_parsed(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(tl, "get_default_gateway", lambda: FakeGateway())
+
+    tl.handle_channel_message(ChannelMessage(
+        channel="feishu",
+        account_id="cli_x",
+        conversation_id="oc_1",
+        sender_id="ou_1",
+        message_id="om_in",
+        text="/help",
+    ))
+    tl._tg_send("after")
+
+    assert sent[0][0] == "feishu"
+    assert sent[0][1] == "oc_1"
+    assert "交易流水命令" in sent[0][2]
+    assert sent[-1][0] == "telegram"
+    assert sent[-1][1] == "tg-chat"
+
+
+def test_feishu_non_editable_channel_skips_streaming_edits(monkeypatch):
+    sent = []
+    delivery = Delivery(
+        channel="feishu",
+        account_id="cli_x",
+        conversation_id="oc_1",
+        provider_message_id="om_ack",
+        editable=False,
+    )
+
+    class FakeGateway:
+        def edit_text(self, delivery, text, *, source, format):
+            sent.append((text, source, format))
+            return Delivery(
+                channel="feishu",
+                account_id="cli_x",
+                conversation_id="oc_1",
+                provider_message_id=f"om_{len(sent)}",
+                editable=False,
+            )
+
+    monkeypatch.setattr(tl, "get_default_gateway", lambda: FakeGateway())
+    tl._response_deliveries["om_ack"] = delivery
+
+    tl._tg_edit("om_ack", "🔍 600519\n\n中间流式内容")
+    tl._tg_edit("om_ack", "<b>最终卡片</b>", parse_mode="HTML")
+
+    assert sent == [("最终卡片", "tg-listener-edit", "plain")]
+
+
+def test_feishu_allowed_chat_wildcard_is_explicit_opt_in(monkeypatch):
+    monkeypatch.setenv("FEISHU_ALLOWED_CHAT_IDS", "*")
+
+    assert tl._is_allowed_chat("feishu", "oc_any")
+
+
+def test_non_telegram_html_is_downgraded_to_plain_text():
+    body, fmt = tl._format_for_channel(
+        "<b>卡片</b><br><pre>风险 &amp; 买点</pre>",
+        parse_mode="HTML",
+        channel="feishu",
+    )
+
+    assert fmt == "plain"
+    assert body == "卡片\n风险 & 买点"
 
 
 def test_handle_chinese_no_hit(tmp_path, monkeypatch):
@@ -426,6 +522,7 @@ def test_main_logs_recovery_after_poll_failures(monkeypatch):
     """Telegram 长轮询短暂失败后恢复时，必须有明确恢复日志。"""
     monkeypatch.setattr(tl, "TG_TOKEN", "token")
     monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "999")
+    monkeypatch.setattr(tl, "_acquire_poll_lock", lambda: object())
     monkeypatch.setattr(tl, "_load_offset", lambda: 0)
     monkeypatch.setattr(tl, "_save_offset", lambda offset: None)
     monkeypatch.setattr(tl.time, "sleep", lambda seconds: None)
@@ -465,6 +562,7 @@ def test_main_alerts_only_after_poll_failure_threshold(monkeypatch):
     monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "999")
     monkeypatch.setattr(tl, "POLL_ALERT_AFTER_FAILURES", 3)
     monkeypatch.setattr(tl, "POLL_ALERT_EVERY_FAILURES", 20)
+    monkeypatch.setattr(tl, "_acquire_poll_lock", lambda: object())
     monkeypatch.setattr(tl, "_load_offset", lambda: 0)
     monkeypatch.setattr(tl, "_save_offset", lambda offset: None)
     monkeypatch.setattr(tl.time, "sleep", lambda seconds: None)
@@ -490,3 +588,19 @@ def test_main_alerts_only_after_poll_failure_threshold(monkeypatch):
     error.assert_called_once()
     assert "getUpdates failed #3" in error.call_args.args[0]
     assert error.call_args.kwargs.get("exc_info") is True
+
+
+def test_acquire_poll_lock_rejects_duplicate_poller(tmp_path, monkeypatch):
+    """同一个 bot 只能有一个 getUpdates 长轮询进程。"""
+    monkeypatch.setattr(tl, "POLL_LOCK_FILE", tmp_path / "tg_listener.lock")
+    first = tl._acquire_poll_lock()
+    try:
+        with patch.object(tl.log, "critical") as critical, pytest.raises(SystemExit) as exc:
+            tl._acquire_poll_lock()
+    finally:
+        first.close()
+
+    assert exc.value.code == 78
+    critical.assert_called_once_with(
+        "tg_listener already running; refuse duplicate getUpdates poller"
+    )
