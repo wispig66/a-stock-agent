@@ -1,8 +1,10 @@
 # A Stock Agent
 
-面向 A 股短线研究的本地智能助理。它把盘前计划、盘中纪律提醒、盘后复盘、周复盘、异动监控、个股/题材问答接到 Telegram 和飞书里，适合个人在本机长期运行。
+基于 Codex skills 和 Codex automations 的本地 A 股短线研究 Agent。
 
-本项目不自动下单，不连接券商，不承诺收益。它的定位是「研究 + 记录 + 推送」工具，而不是交易机器人。
+它把「盘前计划、盘中纪律、盘后复盘、周复盘、异动监控、随时问答」拆成一组可审计的 Codex skill：先由确定性脚本拉取行情、题材、消息和持仓数据，形成 fact pack；再由 Codex/LLM 生成交易研究卡片；最后通过 Telegram 或飞书推送给用户。
+
+> 本项目只做研究、记录和提醒，不自动下单，不连接券商，不承诺收益。所有交易决策和实际下单都由使用者自行完成。
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green" alt="License: MIT"></a>
@@ -11,36 +13,61 @@
   <img src="https://img.shields.io/badge/runtime-macOS-lightgrey" alt="macOS runtime">
 </p>
 
+## 核心定位
+
+A Stock Agent 不是普通行情脚本，也不是聊天机器人。它的核心是一个本机运行的 **Codex Agent 工作流**：
+
+```text
+Codex automation 到点触发
+  -> 运行对应 stock-* skill
+  -> skill 调用确定性脚本生成 fact pack
+  -> Codex/LLM 基于 fact pack 写研究卡片
+  -> card validator 校验关键数据来源
+  -> Telegram / 飞书推送
+  -> SQLite 留痕，供后续复盘和下一轮分析使用
+```
+
+长时间轮询类任务不交给 LLM 常驻，而是由本地 daemon 负责：
+
+```text
+launchd 运行长时 daemon
+  -> watch_loop / anomaly_loop / theme_emergence_loop
+  -> 命中阈值后直接推送或写入上下文
+  -> Codex skill 在固定时点读取这些上下文做综合判断
+```
+
+这个设计的目标是：让 LLM 做它擅长的叙事、归因和决策整理，让确定性脚本负责数据抓取、状态记录、去重、校验和推送。
+
 ## 适合谁
 
-- 想用 AI 辅助整理 A 股短线交易计划，但仍然自己做最终决策的人。
-- 想把盘前、盘中、盘后流程固定下来，减少临盘随意操作的人。
-- 想通过 Telegram 或飞书随时问「这只票怎么看」「这个题材能不能参与」的人。
-- 想在本机运行，不想把持仓、token、交易记录放到第三方 SaaS 的人。
+- 你已经在做 A 股短线研究，希望把盘前、盘中、盘后流程固定下来。
+- 你希望 Codex 到点自动生成研究卡片，而不是每天手动整理行情和消息。
+- 你希望通过 Telegram 或飞书随时问单股、题材、事件，但数据和记录仍保存在本机。
+- 你能接受本项目需要本机环境、IM 机器人、Codex 和数据源共同稳定运行。
 
 不适合：
 
-- 想要自动买卖股票的人。
-- 想要保证胜率或收益的人。
-- 不愿意维护 Telegram/飞书机器人配置、本机环境和数据源可用性的人。
+- 想要自动交易或券商下单的人。
+- 想要“稳赚信号”或黑盒荐股的人。
+- 不愿意维护 token、持仓文件、本地数据库和定时任务的人。
 
-## 能做什么
+## 功能概览
 
-| 能力 | 说明 |
-|------|------|
-| 盘前计划 | 生成今日是否出手、主攻/潜伏/备选/禁买、仓位和触发条件。 |
-| 盘中提醒 | 在 09:30、09:45、11:30、14:30 给纪律提醒或叙事复盘。 |
-| 异动监控 | 盘中监控观察池、持仓、涨停/炸板/新高等异动。 |
-| 盘后复盘 | 总结当日题材、情绪、消息、持仓处理和明日预案。 |
-| 周复盘 | 周日晚生成本周市场叙事和下周重点方向。 |
-| 随时问答 | 在 Telegram/飞书发送股票代码、股票名或 `/ask <问题>`。 |
-| IM 网关 | 一个进程统一处理 Telegram long polling 和飞书 WebSocket。 |
-| 多通道推送 | 定时任务可同时推送到 Telegram 和飞书。 |
-| 本地留痕 | SQLite 记录命令、推送、决策票和运行状态，便于回溯。 |
+| 模块 | 入口 | 说明 |
+|------|------|------|
+| 盘前计划 | `stock-premarket` | 生成今日是否出手、主攻/潜伏/备选/禁买、仓位和触发条件。 |
+| 盘中纪律 | `stock-intraday` | 09:30、09:45、11:30、14:30 四个时点输出纪律提醒或叙事快照。 |
+| 盘后复盘 | `stock-postmarket` | 总结当日题材、情绪、消息、持仓处理和明日预案。 |
+| 周复盘 | `stock-weekly` | 周日晚生成本周市场叙事、下周方向和候选主线。 |
+| 异动汇总 | `stock-anomaly` | 把盘中异动日志聚类成“新方向是否冒头”的叙事卡片。 |
+| 单股分析 | `stock-query` | 输入 6 位代码或股票名，输出买入/观察/回避或持仓处理建议。 |
+| 随时分析 | `stock-ask` | 输入题材、事件或自由问题，自动路由到单股、板块或事件卡。 |
+| IM 网关 | `channel_listener.py` | 统一处理 Telegram long polling 和飞书 WebSocket 入站消息。 |
+| 本地审计 | SQLite | 记录入站命令、出站推送、决策票、运行状态和历史复盘。 |
 
 ## 三分钟快速开始
 
-新手推荐直接跑快速安装脚本：
+新用户可以先跑快速安装脚本，把本地依赖、数据库、Telegram 配置和 IM 网关跑起来：
 
 ```bash
 git clone https://github.com/wispig66/a-stock-agent.git
@@ -48,17 +75,9 @@ cd a-stock-agent
 bash scripts/quickstart.sh
 ```
 
-脚本会做这些事：
+脚本会检查或安装 `uv`，同步 Python 依赖，初始化 SQLite，创建 `.env`，引导你填写 Telegram Bot Token 和 Chat ID，设置 Telegram 菜单，并启动统一 IM gateway。
 
-1. 检查并安装 `uv`。
-2. 安装 Python 依赖。
-3. 初始化 `data/daily.db`。
-4. 创建 `.env`。
-5. 让你输入 Telegram Bot Token 和 Chat ID。
-6. 设置 Telegram 菜单。
-7. 启动统一 IM gateway。
-
-运行成功后，在 Telegram 给机器人发送：
+这一步只代表 **随时问答入口可用**。你可以在 Telegram 里发送：
 
 ```text
 /help
@@ -66,25 +85,44 @@ bash scripts/quickstart.sh
 /ask 光伏今天能不能看
 ```
 
-常用安装变体：
+如果你要让系统每天自动跑盘前、盘中、盘后和周复盘，还需要安装 Codex automations 和长时 daemon：
+
+```bash
+bash scripts/quickstart.sh --install-schedule
+```
+
+常用选项：
 
 ```bash
 # 只安装和初始化，不启动 IM gateway
 bash scripts/quickstart.sh --no-start
 
-# 安装后顺便配置飞书
+# 安装后进入飞书配置向导
 bash scripts/quickstart.sh --with-feishu
 
-# 安装 Codex 定时任务和 launchd 长时服务
-bash scripts/quickstart.sh --install-schedule
+# 安装后跑测试
+bash scripts/quickstart.sh --test
 
-# 非交互安装，适合服务器或脚本化部署
+# 非交互安装，适合脚本化部署
 TG_BOT_TOKEN=xxx TG_CHAT_ID=yyy bash scripts/quickstart.sh
 ```
 
+## 前置条件
+
+| 依赖 | 说明 |
+|------|------|
+| macOS | 当前主要支持的运行环境；launchd 调度按 macOS 设计。 |
+| Codex | 用于执行 `stock-*` skills 和 Codex automations。 |
+| Python 3.11/3.12 | 由 `uv` 管理。 |
+| SQLite | 保存本地运行状态和审计日志。 |
+| Telegram bot | 默认 IM 入口和推送通道。 |
+| 飞书 bot | 可选；使用官方 WebSocket SDK，不需要公网 webhook。 |
+
+如果只是开发或跑单元测试，Codex 和 IM token 不是必须的；如果要完整跑自动化研究流程，Codex、Telegram 和本机常驻环境都需要配置好。
+
 ## 手动安装
 
-如果你想一步步控制安装过程：
+如果你不想使用快速脚本，可以手动执行：
 
 ```bash
 git clone https://github.com/wispig66/a-stock-agent.git
@@ -107,7 +145,7 @@ CHANNELS_ENABLED=telegram
 CHANNELS_NOTIFY=telegram
 ```
 
-启动：
+启动 IM gateway：
 
 ```bash
 bash scripts/start_tg_listener.sh
@@ -119,14 +157,50 @@ bash scripts/start_tg_listener.sh
 bash scripts/stop_tg_listener.sh
 ```
 
-`start_tg_listener.sh` 这个名字为了兼容旧用法保留；实际启动的是统一 IM gateway：`scripts/channel_listener.py`。
+`start_tg_listener.sh` 是历史兼容名称；当前实际启动的是统一 IM gateway：`scripts/channel_listener.py`。
 
-## Telegram 配置
+## 调度
+
+本项目把运行时分成两类：
+
+- **Codex automations**：短时 LLM 任务，到点运行一次 skill，生成卡片后退出。
+- **launchd 运行长时 daemon**：盘中常驻进程，负责不适合 LLM 长跑的轮询、阈值监控和 IM gateway 常驻。
+
+| 类型 | 任务 | 入口 |
+|------|------|------|
+| Codex automations | 盘前计划 | `stock-premarket` |
+| Codex automations | 盘中四个时点 | `stock-intraday-*` |
+| Codex automations | 盘后复盘 | `stock-postmarket` |
+| Codex automations | 周复盘 | `stock-weekly-review` |
+| launchd 运行长时 daemon | 观察池/持仓轮询 | `com.user.stockwatchloop` |
+| launchd 运行长时 daemon | 全市场异动监控 | `com.user.stockanomalyloop` |
+| launchd 运行长时 daemon | 题材冒头监控 | `com.user.stockthemeloop` |
+| launchd 运行长时 daemon | 可选 IM gateway 常驻 | `com.user.stocktglistener` |
+
+安装调度：
+
+```bash
+bash scripts/sync_codex_skills.sh
+bash scripts/install_codex_automations.sh
+bash scripts/install_runtime_services.sh
+```
+
+诊断：
+
+```bash
+bash scripts/doctor_codex_runtime.sh
+```
+
+注意：如果仓库放在 `~/Desktop` 等受 macOS TCC 保护的目录，launchd 后台进程可能无法正常读取当前目录。更推荐放在 `~/code/a-stock-agent`，或者用 `bash scripts/start_tg_listener.sh` 在交互式终端里启动 IM gateway。
+
+## Telegram 和飞书
+
+### Telegram
 
 1. 在 Telegram 找到 `@BotFather`。
 2. 创建 bot，拿到 `TG_BOT_TOKEN`。
 3. 给 bot 发一条消息，或把 bot 拉进群。
-4. 获取你的 `TG_CHAT_ID`。
+4. 获取 `TG_CHAT_ID`。
 5. 写入 `.env`。
 6. 运行：
 
@@ -135,17 +209,16 @@ uv run --no-sync python scripts/set_tg_commands.py
 bash scripts/start_tg_listener.sh
 ```
 
-如果出现 `409 Conflict`，通常说明同一个 bot token 有两个进程在同时 long polling。先停掉旧进程：
+如果出现 `409 Conflict`，通常说明同一个 bot token 有两个进程在同时 long polling。先停旧进程，再重新启动：
 
 ```bash
 bash scripts/stop_tg_listener.sh
+bash scripts/start_tg_listener.sh
 ```
 
-再重新启动。
+### 飞书
 
-## 飞书配置
-
-飞书固定使用官方 `lark-oapi` WebSocket SDK，不需要公网 webhook 地址。推荐通过向导配置：
+飞书使用官方 `lark-oapi` WebSocket SDK，不需要公网 webhook 地址。推荐通过向导配置：
 
 ```bash
 uv run --no-sync python scripts/configure_feishu.py
@@ -182,88 +255,71 @@ FEISHU_REQUIRE_MENTION=true
 | 单股分析 | `query` | 提示用户发送代码或股票名 |
 | 随时分析 | `ask` | 提示用户使用 `/ask` |
 
+## 数据可信度和校验
+
+项目要求研究卡片里的关键事实来自 fact pack，而不是模型凭印象编写。
+
+- scheduled skills 会生成 `ALLOWED` 事实白名单。
+- `push.py` 在推送前调用 `card_validator` 校验股票代码、股名、涨跌幅、连板数、涨停/炸板数量等关键字段。
+- 定时任务默认以 enforce 思路运行：数据不在 fact pack 中，就不应该作为事实写进卡片。
+- 所有推送和入站命令会写入 SQLite，便于复盘和追踪问题。
+
+这套机制不能保证投资结论正确，但能减少“模型编数据”的风险。
+
+## 项目结构
+
+```text
+.agents/skills/          Codex skill 定义：盘前、盘中、盘后、周复盘、异动、问答
+stock_codex/             Python 包
+  apps/                  runtime 入口
+  channels/              Telegram / 飞书 gateway adapter
+  domain/                交易日历、持仓、风控、决策票
+  infra/                 SQLite、日志、通知
+  market/                行情、题材、事件、卡片校验
+  schema/                SQLite schema
+scripts/                 安装、迁移、诊断、配置脚本
+bin/                     手动或 launchd runtime 入口
+launchd/                 launchd 模板
+tests/                   pytest 测试
+docs/                    运行手册和设计文档
+```
+
 ## 常用命令
 
 ```bash
 # 快速安装/启动
 bash scripts/quickstart.sh
 
+# 安装 Codex automations 和 launchd daemon
+bash scripts/quickstart.sh --install-schedule
+
 # 诊断本机运行环境
 bash scripts/doctor_codex_runtime.sh
-
-# 运行测试
-uv run --no-sync pytest -q
-
-# 刷新交易日历
-uv run --no-sync python -m stock_codex.tools.refresh_calendar
-
-# 配置飞书
-uv run --no-sync python scripts/configure_feishu.py
 
 # 启动/停止 IM gateway
 bash scripts/start_tg_listener.sh
 bash scripts/stop_tg_listener.sh
+
+# 配置飞书
+uv run --no-sync python scripts/configure_feishu.py
+
+# 刷新交易日历
+uv run --no-sync python -m stock_codex.tools.refresh_calendar
+
+# 运行测试
+uv run --no-sync pytest -q
 ```
 
-## 调度
+## 本地配置和隐私
 
-本项目按「本机运行」设计：电脑保持在线，Codex automations 负责短时 LLM 任务，launchd 运行长时 daemon 负责盘中常驻监听和轮询。
-
-| 类型 | 任务 | 入口 |
-|------|------|------|
-| Codex automations | 盘前计划 | `stock-premarket` |
-| Codex automations | 盘中四个时点 | `stock-intraday-*` |
-| Codex automations | 盘后复盘 | `stock-postmarket` |
-| Codex automations | 周复盘 | `stock-weekly-review` |
-| launchd 运行长时 daemon | 观察池/持仓轮询 | `com.user.stockwatchloop` |
-| launchd 运行长时 daemon | 全市场异动监控 | `com.user.stockanomalyloop` |
-| launchd 运行长时 daemon | 题材冒头监控 | `com.user.stockthemeloop` |
-| launchd 运行长时 daemon | 可选 IM gateway 常驻 | `com.user.stocktglistener` |
-
-安装调度：
-
-```bash
-bash scripts/sync_codex_skills.sh
-bash scripts/install_codex_automations.sh
-bash scripts/install_runtime_services.sh
-```
-
-也可以在快速安装时一次完成：
-
-```bash
-bash scripts/quickstart.sh --install-schedule
-```
-
-注意：如果仓库放在 `~/Desktop` 等受 macOS TCC 保护的目录，launchd 后台进程可能无法正常读取当前目录。更推荐放在 `~/code/a-stock-agent`，或者用 `bash scripts/start_tg_listener.sh` 在交互式终端里启动 IM gateway。
-
-## 项目结构
-
-```text
-.agents/skills/          Codex skill：盘前、盘中、盘后、周复盘、异动、问答
-stock_codex/             Python 包
-  apps/                  runtime 入口
-  channels/              Telegram / 飞书 gateway adapter
-  domain/                交易日历、持仓、风控、决策票
-  infra/                 SQLite、日志、通知
-  market/                行情、题材、事件、卡片数据
-  schema/                SQLite schema
-scripts/                 安装、迁移、诊断、配置脚本
-bin/                     launchd/manual runtime 入口
-launchd/                 launchd 模板
-tests/                   pytest 测试
-docs/                    运行手册和设计文档
-```
-
-## 配置和隐私
-
-这些文件是模板，可以提交：
+这些是模板文件，可以提交：
 
 - `.env.example`
 - `holdings.example.yaml`
 - `risk_config.example.yaml`
 - `risk_state.example.yaml`
 
-这些文件是本地私有数据，不要提交：
+这些是本地私有文件，不要提交：
 
 - `.env`
 - `data/`
@@ -285,11 +341,9 @@ git grep -n -I -E 'TG_BOT_TOKEN=[0-9]{6,}:[A-Za-z0-9_-]{20,}|FEISHU_APP_SECRET=[
 
 | 数据源 | 用途 |
 |--------|------|
-| AKShare | A 股行情、涨跌停、交易日历等基础数据 |
-| 同花顺 | 热点题材、概念归因 |
-| 东方财富 | 榜单、行情和部分 fallback 数据 |
-| mootdx | 通达信行情/K 线备用通道 |
-| 财联社 | 消息面上下文 |
+| AKShare | A 股行情、交易日历、涨跌停、异动等基础数据。 |
+| 同花顺/东方财富/财联社 | 题材归因、榜单、新闻和行情 fallback。 |
+| a-stock-data 相关封装 | 部分扩展数据源封装参考，源码内保留 Apache 2.0 attribution。 |
 
 数据源可能限流、变更字段、受代理规则影响。项目会尽量降级处理，但不能保证任何第三方数据源永远可用。
 
@@ -311,20 +365,18 @@ uv run --no-sync pytest -q
 
 贡献方向：
 
-- 新数据源适配和字段变更修复。
-- Telegram/飞书 gateway 稳定性改进。
+- Codex skill contract 和 fact pack 质量。
+- 数据源字段变更适配和降级策略。
+- Telegram/飞书 gateway 稳定性。
 - 更多 IM adapter。
-- 卡片质量、风险提示、回测记录和决策复盘。
-- 文档和新手安装体验。
+- 卡片校验、复盘记录、风险提示和文档体验。
 
 提交 PR 前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。安全问题请看 [SECURITY.md](SECURITY.md)，不要在公开 issue 里贴 token、chat id、持仓或日志。
 
 ## 致谢
 
-- [AKShare](https://github.com/akfamily/akshare)
-- [mootdx](https://github.com/mootdx/mootdx)
-- [simonlin1212/a-stock-data](https://github.com/simonlin1212/a-stock-data)
-- [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 的开源项目首页结构给了本文档一些参考。
+- [AKShare](https://github.com/akfamily/akshare)：A 股行情、交易日历和市场数据。
+- [simonlin1212/a-stock-data](https://github.com/simonlin1212/a-stock-data)：部分扩展数据源封装参考，保留 Apache 2.0 attribution。
 
 ## 许可证
 
