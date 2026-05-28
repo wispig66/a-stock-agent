@@ -27,6 +27,7 @@
 ## 目录
 
 - [核心定位](#核心定位)
+- [示例](#示例)
 - [适合谁](#适合谁)
 - [功能概览](#功能概览)
 - [三分钟快速开始](#三分钟快速开始)
@@ -59,6 +60,14 @@ launchd 运行长时 daemon
 ```
 
 这个设计的目标是：让 LLM 做它擅长的叙事、归因和决策整理，让确定性脚本负责数据抓取、状态记录、去重、校验和推送。
+
+## 示例
+
+以下图片使用脱敏示例数据，只展示输出形态和工作流，不构成投资建议。
+
+![Telegram 研究卡片示例](docs/assets/telegram-card-demo.svg)
+
+![Codex Agent 工作流](docs/assets/codex-agent-flow.svg)
 
 ## 适合谁
 
@@ -333,28 +342,6 @@ uv run --no-sync python -m stock_codex.tools.refresh_calendar
 # 运行测试
 uv run --no-sync pytest -q
 ```
-
-## 安全与隐私
-
-本项目会在本机保存 IM token、chat id、持仓、运行日志和 SQLite 数据库。开源或推送前，请确认这些文件没有被提交：
-
-- `.env`
-- `data/`
-- `logs/`
-- `holdings.yaml`
-- `risk_config.yaml`
-- `risk_state.yaml`
-
-公开仓库或推送前建议检查：
-
-```bash
-git status --short
-git grep -n -I -E 'TG_BOT_TOKEN=[0-9]{6,}:[A-Za-z0-9_-]{20,}|FEISHU_APP_SECRET=[A-Za-z0-9_-]{20,}|Authorization:[[:space:]]+Bearer[[:space:]]+[A-Za-z0-9._-]{20,}' -- . ':!uv.lock' ':!README.md' ':!SECURITY.md'
-```
-
-如果 token 曾经出现在日志、截图、聊天记录或提交历史里，应该直接轮换。
-
-更完整的披露和处理方式见 [SECURITY.md](SECURITY.md)。
 
 ## 数据源
 
