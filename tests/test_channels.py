@@ -187,6 +187,33 @@ def test_feishu_send_text_can_target_open_id(monkeypatch):
     assert calls[1][1]["json"]["receive_id"] == "ou_1"
 
 
+def test_feishu_send_text_can_render_markdown_card(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/auth/v3/tenant_access_token/internal"):
+            return FakeResponse({"code": 0, "tenant_access_token": "t-1", "expire": 7200})
+        return FakeResponse({"code": 0, "data": {"message_id": "om_1"}})
+
+    monkeypatch.setattr("stock_codex.channels.core.requests.post", fake_post)
+    adapter = FeishuAdapter(app_id="cli_x", app_secret="secret", default_conversation_id="oc_1")
+
+    adapter.send_text("oc_1", "**hello**", format="markdown")
+
+    assert calls[1][1]["json"]["msg_type"] == "interactive"
+    content = calls[1][1]["json"]["content"]
+    assert '"tag": "markdown"' in content
+    assert "**hello**" in content
+
+
 def test_telegram_edit_only_ignores_message_not_modified(monkeypatch):
     calls = []
 
@@ -289,6 +316,7 @@ def test_notify_push_uses_gateway_and_keeps_push_log_compat(tmp_path, monkeypatc
     monkeypatch.setattr(notify, "DB", db)
     monkeypatch.setattr(notify, "CHAT_ID", "legacy-chat")
     monkeypatch.setattr(notify, "get_default_gateway", lambda: gateway)
+    monkeypatch.delenv("CHANNELS_NOTIFY", raising=False)
 
     result = notify.push("**hello**", source="unit")
 
@@ -309,7 +337,7 @@ def test_notify_push_falls_back_to_plain_text_on_html_parse_error(tmp_path, monk
     calls = []
 
     class FakeGateway:
-        def send_text(self, text: str, *, source: str, format: str):
+        def send_text(self, text: str, *, source: str, format: str, channel=None):
             calls.append((text, source, format))
             if format == "html":
                 raise RuntimeError("can't parse entities")
@@ -323,6 +351,7 @@ def test_notify_push_falls_back_to_plain_text_on_html_parse_error(tmp_path, monk
 
     monkeypatch.setattr(notify, "DB", db)
     monkeypatch.setattr(notify, "get_default_gateway", lambda: FakeGateway())
+    monkeypatch.delenv("CHANNELS_NOTIFY", raising=False)
 
     result = notify.push("bad **html", source="unit")
 
@@ -331,3 +360,20 @@ def test_notify_push_falls_back_to_plain_text_on_html_parse_error(tmp_path, monk
     with sqlite3.connect(db) as conn:
         row = conn.execute("SELECT msg_id, error FROM push_log").fetchone()
     assert row == (7, "HTML parse failed, fallback to plaintext")
+
+
+def test_notify_push_fans_out_to_configured_channels(tmp_path, monkeypatch):
+    db = _db(tmp_path / "t.db")
+    adapter = MockAdapter()
+    gateway = ChannelGateway({"telegram": adapter, "feishu": adapter}, default_channel="telegram", db_path=db)
+    monkeypatch.setattr(notify, "DB", db)
+    monkeypatch.setattr(notify, "CHAT_ID", "legacy-chat")
+    monkeypatch.setattr(notify, "get_default_gateway", lambda: gateway)
+    monkeypatch.setenv("CHANNELS_NOTIFY", "telegram,feishu")
+
+    result = notify.push("**hello**", source="unit")
+
+    assert result["result"]["message_id"] == "1"
+    assert adapter.sent[0]["format"] == "html"
+    assert adapter.sent[1]["format"] == "markdown"
+    assert adapter.sent[1]["text"] == "**hello**"

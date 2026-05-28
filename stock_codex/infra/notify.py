@@ -188,27 +188,56 @@ def push(text: str, source: str = "manual", raw: bool = False) -> dict:
     """默认：自动 md→HTML 渲染 + 自动入库。
     raw=True 跳过转换，按纯文本发送（emoji / 纯文本 / 调试用）。
     """
-    body = text if raw else md_to_tg_html(text)
-    fmt = "plain" if raw else "html"
-    try:
-        delivery = get_default_gateway().send_text(body, source=source, format=fmt)
-        msg_id = _provider_msg_id_as_int(delivery)
-        _log_to_db(source, text, msg_id, 1, True, None)
-        return _delivery_to_response(delivery)
-    except Exception as e:
-        # HTML 解析失败时降级为纯文本兜底（避免推送丢失）
-        if not raw and "can't parse" in str(e).lower():
-            try:
-                delivery = get_default_gateway().send_text(text, source=source, format="plain")
-                msg_id = _provider_msg_id_as_int(delivery)
-                _log_to_db(source, text, msg_id, 1, True,
-                           "HTML parse failed, fallback to plaintext")
-                return _delivery_to_response(delivery)
-            except Exception as e2:
-                _log_to_db(source, text, None, 1, False, _safe_error_text(e2)[:500])
+    deliveries: list[Delivery] = []
+    errors: list[str] = []
+    warnings: list[str] = []
+    for channel in _notify_channels():
+        try:
+            delivery, warning = _send_to_channel(text, source=source, raw=raw, channel=channel)
+            deliveries.append(delivery)
+            if warning:
+                warnings.append(warning)
+        except Exception as e:
+            errors.append(f"{channel or 'default'}: {_safe_error_text(e)[:300]}")
+
+    if not deliveries:
+        error = "; ".join(errors)[:500] if errors else "no delivery"
+        _log_to_db(source, text, None, 1, False, error)
+        raise NotifyError(error)
+
+    primary = deliveries[0]
+    msg_id = _provider_msg_id_as_int(primary)
+    notes = warnings + ([f"partial failure: {'; '.join(errors)}"] if errors else [])
+    partial_error = "; ".join(notes)[:500] if notes else None
+    _log_to_db(source, text, msg_id, 1, True, partial_error)
+    if partial_error:
+        print(f"[notify] {partial_error}", file=sys.stderr, flush=True)
+    return _delivery_to_response(primary)
+
+
+def _notify_channels() -> list[str | None]:
+    raw = os.environ.get("CHANNELS_NOTIFY", "").strip()
+    if not raw:
+        return [None]
+    channels = [x.strip() for x in raw.split(",") if x.strip()]
+    return channels or [None]
+
+
+def _send_to_channel(text: str, *, source: str, raw: bool, channel: str | None) -> tuple[Delivery, str | None]:
+    if raw:
+        return get_default_gateway().send_text(text, source=source, channel=channel, format="plain"), None
+    if channel in (None, "", "telegram"):
+        body = md_to_tg_html(text)
+        try:
+            return get_default_gateway().send_text(body, source=source, channel=channel, format="html"), None
+        except Exception as e:
+            if "can't parse" not in str(e).lower():
                 raise
-        _log_to_db(source, text, None, 1, False, _safe_error_text(e)[:500])
-        raise
+            return (
+                get_default_gateway().send_text(text, source=source, channel=channel, format="plain"),
+                "HTML parse failed, fallback to plaintext",
+            )
+    return get_default_gateway().send_text(text, source=source, channel=channel, format="markdown"), None
 
 
 def _provider_msg_id_as_int(delivery: Delivery) -> int | None:

@@ -269,10 +269,11 @@ class FeishuAdapter:
     def send_text(self, target: str, text: str, *, format: str = "plain") -> Delivery:
         token = self._tenant_access_token()
         receive_id, receive_id_type = self._resolve_receive_id(target)
+        msg_type, content = self._message_body(text, format=format)
         payload = {
             "receive_id": receive_id,
-            "msg_type": "text",
-            "content": json.dumps({"text": text}, ensure_ascii=False),
+            "msg_type": msg_type,
+            "content": content,
         }
         r = requests.post(
             f"{self.api_base}/im/v1/messages",
@@ -310,6 +311,14 @@ class FeishuAdapter:
             if target.startswith(prefix):
                 return target[len(prefix):], receive_id_type
         return target, self.receive_id_type
+
+    def _message_body(self, text: str, *, format: str) -> tuple[str, str]:
+        if format in {"markdown", "lark_md", "interactive"}:
+            return "interactive", json.dumps({
+                "config": {"wide_screen_mode": True},
+                "elements": [{"tag": "markdown", "content": text}],
+            }, ensure_ascii=False)
+        return "text", json.dumps({"text": text}, ensure_ascii=False)
 
     def edit_text(self, delivery: Delivery, text: str, *, format: str = "plain") -> bool:
         return False
