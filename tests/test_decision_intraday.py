@@ -256,3 +256,64 @@ def test_watch_loop_trend_alerts_inside_trend_buy_zone():
     assert any(kind == "watch_trigger" for kind, _ in alerts)
     assert "趋势买点" in next(msg for kind, msg in alerts if kind == "watch_trigger")
     assert "仓位 ≤15%" in next(msg for kind, msg in alerts if kind == "watch_trigger")
+
+
+def test_watch_loop_trend_alerts_take_profit_zone():
+    watch_map = {
+        "000001": {
+            "code": "000001",
+            "name": "趋势票",
+            "genre": "D",
+            "lane": "trend",
+            "buy": 8.8,
+            "entry_low": 8.8,
+            "entry_high": 8.8,
+            "max_chase_price": 9.02,
+            "stop_loss": 8.5,
+            "deadline_time": "10:30",
+            "position_max_pct": 15,
+            "target_pct": 5.0,
+            "status": "triggered",
+        },
+    }
+
+    alerts = watch_loop.evaluate(
+        {"代码": "000001", "名称": "趋势票", "最新价": 9.25, "涨跌幅": 7.0, "量比": 2.0},
+        watch_map=watch_map,
+        hold_map={},
+        today=date(2026, 5, 19),
+        now=watch_loop.datetime(2026, 5, 19, 10, 0),
+    )
+
+    assert any(kind == "watch_take_profit" for kind, _ in alerts)
+    assert "至少锁定部分利润" in next(msg for kind, msg in alerts if kind == "watch_take_profit")
+
+
+def test_watch_loop_trend_does_not_take_profit_before_triggered():
+    watch_map = {
+        "000001": {
+            "code": "000001",
+            "name": "趋势票",
+            "genre": "D",
+            "lane": "trend",
+            "buy": 8.8,
+            "entry_low": 8.8,
+            "entry_high": 8.8,
+            "max_chase_price": 9.02,
+            "stop_loss": 8.5,
+            "deadline_time": "10:30",
+            "position_max_pct": 15,
+            "target_pct": 5.0,
+            "status": "pending",
+        },
+    }
+
+    alerts = watch_loop.evaluate(
+        {"代码": "000001", "名称": "趋势票", "最新价": 9.25, "涨跌幅": 7.0, "量比": 2.0},
+        watch_map=watch_map,
+        hold_map={},
+        today=date(2026, 5, 19),
+        now=watch_loop.datetime(2026, 5, 19, 10, 0),
+    )
+
+    assert not any(kind == "watch_take_profit" for kind, _ in alerts)

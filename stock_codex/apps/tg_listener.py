@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import csv
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -48,6 +49,7 @@ def _find_codex_bin() -> str:
 CODEX_BIN = _find_codex_bin()
 
 _ASK_RE = re.compile(r"^/ask(\+)?(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)
+_WATCH_RE = re.compile(r"^/watch(?:\s+(.+))?$", re.IGNORECASE | re.DOTALL)
 
 ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID") or os.environ.get("TG_CHAT_ID", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
@@ -409,10 +411,13 @@ HELP_TEXT = (
     "📒 交易流水命令\n"
     "\n"
     "格式：\n"
+    "  /watch <代码> [触发价] [止损价]\n"
     "  /buy  <代码> <价格> <手数> [理由] [@HH:MM]\n"
     "  /sell <代码> <价格> <手数> [理由] [@HH:MM]\n"
     "\n"
     "例子：\n"
+    "  /watch 002908\n"
+    "  /watch 002908 7.70 7.35\n"
     "  /buy 600519 12.34 10 二板接力\n"
     "  /sell 600519 15.0 5 止盈 @09:35\n"
     "\n"
@@ -429,6 +434,192 @@ HELP_TEXT = (
     "\n"
     "其它：直接发 6 位代码或股票名 → 单股分析。"
 )
+
+
+def parse_watch_command(text: str) -> Optional[dict]:
+    """解析 /watch <代码> [触发价] [止损价]。
+
+    只传代码 = 自动分析买卖点并盯盘；带触发价/止损价 = 用户覆盖触发单。
+    """
+    m = _WATCH_RE.match(text.strip())
+    if not m:
+        return None
+    payload = (m.group(1) or "").strip()
+    if not payload:
+        raise ValueError("格式：/watch <代码> [触发价] [止损价]\n例：/watch 002908")
+    parts = payload.split()
+    if len(parts) not in (1, 3):
+        raise ValueError("格式：/watch <代码> [触发价] [止损价]\n例：/watch 002908 或 /watch 002908 7.70 7.35")
+    code = parts[0]
+    if not (len(code) == 6 and code.isdigit()):
+        raise ValueError(f"代码必须 6 位数字，当前：{code}")
+    entry = stop = None
+    if len(parts) == 3:
+        try:
+            entry = float(parts[1])
+            stop = float(parts[2])
+        except ValueError:
+            raise ValueError("触发价/止损价必须是数字")
+        if entry <= 0 or stop <= 0:
+            raise ValueError("触发价/止损价必须 > 0")
+        if stop >= entry:
+            raise ValueError("止损价必须低于触发价")
+    return {"code": code, "entry_price": entry, "stop_price": stop}
+
+
+def _next_watch_trade_date(now: Optional[datetime] = None) -> str:
+    n = now or datetime.now()
+    today_s = n.date().isoformat()
+    trade_days = _load_trade_days()
+    if today_s in trade_days and n.time() < datetime.strptime("15:00", "%H:%M").time():
+        return today_s
+    for d in trade_days:
+        if d > today_s:
+            return d
+    d = n.date()
+    while True:
+        d = d.fromordinal(d.toordinal() + 1)
+        if d.weekday() < 5:
+            return d.isoformat()
+
+
+def _load_trade_days() -> list[str]:
+    path = DATA_DIR / "trade_calendar.csv"
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        out = []
+        for row in reader:
+            d = row.get("trade_date") or row.get("date") or row.get("cal_date")
+            if d:
+                out.append(d.replace("/", "-"))
+        return sorted(set(out))
+
+
+def handle_watch(parsed: dict, now: Optional[datetime] = None) -> str:
+    code = parsed["code"]
+    board = query.board_of(code)
+    if board is None:
+        raise ValueError(f"{code} 未找到该代码")
+    if board in ("star", "bse"):
+        label = "科创板" if board == "star" else "北交所"
+        raise ValueError(f"{code} 暂不支持{label}")
+    if query.is_st(code):
+        raise ValueError(f"{code} 是 ST 票，暂不纳入手工盯盘")
+
+    name = _stock_name_for_code(code)
+    trade_date = _next_watch_trade_date(now)
+    plan = build_watch_plan(
+        code,
+        override_entry=parsed.get("entry_price"),
+        override_stop=parsed.get("stop_price"),
+    )
+    with connect(DB_PATH) as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO watchlist_dynamic
+               (trade_date, created_at, concept_tag, code, name, role, entry_price,
+                stop_price, target_pct, discipline_type, action_window, status, source_emergence_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
+            (
+                trade_date,
+                datetime.now().isoformat(timespec="seconds"),
+                "手工盯盘",
+                code,
+                name,
+                "manual",
+                plan["entry_price"],
+                plan["stop_price"],
+                plan["target_pct"],
+                "D",
+                "before_1030",
+                "pending",
+            ),
+        )
+        conn.commit()
+    return (
+        f"✅ 已分析并开始盯盘：{code} {name}\n"
+        f"生效日：{trade_date}\n"
+        f"买点触发：{plan['entry_price']:.2f}；最多追：{plan['max_chase_price']:.2f}\n"
+        f"卖/失效：跌破 {plan['stop_price']:.2f}；第一止盈：{plan['take_profit_price']:.2f}\n"
+        f"依据：{plan['thesis']}\n"
+        "仓位提示：≤15%；命中条件会主动速报"
+    )
+
+
+def build_watch_plan(code: str, *, override_entry: float | None = None,
+                     override_stop: float | None = None) -> dict:
+    """生成 /watch 的可执行盯盘条件。
+
+    默认从新浪实时 + 日 K 计算趋势触发价；用户传入价格时只做校验和派生止盈。
+    """
+    rt = query.fetch_realtime(code)
+    close = float(rt["close"])
+    if close <= 0:
+        raise ValueError(f"{code} 当前实时价格无效，暂不能生成盯盘计划")
+    if override_entry is not None and override_stop is not None:
+        entry = float(override_entry)
+        stop = float(override_stop)
+        return _watch_plan_payload(
+            entry=entry,
+            stop=stop,
+            target_pct=5.0,
+            thesis=f"用户指定触发价；当前价 {close:.2f}",
+        )
+
+    kline = query.fetch_kline(code, days=30)
+    if kline is None or kline.empty or len(kline) < 10:
+        entry = round(close * 1.015, 2)
+        stop = round(close * 0.96, 2)
+        return _watch_plan_payload(
+            entry=entry,
+            stop=stop,
+            target_pct=5.0,
+            thesis=f"K线不足，按当前价 {close:.2f} 上方 1.5% 触发、4%保护",
+        )
+
+    df = kline.copy()
+    for col in ("close", "high", "low"):
+        df[col] = df[col].astype(float)
+    close_s = df["close"]
+    high_s = df["high"]
+    low_s = df["low"]
+    ma5 = float(close_s.tail(5).mean())
+    ma10 = float(close_s.tail(10).mean())
+    ma20 = float(close_s.tail(20).mean()) if len(df) >= 20 else ma10
+    prev_high = float(high_s.iloc[-6:-1].max()) if len(df) >= 6 else float(high_s.max())
+    prev_low = float(low_s.iloc[-6:-1].min()) if len(df) >= 6 else float(low_s.min())
+
+    entry = round(max(close * 1.012, prev_high * 1.003, ma5 * 1.005), 2)
+    stop_base = max(ma10 * 0.98, prev_low * 0.985)
+    stop = round(stop_base if stop_base < entry else entry * 0.96, 2)
+    if stop >= entry:
+        stop = round(entry * 0.96, 2)
+
+    if close >= ma5 >= ma10:
+        posture = "短均线多头，等突破近5日高点确认"
+    elif close >= ma10:
+        posture = "价格在10日线上，等重新站强5日线/近5日高点"
+    else:
+        posture = "仍在修复，必须等放量突破再看"
+    thesis = (
+        f"{posture}；当前 {close:.2f}，MA5 {ma5:.2f}，MA10 {ma10:.2f}，"
+        f"近5日高 {prev_high:.2f}"
+    )
+    return _watch_plan_payload(entry=entry, stop=stop, target_pct=5.0, thesis=thesis)
+
+
+def _watch_plan_payload(*, entry: float, stop: float, target_pct: float, thesis: str) -> dict:
+    if stop >= entry:
+        raise ValueError("止损价必须低于触发价")
+    return {
+        "entry_price": round(entry, 2),
+        "stop_price": round(stop, 2),
+        "max_chase_price": round(entry * 1.025, 2),
+        "target_pct": float(target_pct),
+        "take_profit_price": round(entry * (1 + target_pct / 100), 2),
+        "thesis": thesis,
+    }
 
 
 def _trade_usage(side: str) -> str:
@@ -774,7 +965,30 @@ def handle(text: str, chat_id, today: Optional[str] = None,
             _reset_context()
         return
 
-    # 2. /buy /sell 交易流水命令，优先尝试
+    # 2. /watch 手工盯盘
+    if low.startswith("/watch"):
+        try:
+            parsed = parse_watch_command(stripped)
+            if parsed is None:
+                raise ValueError("格式：/watch <代码> [触发价] [止损价]")
+            ack = handle_watch(parsed)
+        except ValueError as e:
+            push_reply(f"❌ {e}")
+            _finish("rejected", error=str(e))
+            _reset_context()
+            return
+        except Exception as e:
+            push_reply(f"⚠️ 盯盘落库失败：{e}")
+            _finish("error", error=str(e))
+            _reset_context()
+            return
+        _parsed("/watch", parsed_payload=parsed)
+        push_reply(ack)
+        _finish("ok")
+        _reset_context()
+        return
+
+    # 3. /buy /sell 交易流水命令，优先尝试
     if low.startswith(("/buy", "/sell")):
         # 纯 /buy 或 /sell 无参 → 直接给该 side 的帮助
         bare = low.split()

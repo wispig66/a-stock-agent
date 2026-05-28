@@ -184,6 +184,7 @@ def load_dynamic_watchlist(today: str) -> list[dict]:
             "stop_loss": float(stop) if stop is not None else None,
             "deadline_time": _dynamic_deadline(window),
             "position_max_pct": 15,
+            "target_pct": float(target) if target is not None else None,
             "status": status or "pending",
             "thesis": f"{concept} {role} · 盘中主线确认",
             "source": "watchlist_dynamic",

@@ -135,6 +135,7 @@ def evaluate(
         sl = w.get("stop_loss")
         entry_low = w.get("entry_low")
         entry_high = w.get("entry_high")
+        target_pct = w.get("target_pct")
         if sl and price <= sl:
             alerts.append(("watch_stop", f"🚨 观察池跌破止损 · {code} {name} [{w.get('genre')}] · 现价 {price} ≤ 止损 {sl} → 假突破已现，未持仓忽略，已持仓立即出"))
         if lane == "ambush":
@@ -142,6 +143,13 @@ def evaluate(
                 alerts.append((
                     "ambush_zone",
                     _actionable_message(code, name, w, price, pct, "低吸区"),
+                ))
+        elif lane == "trend" and not buy:
+            if pct is not None and vol_ratio is not None and pct >= 5 and vol_ratio >= 2:
+                alerts.append((
+                    "watch_momentum",
+                    f"🚀 手工盯盘强动量 · {code} {name} [{w.get('genre')}] · "
+                    f"{pct}% · 量比 {vol_ratio} → 进入盘中复核",
                 ))
         elif buy and price >= buy and price <= (w.get("max_chase_price") or buy * 1.03) and pct < 9.8:
             if lane == "backup" and not _backup_can_trigger(watch_map, now):
@@ -157,6 +165,19 @@ def evaluate(
                 alerts.append(("watch_zt_observe", f"👀 仅观察封板 · {code} {name} [{w.get('genre')}] · {pct}% 已涨停；主攻未过截止时间，不追备选"))
             else:
                 alerts.append(("watch_zt", f"✅ 观察池封板 · {code} {name} [{w.get('genre')}] · {pct}% 已涨停"))
+        if (
+            lane == "trend"
+            and w.get("status") == "triggered"
+            and buy
+            and target_pct
+            and price >= buy * (1 + float(target_pct) / 100)
+        ):
+            alerts.append((
+                "watch_take_profit",
+                f"🎯 趋势止盈位 · {code} {name} [{w.get('genre')}] · "
+                f"现价 {price} ≥ 目标 {round(buy * (1 + float(target_pct) / 100), 2)} "
+                f"→ 至少锁定部分利润",
+            ))
 
     return alerts
 

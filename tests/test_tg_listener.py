@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 import requests
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -127,6 +128,84 @@ def test_handle_holding_branch(tmp_path, monkeypatch):
          patch.object(tl, "run_skill_streaming", return_value="📊 fake") as r:
         tl.handle("600519", chat_id="999", today="2026-05-14")
     assert r.call_args.args[1] == "holding"
+
+
+def test_parse_watch_command_defaults_to_auto_plan():
+    assert tl.parse_watch_command("/watch 002908") == {
+        "code": "002908",
+        "entry_price": None,
+        "stop_price": None,
+    }
+
+
+def test_build_watch_plan_from_realtime_and_kline(monkeypatch):
+    monkeypatch.setattr(tl.query, "fetch_realtime", lambda code: {
+        "name": "德生科技",
+        "close": 7.58,
+    })
+    monkeypatch.setattr(tl.query, "fetch_kline", lambda code, days=30: pd.DataFrame([
+        {"close": 7.10, "high": 7.20, "low": 7.00, "vol": 100},
+        {"close": 7.20, "high": 7.30, "low": 7.10, "vol": 110},
+        {"close": 7.25, "high": 7.35, "low": 7.15, "vol": 120},
+        {"close": 7.30, "high": 7.40, "low": 7.20, "vol": 130},
+        {"close": 7.35, "high": 7.45, "low": 7.25, "vol": 140},
+        {"close": 7.40, "high": 7.50, "low": 7.30, "vol": 150},
+        {"close": 7.45, "high": 7.55, "low": 7.35, "vol": 160},
+        {"close": 7.50, "high": 7.60, "low": 7.40, "vol": 170},
+        {"close": 7.55, "high": 7.65, "low": 7.45, "vol": 180},
+        {"close": 7.58, "high": 7.68, "low": 7.42, "vol": 190},
+    ]))
+
+    plan = tl.build_watch_plan("002908")
+
+    assert plan["entry_price"] > 7.58
+    assert plan["stop_price"] < plan["entry_price"]
+    assert plan["max_chase_price"] > plan["entry_price"]
+    assert plan["take_profit_price"] > plan["entry_price"]
+
+
+def test_handle_watch_analyzes_and_persists_dynamic_watch(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    conn = sqlite3.connect(tmp_path / "t.db")
+    conn.execute("INSERT INTO stock_basic(code,name,board,is_st,updated_at) VALUES('002908','德生科技','main',0,'2026-05-14')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(tl, "DB_PATH", tmp_path / "t.db")
+    monkeypatch.setattr(tl, "DB_FILE", tmp_path / "t.db")
+    monkeypatch.setattr(tl, "TRADES_DB", tmp_path / "t.db")
+    monkeypatch.setattr(tl.query, "DB", tmp_path / "t.db")
+    monkeypatch.setattr(tl, "DATA_DIR", tmp_path)
+    (tmp_path / "trade_calendar.csv").write_text("trade_date\n2026-05-14\n2026-05-15\n", encoding="utf-8")
+    monkeypatch.setattr(tl.query, "fetch_realtime", lambda code: {
+        "name": "德生科技",
+        "close": 7.58,
+    })
+    monkeypatch.setattr(tl.query, "fetch_kline", lambda code, days=30: pd.DataFrame([
+        {"close": 7.10, "high": 7.20, "low": 7.00, "vol": 100},
+        {"close": 7.20, "high": 7.30, "low": 7.10, "vol": 110},
+        {"close": 7.25, "high": 7.35, "low": 7.15, "vol": 120},
+        {"close": 7.30, "high": 7.40, "low": 7.20, "vol": 130},
+        {"close": 7.35, "high": 7.45, "low": 7.25, "vol": 140},
+        {"close": 7.40, "high": 7.50, "low": 7.30, "vol": 150},
+        {"close": 7.45, "high": 7.55, "low": 7.35, "vol": 160},
+        {"close": 7.50, "high": 7.60, "low": 7.40, "vol": 170},
+        {"close": 7.55, "high": 7.65, "low": 7.45, "vol": 180},
+        {"close": 7.58, "high": 7.68, "low": 7.42, "vol": 190},
+    ]))
+
+    ack = tl.handle_watch({"code": "002908", "entry_price": None, "stop_price": None},
+                          now=tl.datetime(2026, 5, 14, 16, 0))
+
+    assert "已分析并开始盯盘" in ack
+    row = sqlite3.connect(tmp_path / "t.db").execute(
+        "SELECT trade_date, code, name, entry_price, stop_price, target_pct FROM watchlist_dynamic WHERE code='002908'",
+    ).fetchone()
+    assert row[0] == "2026-05-15"
+    assert row[1] == "002908"
+    assert row[2] == "德生科技"
+    assert row[3] > 7.58
+    assert row[4] < row[3]
+    assert row[5] == 5.0
 
 
 def test_handle_wrong_chat_id_silent(tmp_path, monkeypatch):
