@@ -254,7 +254,8 @@ def feishu_message_from_sdk_event(data: Any, adapter: FeishuAdapter) -> ChannelM
     message = getattr(event, "message", None)
     if event is None or message is None:
         return None
-    if getattr(message, "msg_type", None) != "text":
+    msg_type = getattr(message, "msg_type", None) or getattr(message, "message_type", None)
+    if msg_type != "text":
         return None
     sender = getattr(event, "sender", None)
     payload = {
@@ -276,8 +277,8 @@ def feishu_message_from_sdk_event(data: Any, adapter: FeishuAdapter) -> ChannelM
                 "message_id": getattr(message, "message_id", None),
                 "chat_id": getattr(message, "chat_id", None),
                 "chat_type": getattr(message, "chat_type", None),
-                "msg_type": getattr(message, "msg_type", None),
-                "content": getattr(message, "content", None),
+                "msg_type": msg_type,
+                "content": _json_content(getattr(message, "content", None)),
                 "mentions": _mentions_to_dicts(getattr(message, "mentions", None)),
                 "thread_id": getattr(message, "thread_id", None),
                 "root_id": getattr(message, "root_id", None),
@@ -311,6 +312,14 @@ def _mentions_to_dicts(value: Any) -> list[dict[str, Any]]:
                 "name": getattr(mention, "name", None),
             })
     return out
+
+
+def _json_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return ""
 
 
 def _id_to_dict(value: Any) -> Any:

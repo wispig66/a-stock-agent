@@ -10,6 +10,7 @@ def test_enabled_channels_defaults_to_telegram(monkeypatch):
     monkeypatch.setattr(channel_listener, "load_env_file", lambda: None)
     monkeypatch.delenv("CHANNELS_ENABLED", raising=False)
     monkeypatch.delenv("CHANNEL_DEFAULT", raising=False)
+    monkeypatch.delenv("FEISHU_ENABLED", raising=False)
 
     assert channel_listener.enabled_channels() == {"telegram"}
 
@@ -53,6 +54,35 @@ def test_feishu_message_from_sdk_event_converts_to_channel_message():
     assert msg.sender_id == "ou_1"
     assert msg.text == "/ask 光伏"
     assert msg.raw["chat_type"] == "group"
+
+
+def test_feishu_message_from_sdk_event_accepts_lark_sdk_message_type_field():
+    adapter = FeishuAdapter(app_id="cli_x", app_secret="secret", default_conversation_id="oc_1")
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_id=SimpleNamespace(open_id="ou_1", user_id=None, union_id=None),
+                sender_type="user",
+            ),
+            message=SimpleNamespace(
+                message_id="om_2",
+                chat_id="oc_1",
+                chat_type="p2p",
+                message_type="text",
+                content={"text": "/help"},
+                mentions=[],
+                thread_id=None,
+                root_id=None,
+            ),
+        )
+    )
+
+    msg = channel_listener.feishu_message_from_sdk_event(data, adapter)
+
+    assert msg is not None
+    assert msg.message_id == "om_2"
+    assert msg.text == "/help"
+    assert msg.is_direct_message
 
 
 def test_feishu_message_from_sdk_event_ignores_non_text():
