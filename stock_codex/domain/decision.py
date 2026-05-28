@@ -8,7 +8,7 @@ from typing import Any
 from stock_codex.infra.db import connect as db_connect
 
 
-LANES = {"main", "ambush", "backup", "ban"}
+LANES = {"main", "ambush", "backup", "trend", "ban"}
 FACTIONS = {"A", "B", "C", "D", "E"}
 ACTIONS = {"buy_if", "wait", "avoid", "sell", "empty"}
 STATUSES = {"pending", "triggered", "bought", "expired", "invalid", "reviewed"}
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS decision_tickets (
     code TEXT NOT NULL,
     name TEXT NOT NULL,
     concept TEXT,
-    lane TEXT NOT NULL CHECK(lane IN ('main','ambush','backup','ban')),
+    lane TEXT NOT NULL CHECK(lane IN ('main','ambush','backup','trend','ban')),
     faction TEXT CHECK(faction IN ('A','B','C','D','E')),
     action TEXT NOT NULL DEFAULT 'wait' CHECK(action IN ('buy_if','wait','avoid','sell','empty')),
     entry_low REAL,
@@ -49,7 +49,8 @@ LANE_RANK = {
     "main": 0,
     "ambush": 1,
     "backup": 2,
-    "ban": 3,
+    "trend": 3,
+    "ban": 4,
 }
 
 DECISION_BLOCK_RE = re.compile(
@@ -60,7 +61,37 @@ DECISION_BLOCK_RE = re.compile(
 
 def ensure_schema(db: str | Path) -> None:
     with db_connect(db) as conn:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='decision_tickets'",
+        ).fetchone()
+        if row and row[0] and "'trend'" not in row[0]:
+            conn.executescript("""
+            ALTER TABLE decision_tickets RENAME TO decision_tickets_old;
+            """)
         conn.executescript(SCHEMA)
+        old_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='decision_tickets_old'",
+        ).fetchone()
+        if old_exists:
+            conn.execute(
+                """INSERT OR IGNORE INTO decision_tickets
+                   (id, trade_date, code, name, concept, lane, faction, action,
+                    entry_low, entry_high, max_chase_price, stop_price, invalid_price,
+                    deadline_time, size_pct, thesis, evidence_json,
+                    invalid_conditions_json, upgrade_conditions_json, status, source_msg_id,
+                    created_at, updated_at)
+                   SELECT id, trade_date, code, name, concept, lane, faction, action,
+                          entry_low, entry_high, max_chase_price, stop_price, invalid_price,
+                          deadline_time, size_pct, thesis, evidence_json,
+                          invalid_conditions_json, upgrade_conditions_json, status, source_msg_id,
+                          created_at, updated_at
+                   FROM decision_tickets_old""",
+            )
+            conn.execute("DROP TABLE decision_tickets_old")
+            conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_decision_tickets_date ON decision_tickets(trade_date);
+            CREATE INDEX IF NOT EXISTS idx_decision_tickets_lane ON decision_tickets(trade_date, lane);
+            """)
 
 
 def _json_default(value: Any) -> str:
@@ -119,13 +150,13 @@ def _validate_actionable_ticket(t: dict[str, Any]) -> None:
         if missing:
             raise ValueError(f"{lane} 缺少可执行字段: {', '.join(missing)}")
 
-    if lane == "backup":
+    if lane in {"backup", "trend"}:
         missing = _missing_fields(
             t,
             ["entry_low", "entry_high", "max_chase_price", "stop_price", "deadline_time", "size_pct"],
         )
         if missing:
-            raise ValueError(f"backup 缺少可执行字段: {', '.join(missing)}")
+            raise ValueError(f"{lane} 缺少可执行字段: {', '.join(missing)}")
 
 
 def parse_decision_block(text: str) -> tuple[str, list[dict[str, Any]]]:
@@ -214,7 +245,8 @@ def load_tickets(db: str | Path, trade_date: str) -> list[dict[str, Any]]:
                    WHEN 'main' THEN 0
                    WHEN 'ambush' THEN 1
                    WHEN 'backup' THEN 2
-                   ELSE 3
+                   WHEN 'trend' THEN 3
+                   ELSE 4
                  END,
                  id""",
             (trade_date,),
@@ -226,7 +258,7 @@ def load_watchlist_compat(db: str | Path, trade_date: str) -> list[dict[str, Any
     """Map decision tickets to the legacy watchlist shape used by L2 scripts."""
     out: list[dict[str, Any]] = []
     for t in load_tickets(db, trade_date):
-        if t["lane"] not in {"main", "ambush", "backup"}:
+        if t["lane"] not in {"main", "ambush", "backup", "trend"}:
             continue
         if t["lane"] == "ambush":
             buy = t.get("entry_low")

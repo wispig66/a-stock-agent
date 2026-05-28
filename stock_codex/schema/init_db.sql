@@ -271,7 +271,7 @@ CREATE TABLE IF NOT EXISTS decision_tickets (
     code TEXT NOT NULL,
     name TEXT NOT NULL,
     concept TEXT,
-    lane TEXT NOT NULL CHECK(lane IN ('main','ambush','backup','ban')),
+    lane TEXT NOT NULL CHECK(lane IN ('main','ambush','backup','trend','ban')),
     faction TEXT CHECK(faction IN ('A','B','C','D','E')),
     action TEXT NOT NULL DEFAULT 'wait' CHECK(action IN ('buy_if','wait','avoid','sell','empty')),
     entry_low REAL,

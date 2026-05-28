@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fetch_realtime import load_today_watchlist, load_holdings, fetch_spot  # noqa: E402
 from stock_codex.infra.notify import push  # noqa: E402
 from stock_codex.infra.logger import get_logger, init_req_id_from_env  # noqa: E402
+from stock_codex.infra.db import connect as db_connect  # noqa: E402
 from stock_codex.domain import decision as decision_lib  # noqa: E402
 
 init_req_id_from_env()
@@ -149,7 +150,8 @@ def evaluate(
                     f"👀 仅观察 · {code} {name} [{w.get('genre')}] · 已到备选买点 {buy}，但主攻未过截止时间，暂不下单",
                 ))
             else:
-                alerts.append(("watch_trigger", _actionable_message(code, name, w, price, pct, "触发买点")))
+                reason = "趋势买点" if lane == "trend" else "触发买点"
+                alerts.append(("watch_trigger", _actionable_message(code, name, w, price, pct, reason)))
         if pct >= 9.8:
             if lane == "backup" and not _backup_can_trigger(watch_map, now):
                 alerts.append(("watch_zt_observe", f"👀 仅观察封板 · {code} {name} [{w.get('genre')}] · {pct}% 已涨停；主攻未过截止时间，不追备选"))
@@ -209,6 +211,17 @@ def _is_locked(h: dict, today: date) -> bool:
         return date.fromisoformat(ud) > today
     except (TypeError, ValueError):
         return False
+
+
+def _mark_dynamic_status(trade_date: str, code: str, status: str) -> bool:
+    with db_connect(DB) as conn:
+        cur = conn.execute(
+            """UPDATE watchlist_dynamic
+               SET status=?
+               WHERE trade_date=? AND code=?""",
+            (status, trade_date, code),
+        )
+        return cur.rowcount > 0
 
 
 def snapshot_holdings(now: datetime) -> None:
@@ -303,13 +316,16 @@ def main():
                     lane = w.get("lane")
                     if lane and pushed:
                         try:
-                            updated = decision_lib.mark_ticket_status(
-                                DB, now.strftime("%Y-%m-%d"), row["代码"], lane, "triggered"
-                            )
+                            if w.get("source") == "watchlist_dynamic":
+                                updated = _mark_dynamic_status(now.strftime("%Y-%m-%d"), row["代码"], "triggered")
+                            else:
+                                updated = decision_lib.mark_ticket_status(
+                                    DB, now.strftime("%Y-%m-%d"), row["代码"], lane, "triggered"
+                                )
                             if updated:
                                 w["status"] = "triggered"
                         except Exception:
-                            log.exception("decision_tickets 状态回写失败 %s %s", row["代码"], lane)
+                            log.exception("观察池状态回写失败 %s %s", row["代码"], lane)
 
         if args.once:
             return

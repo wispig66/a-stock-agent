@@ -43,23 +43,39 @@ def section(title: str):
 
 
 def load_today_watchlist() -> list[dict]:
-    """优先读取 decision_tickets，缺失时回退解析旧 stock-premarket 推送。
+    """读取今日盘前决策单 + 盘中动态趋势池，缺失时回退旧 stock-premarket 推送。
 
     Fallback 链：
-    1. decision_tickets 今日决策单（新交易决策漏斗）
-    2. push_log 今日 stock-premarket（旧观察池）
-    3. data/last_card.md（mtime=今天，已写卡未推送，比如 push 链路慢）
-    4. 都没有 → 返回空，并打 PREMARKET_MISSING 标记给上游 SKILL 走兜底文案
+    1. decision_tickets 今日决策单（盘前交易决策漏斗）
+    2. watchlist_dynamic 今日盘中题材升档池（trend）
+    3. push_log 今日 stock-premarket（旧观察池）
+    4. data/last_card.md（mtime=今天，已写卡未推送，比如 push 链路慢）
+    5. 都没有 → 返回空，并打 PREMARKET_MISSING 标记给上游 SKILL 走兜底文案
     """
     today = datetime.now().strftime("%Y-%m-%d")
+    items: list[dict] = []
     try:
         from stock_codex.domain.decision import load_watchlist_compat
         decision_items = load_watchlist_compat(DB, today)
         if decision_items:
             log("[info] watchlist 数据来源：decision_tickets")
-            return decision_items
+            items.extend(decision_items)
     except Exception as e:
         log(f"[warn] decision_tickets 读取失败，回退旧观察池：{e}")
+
+    try:
+        dynamic_items = load_dynamic_watchlist(today)
+        if dynamic_items:
+            known = {str(w["code"]) for w in items}
+            added = [w for w in dynamic_items if str(w["code"]) not in known]
+            if added:
+                log(f"[info] watchlist 数据来源：watchlist_dynamic +{len(added)}")
+                items.extend(added)
+    except Exception as e:
+        log(f"[warn] watchlist_dynamic 读取失败：{e}")
+
+    if items:
+        return items
 
     text: str | None = None
     source_hint = ""
@@ -133,6 +149,55 @@ def load_today_watchlist() -> list[dict]:
     if current_card:
         items.append(current_card)
     return items
+
+
+def load_dynamic_watchlist(today: str) -> list[dict]:
+    """把盘中主线确认产生的 watchlist_dynamic 映射到 L2 兼容观察池。
+
+    dynamic 候选本质是趋势升档池：若 theme_loop 已给出 entry/stop，
+    watch_loop 可以按 trend 买点触发；若暂无价格，只保留封板/异动观察能力。
+    """
+    out: list[dict] = []
+    with db_connect(DB) as conn:
+        rows = conn.execute(
+            """SELECT concept_tag, code, name, role, entry_price, stop_price,
+                      target_pct, discipline_type, action_window, status
+               FROM watchlist_dynamic
+               WHERE trade_date=?
+                 AND COALESCE(status, 'pending') IN ('pending', 'triggered')
+               ORDER BY created_at, id""",
+            (today,),
+        ).fetchall()
+    for concept, code, name, role, entry, stop, target, discipline, window, status in rows:
+        entry_low = float(entry) if entry is not None else None
+        entry_high = entry_low
+        max_chase = round(entry_low * 1.025, 2) if entry_low is not None else None
+        out.append({
+            "code": str(code),
+            "name": str(name),
+            "genre": discipline or "T",
+            "lane": "trend",
+            "buy": entry_high,
+            "entry_low": entry_low,
+            "entry_high": entry_high,
+            "max_chase_price": max_chase,
+            "stop_loss": float(stop) if stop is not None else None,
+            "deadline_time": _dynamic_deadline(window),
+            "position_max_pct": 15,
+            "status": status or "pending",
+            "thesis": f"{concept} {role} · 盘中主线确认",
+            "source": "watchlist_dynamic",
+            "concept": concept,
+        })
+    return out
+
+
+def _dynamic_deadline(action_window: str | None) -> str:
+    if action_window == "before_1030":
+        return "10:30"
+    if action_window == "1030_1400":
+        return "14:00"
+    return "14:30"
 
 
 def load_holdings() -> list[dict]:

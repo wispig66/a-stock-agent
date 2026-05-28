@@ -131,15 +131,30 @@ def test_watchlist_compat_exposes_only_actionable_lanes(tmp_path):
             "faction": "D",
             "action": "avoid",
         },
+        {
+            "trade_date": "2026-05-19",
+            "code": "600003",
+            "name": "趋势票",
+            "lane": "trend",
+            "faction": "D",
+            "entry_low": 12.0,
+            "entry_high": 12.2,
+            "max_chase_price": 12.5,
+            "stop_price": 11.6,
+            "deadline_time": "10:30",
+            "size_pct": 15,
+        },
     ])
 
     compat = decision.load_watchlist_compat(db, "2026-05-19")
 
-    assert [w["code"] for w in compat] == ["600000", "000001"]
+    assert [w["code"] for w in compat] == ["600000", "000001", "600003"]
     assert compat[0]["buy"] == 10.3
     assert compat[0]["status"] == "pending"
     assert compat[1]["buy"] == 8.8
     assert compat[1]["entry_high"] == 9.1
+    assert compat[2]["lane"] == "trend"
+    assert compat[2]["buy"] == 12.2
 
 
 def test_parse_decision_block_from_card():
@@ -205,6 +220,17 @@ def test_validate_tickets_rejects_incomplete_actionable_tickets(tmp_path):
             },
         ])
 
+    with pytest.raises(ValueError, match="trend 缺少可执行字段"):
+        decision.replace_tickets(db, "2026-05-19", [
+            {
+                "trade_date": "2026-05-19",
+                "code": "000002",
+                "name": "趋势",
+                "lane": "trend",
+                "faction": "D",
+            },
+        ])
+
 
 def test_mark_ticket_status_updates_existing_ticket(tmp_path):
     db = make_db(tmp_path)
@@ -228,3 +254,64 @@ def test_mark_ticket_status_updates_existing_ticket(tmp_path):
     loaded = decision.load_tickets(db, "2026-05-19")
 
     assert loaded[0]["status"] == "triggered"
+
+
+def test_ensure_schema_migrates_existing_decision_table_to_allow_trend(tmp_path):
+    db = tmp_path / "daily.db"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+    CREATE TABLE decision_tickets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trade_date TEXT NOT NULL,
+        code TEXT NOT NULL,
+        name TEXT NOT NULL,
+        concept TEXT,
+        lane TEXT NOT NULL CHECK(lane IN ('main','ambush','backup','ban')),
+        faction TEXT CHECK(faction IN ('A','B','C','D','E')),
+        action TEXT NOT NULL DEFAULT 'wait' CHECK(action IN ('buy_if','wait','avoid','sell','empty')),
+        entry_low REAL,
+        entry_high REAL,
+        max_chase_price REAL,
+        stop_price REAL,
+        invalid_price REAL,
+        deadline_time TEXT,
+        size_pct INTEGER,
+        thesis TEXT,
+        evidence_json TEXT,
+        invalid_conditions_json TEXT,
+        upgrade_conditions_json TEXT,
+        status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','triggered','bought','expired','invalid','reviewed')),
+        source_msg_id INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(trade_date, code, lane)
+    );
+    """)
+    conn.execute(
+        """INSERT INTO decision_tickets
+           (trade_date, code, name, lane, faction, action)
+           VALUES ('2026-05-19', '600000', '旧票', 'ban', 'D', 'avoid')""",
+    )
+    conn.commit()
+    conn.close()
+
+    decision.ensure_schema(db)
+    decision.replace_tickets(db, "2026-05-20", [
+        {
+            "trade_date": "2026-05-20",
+            "code": "600003",
+            "name": "趋势票",
+            "lane": "trend",
+            "faction": "D",
+            "entry_low": 12.0,
+            "entry_high": 12.2,
+            "max_chase_price": 12.5,
+            "stop_price": 11.6,
+            "deadline_time": "10:30",
+            "size_pct": 15,
+        },
+    ])
+
+    assert decision.load_tickets(db, "2026-05-19")[0]["code"] == "600000"
+    assert decision.load_tickets(db, "2026-05-20")[0]["lane"] == "trend"

@@ -446,14 +446,19 @@ def review_decision_tickets(tickets: list[dict], spot_df) -> list[dict]:
             t["status"] = "行情不完整，无法判定触发"
         elif stop is not None and low <= float(stop):
             t["status"] = "💥 跌破止损/失效"
-        elif lane in {"main", "backup"}:
+        elif lane in {"main", "backup", "trend"}:
             if entry_high is None:
                 t["status"] = "不可执行：缺少买点"
                 continue
             trigger = entry_high is not None and high >= float(entry_high)
             red = entry_high is not None and close >= float(entry_high)
             if trigger and red:
-                t["status"] = "✅ 主攻触发+收红" if lane == "main" else "✅ 备选触发+收红"
+                if lane == "main":
+                    t["status"] = "✅ 主攻触发+收红"
+                elif lane == "trend":
+                    t["status"] = "✅ 趋势触发+收红"
+                else:
+                    t["status"] = "✅ 备选触发+收红"
             elif trigger:
                 t["status"] = "⚠️ 触发+假突破"
             else:

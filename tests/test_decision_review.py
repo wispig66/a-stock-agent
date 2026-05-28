@@ -58,6 +58,17 @@ def test_review_decision_tickets_marks_incomplete_backup_unactionable():
     assert reviewed[0]["status"] == "不可执行：缺少买点"
 
 
+def test_review_decision_tickets_scores_trend_trigger():
+    reviewed = review.review_decision_tickets(
+        [{"code": "600000", "name": "趋势票", "lane": "trend", "faction": "D", "entry_high": 10.3, "stop_price": 9.7}],
+        pd.DataFrame([
+            {"代码": "600000", "最高": 10.5, "最低": 10.0, "最新价": 10.4, "涨跌幅": 3.0},
+        ]),
+    )
+
+    assert reviewed[0]["status"] == "✅ 趋势触发+收红"
+
+
 def write_split_cache(path, df: pd.DataFrame) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
