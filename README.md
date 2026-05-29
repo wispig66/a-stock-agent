@@ -27,6 +27,7 @@
 ## 目录
 
 - [核心定位](#核心定位)
+- [架构和流程](#架构和流程)
 - [示例](#示例)
 - [适合谁](#适合谁)
 - [功能概览](#功能概览)
@@ -61,13 +62,68 @@ launchd 运行长时 daemon
 
 这个设计的目标是：让 LLM 做它擅长的叙事、归因和决策整理，让确定性脚本负责数据抓取、状态记录、去重、校验和推送。
 
+## 架构和流程
+
+运行时分成三层：Codex skills 负责研究任务，确定性 Python 模块负责数据和校验，IM gateway 负责用户入口和推送。SQLite 是中间状态和审计日志，不把关键状态藏在聊天上下文里。
+
+```mermaid
+flowchart LR
+    User["用户<br/>Telegram / 飞书"] --> Gateway["IM gateway<br/>channel_listener.py"]
+    Gateway --> Router["命令路由<br/>stock-ask / stock-query"]
+    Scheduler["Codex automations"] --> Skills["stock-* skills"]
+    Router --> Skills
+
+    Skills --> Scripts["确定性脚本<br/>行情 / 题材 / 消息 / 持仓"]
+    Scripts --> FactPack["fact pack<br/>ALLOWED 白名单"]
+    FactPack --> LLM["Codex / LLM<br/>研究卡片"]
+    LLM --> Validator["card validator<br/>enforce 校验"]
+    Validator --> Notify["notify.push<br/>Telegram / 飞书"]
+    Notify --> User
+
+    Scripts --> DB[(SQLite)]
+    Validator --> DB
+    Gateway --> DB
+```
+
+每天的固定任务由 Codex automations 触发，盘中长轮询交给 launchd daemon。这样做是为了让 LLM 只在需要归因和整理时运行，行情轮询、阈值判断和日志记录都留给可重复执行的脚本。
+
+```mermaid
+sequenceDiagram
+    participant Auto as Codex automations
+    participant Skill as stock-* skill
+    participant Data as 数据脚本
+    participant DB as SQLite
+    participant LLM as Codex / LLM
+    participant Push as Telegram / 飞书
+    participant Daemon as launchd daemon
+
+    Auto->>Skill: 到点触发盘前/盘中/盘后/周复盘
+    Skill->>Data: 拉行情、题材、消息、持仓
+    Data->>DB: 写入快照、决策票、推送日志
+    Data-->>Skill: fact pack + ALLOWED
+    Skill->>LLM: 基于 fact pack 生成研究卡片
+    LLM-->>Skill: card
+    Skill->>Data: card validator enforce
+    Skill->>Push: 推送研究卡片
+    Daemon->>DB: 盘中异动、观察池、题材冒头持续写入
+    Skill->>DB: 下一轮读取上下文做综合判断
+```
+
 ## 示例
 
-以下图片使用脱敏示例数据，只展示输出形态和工作流，不构成投资建议。
+以下图片来自本地运行截图，只展示输出形态和工作流，不构成投资建议。
 
-![Telegram 研究卡片示例](docs/assets/telegram-card-demo.svg)
+**单股问答示例**
 
-![Codex Agent 工作流](docs/assets/codex-agent-flow.svg)
+<p align="center">
+  <img src="docs/assets/stock-query-demo.png" alt="单股问答示例" width="880">
+</p>
+
+**盘前计划推送示例**
+
+<p align="center">
+  <img src="docs/assets/premarket-plan-demo.png" alt="盘前计划推送示例" width="620">
+</p>
 
 ## 适合谁
 
