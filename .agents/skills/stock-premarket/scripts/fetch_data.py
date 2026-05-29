@@ -17,9 +17,11 @@ LLM 想看某题材详情时：
 from __future__ import annotations
 import argparse
 import json
+import signal
 import sqlite3
 import sys
 import time
+import threading
 import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -48,6 +50,7 @@ PREMARKET_CACHE_DIR = ROOT / "data" / "premarket_cache"
 POSTMARKET_CACHE_DIR = ROOT / "data" / "postmarket_cache"
 INTRADAY_CACHE_DIR = ROOT / "data" / "intraday_cache"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+OPTIONAL_SOURCE_TIMEOUT_SECONDS = 20.0
 
 
 def log(*a):
@@ -56,6 +59,40 @@ def log(*a):
 
 class DataUnavailable(RuntimeError):
     pass
+
+
+class SourceTimeout(TimeoutError):
+    pass
+
+
+def _call_with_timeout(seconds: float, fn):
+    """Keep optional news sources from blocking the unattended premarket run."""
+    if seconds <= 0:
+        raise ValueError("timeout seconds must be positive")
+    if threading.current_thread() is not threading.main_thread():
+        raise SourceTimeout("timeout guard requires main thread")
+
+    def _raise_timeout(signum, frame):
+        raise SourceTimeout(f"source call exceeded {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, _raise_timeout)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        return fn()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def _fetch_optional_news_rows(label: str, fetcher, parser) -> list[dict]:
+    try:
+        df = _call_with_timeout(OPTIONAL_SOURCE_TIMEOUT_SECONDS, fetcher)
+        if df is None or df.empty:
+            return []
+        return parser(df)
+    except Exception as e:
+        log(f"  {label} 隔夜消息失败: {type(e).__name__}: {e}")
+        return []
 
 
 def _cache_path(date: str, cache_name: str) -> Path:
@@ -292,11 +329,8 @@ def fetch_overnight_news(date: str) -> pd.DataFrame:
     d_iso = f"{date[:4]}-{date[4:6]}-{date[6:]}"
     start_dt = datetime.strptime(f"{d_iso} 15:00:00", "%Y-%m-%d %H:%M:%S")
 
-    rows: list[dict] = []
-
-    # 1) 财联社
-    try:
-        df = ak.stock_info_global_cls(symbol="全部")
+    def _parse_cls(df: pd.DataFrame) -> list[dict]:
+        parsed: list[dict] = []
         for _, r in df.iterrows():
             try:
                 dt = datetime.strptime(f"{r['发布日期']} {r['发布时间']}", "%Y-%m-%d %H:%M:%S")
@@ -304,18 +338,16 @@ def fetch_overnight_news(date: str) -> pd.DataFrame:
                 continue
             if dt < start_dt:
                 continue
-            rows.append({
+            parsed.append({
                 "发布时间": dt,
                 "来源": "CLS",
                 "标题": str(r["标题"]).strip(),
                 "URL": "",
             })
-    except Exception as e:
-        log(f"  CLS 隔夜消息失败: {type(e).__name__}: {e}")
+        return parsed
 
-    # 2) 东财
-    try:
-        df = ak.stock_info_global_em()
+    def _parse_em(df: pd.DataFrame) -> list[dict]:
+        parsed: list[dict] = []
         for _, r in df.iterrows():
             try:
                 dt = datetime.strptime(str(r["发布时间"]), "%Y-%m-%d %H:%M:%S")
@@ -323,36 +355,40 @@ def fetch_overnight_news(date: str) -> pd.DataFrame:
                 continue
             if dt < start_dt:
                 continue
-            rows.append({
+            parsed.append({
                 "发布时间": dt,
                 "来源": "EM",
                 "标题": str(r["标题"]).strip(),
                 "URL": str(r.get("链接", "")).strip(),
             })
-    except Exception as e:
-        log(f"  EM 隔夜消息失败: {type(e).__name__}: {e}")
+        return parsed
 
-    # 3) 新浪（备用，只在前两源都为空时启用）
+    def _parse_sina(df: pd.DataFrame) -> list[dict]:
+        parsed: list[dict] = []
+        for _, r in df.iterrows():
+            try:
+                dt = datetime.strptime(str(r["时间"]), "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+            if dt < start_dt:
+                continue
+            # 新浪 内容字段含 markdown 链接和正文，截前 80 字做标题
+            content = str(r["内容"]).strip().replace("\n", " ")
+            parsed.append({
+                "发布时间": dt,
+                "来源": "SINA",
+                "标题": content[:80] + ("..." if len(content) > 80 else ""),
+                "URL": "",
+            })
+        return parsed
+
+    rows = []
+    rows.extend(_fetch_optional_news_rows("CLS", lambda: ak.stock_info_global_cls(symbol="全部"), _parse_cls))
+    rows.extend(_fetch_optional_news_rows("EM", ak.stock_info_global_em, _parse_em))
+
+    # 新浪只作为备用源，避免常规成功时再多打一个慢接口。
     if not rows:
-        try:
-            df = ak.stock_info_global_sina()
-            for _, r in df.iterrows():
-                try:
-                    dt = datetime.strptime(str(r["时间"]), "%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    continue
-                if dt < start_dt:
-                    continue
-                # 新浪 内容字段含 markdown 链接和正文，截前 80 字做标题
-                content = str(r["内容"]).strip().replace("\n", " ")
-                rows.append({
-                    "发布时间": dt,
-                    "来源": "SINA",
-                    "标题": content[:80] + ("..." if len(content) > 80 else ""),
-                    "URL": "",
-                })
-        except Exception as e:
-            log(f"  SINA 隔夜消息失败: {type(e).__name__}: {e}")
+        rows.extend(_fetch_optional_news_rows("SINA", ak.stock_info_global_sina, _parse_sina))
 
     if not rows:
         return pd.DataFrame(columns=["发布时间", "来源", "标题", "URL"])

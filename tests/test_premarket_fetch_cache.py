@@ -135,3 +135,46 @@ def test_render_core_pack_fails_closed_without_limit_up_data(monkeypatch) -> Non
 
     with pytest.raises(fp.DataUnavailable, match="涨停池无数据"):
         fp.render_core_pack("20260521")
+
+
+def test_overnight_news_continues_after_cls_timeout(monkeypatch) -> None:
+    fp = load_module()
+
+    def fetch_cls():
+        raise fp.SourceTimeout("source call exceeded 20s")
+
+    def fetch_em():
+        return pd.DataFrame([{
+            "发布时间": "2026-05-21 16:30:00",
+            "标题": "CPO概念再度走强",
+            "链接": "https://example.test/news",
+        }])
+
+    monkeypatch.setattr(fp, "_call_with_timeout", lambda seconds, fn: fn())
+    monkeypatch.setattr(fp.ak, "stock_info_global_cls", lambda symbol: fetch_cls())
+    monkeypatch.setattr(fp.ak, "stock_info_global_em", fetch_em)
+    monkeypatch.setattr(fp.ak, "stock_info_global_sina", lambda: pd.DataFrame())
+
+    df = fp.fetch_overnight_news("20260521")
+
+    assert df.to_dict("records") == [{
+        "发布时间": datetime(2026, 5, 21, 16, 30),
+        "来源": "EM",
+        "标题": "CPO概念再度走强",
+        "URL": "https://example.test/news",
+    }]
+
+
+def test_overnight_news_returns_empty_when_all_sources_fail(monkeypatch) -> None:
+    fp = load_module()
+
+    monkeypatch.setattr(
+        fp,
+        "_call_with_timeout",
+        lambda seconds, fn: (_ for _ in ()).throw(fp.SourceTimeout("source call exceeded 20s")),
+    )
+
+    df = fp.fetch_overnight_news("20260521")
+
+    assert df.empty
+    assert list(df.columns) == ["发布时间", "来源", "标题", "URL"]
