@@ -31,9 +31,9 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fetch_realtime import load_today_watchlist, load_holdings, fetch_spot  # noqa: E402
-from stock_codex.infra.notify import push  # noqa: E402
 from stock_codex.infra.logger import get_logger, init_req_id_from_env  # noqa: E402
 from stock_codex.infra.db import connect as db_connect  # noqa: E402
+from stock_codex.infra.push_wrapper import push_one  # noqa: E402
 from stock_codex.domain import decision as decision_lib  # noqa: E402
 
 init_req_id_from_env()
@@ -325,7 +325,7 @@ def main():
                     continue
                 pushed = False
                 try:
-                    push_result = push(f"⏱️ [{now.strftime('%H:%M')}] {msg}", source="stock-intraday-watch")
+                    push_result = push_one(f"⏱️ [{now.strftime('%H:%M')}] {msg}", source="stock-intraday-watch")
                     pushed = True
                     sent.add(key)
                     msg_id = (push_result.get("result") or {}).get("message_id") if isinstance(push_result, dict) else None

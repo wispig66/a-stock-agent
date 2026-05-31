@@ -31,8 +31,8 @@ from datetime import datetime, time as dtime, timedelta
 import yaml
 
 from stock_codex.infra.db import connect_close as db_connect  # noqa: E402 — daemon 用自动关闭版
-from stock_codex.infra.notify import push  # noqa: E402
 from stock_codex.infra.logger import get_logger, init_req_id_from_env  # noqa: E402
+from stock_codex.infra.push_wrapper import push_one  # noqa: E402
 from stock_codex.paths import DATA_DIR, DB_FILE
 
 init_req_id_from_env()
@@ -400,7 +400,7 @@ def push_t1_card(concept: str, signals: dict, now: datetime):
     if not _should_push("T1"):
         log.info("[%s push T1 %s] %s", PUSH_LEVEL.upper(), concept, text[:100])
         return
-    push(text, source="theme-loop")
+    push_one(text, source="theme-loop")
 
 
 def push_t2_card(concept: str, signals: dict, candidates: list[dict], now: datetime):
@@ -427,7 +427,7 @@ def push_t2_card(concept: str, signals: dict, candidates: list[dict], now: datet
     if not _should_push("T2"):
         log.info("[%s push T2 %s] %s", PUSH_LEVEL.upper(), concept, text[:100])
         return
-    push(text, source="theme-loop")
+    push_one(text, source="theme-loop")
 
 
 def _should_push(level: str) -> bool:
@@ -545,7 +545,7 @@ def main_tick(now: datetime, today: str, wl: Whitelist,
     if not rows and not pool:
         state["consecutive_failures"] += 1
         if state["consecutive_failures"] == 5 and PUSH_LEVEL != "shadow":
-            push(f"⚠️ theme_loop 数据源连续 5 tick 失联 · {now.strftime('%H:%M')}", source="theme-loop")
+            push_one(f"⚠️ theme_loop 数据源连续 5 tick 失联 · {now.strftime('%H:%M')}", source="theme-loop")
         return
     state["consecutive_failures"] = 0
     append_raw(now, rows)

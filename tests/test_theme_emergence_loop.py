@@ -211,7 +211,7 @@ def _sample_signals() -> dict:
 def test_push_level_t2_suppresses_t1_and_pushes_t2(monkeypatch):
     sent = []
     monkeypatch.setattr(theme_loop, "PUSH_LEVEL", "t2")
-    monkeypatch.setattr(theme_loop, "push", lambda text, source: sent.append((text, source)))
+    monkeypatch.setattr(theme_loop, "push_one", lambda text, source: sent.append((text, source)))
     now = datetime(2026, 5, 18, 10, 20)
 
     theme_loop.push_t1_card("存储芯片", _sample_signals(), now)
@@ -232,7 +232,7 @@ def test_push_level_t2_suppresses_t1_and_pushes_t2(monkeypatch):
 def test_push_t2_after_safe_window_is_observation_not_order_signal(monkeypatch):
     sent = []
     monkeypatch.setattr(theme_loop, "PUSH_LEVEL", "t2")
-    monkeypatch.setattr(theme_loop, "push", lambda text, source: sent.append(text))
+    monkeypatch.setattr(theme_loop, "push_one", lambda text, source: sent.append(text))
 
     theme_loop.push_t2_card("存储芯片", _sample_signals(), [], datetime(2026, 5, 18, 14, 30))
 

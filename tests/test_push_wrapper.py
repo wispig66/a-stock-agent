@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from stock_codex.infra import push_wrapper
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PUSH = ROOT / ".agents" / "skills" / "stock-premarket" / "scripts" / "push.py"
@@ -22,6 +24,7 @@ def test_scheduled_card_sources_default_to_enforce(monkeypatch):
     push = load_push_module()
     monkeypatch.delenv("CARD_VALIDATOR_MODE", raising=False)
 
+    assert push.validator_mode("stock-premarket") == "enforce"
     assert push.validator_mode("stock-intraday") == "enforce"
     assert push.validator_mode("stock-postmarket") == "enforce"
     assert push.validator_mode("stock-weekly") == "enforce"
@@ -61,8 +64,8 @@ def test_enforce_rejects_invalid_card_without_sending(monkeypatch):
         def to_dict(self):
             return {"kind": self.kind, "target": self.target}
 
-    monkeypatch.setattr(push, "_validate", lambda text, source, mode: (False, [FakeViolation()]))
-    monkeypatch.setattr(push, "push", lambda *args, **kwargs: pytest.fail("Telegram push should be blocked"))
+    monkeypatch.setattr(push_wrapper, "_validate", lambda text, source, mode: (False, [FakeViolation()]))
+    monkeypatch.setattr(push_wrapper, "push", lambda *args, **kwargs: pytest.fail("Telegram push should be blocked"))
     log_dir = push.ROOT / "data" / "card_violations"
     before = set(log_dir.glob("*_stock-intraday.json")) if log_dir.exists() else set()
 
@@ -76,3 +79,32 @@ def test_enforce_rejects_invalid_card_without_sending(monkeypatch):
     log = new_logs.pop()
     assert '"mode": "enforce"' in log.read_text(encoding="utf-8")
     log.unlink()
+
+
+def test_push_text_chunks_through_gateway(monkeypatch):
+    monkeypatch.setenv("CARD_VALIDATOR_MODE", "off")
+    sent = []
+
+    def fake_push(text, source):
+        sent.append((source, text))
+        return {"result": {"message_id": len(sent)}}
+
+    monkeypatch.setattr(push_wrapper, "push", fake_push)
+    text = ("a" * 2000) + "\n\n" + ("b" * 2000)
+
+    results = push_wrapper.push_text(text, source="stock-anomaly")
+
+    assert [r["result"]["message_id"] for r in results] == [1, 2]
+    assert sent[0][0] == "stock-anomaly"
+    assert sent[0][1].startswith("(1/2)\n")
+
+
+def test_daemon_pushes_use_unified_wrapper():
+    for path in [
+        ROOT / ".agents/skills/stock-intraday/scripts/watch_loop.py",
+        ROOT / ".agents/skills/stock-anomaly/scripts/anomaly_loop.py",
+        ROOT / "stock_codex/apps/theme_emergence_loop.py",
+    ]:
+        text = path.read_text(encoding="utf-8")
+        assert "stock_codex.infra.push_wrapper import push_one" in text
+        assert "stock_codex.infra.notify import push" not in text

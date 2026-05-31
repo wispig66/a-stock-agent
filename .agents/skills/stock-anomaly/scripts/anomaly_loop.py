@@ -40,8 +40,8 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / ".agents" / "skills" / "stock-intraday" / "scripts"))
 
 from fetch_realtime import load_today_watchlist, load_holdings  # noqa: E402
-from stock_codex.infra.notify import push  # noqa: E402
 from stock_codex.infra.logger import get_logger, init_req_id_from_env  # noqa: E402
+from stock_codex.infra.push_wrapper import push_one  # noqa: E402
 
 init_req_id_from_env()
 log = get_logger("anomaly_loop")
@@ -211,7 +211,7 @@ def main():
                 else:
                     msg = format_alert(now, symbol, label, row.to_dict())
                     try:
-                        r = push(msg, source="stock-anomaly")
+                        r = push_one(msg, source="stock-anomaly")
                         log.info("PUSH %s %s msg_id=%s", code, symbol, r["result"]["message_id"])
                     except Exception:
                         log.exception("push 失败 %s %s", code, symbol)
@@ -222,7 +222,7 @@ def main():
         if rocket_buffer:
             digest = format_rocket_digest(now, rocket_buffer)
             try:
-                r = push(digest, source="stock-anomaly")
+                r = push_one(digest, source="stock-anomaly")
                 log.info("PUSH 火箭 digest x%d msg_id=%s",
                          len(rocket_buffer), r["result"]["message_id"])
             except Exception:
