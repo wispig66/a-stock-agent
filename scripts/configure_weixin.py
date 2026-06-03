@@ -117,17 +117,28 @@ def _render_login_qr(content: str, png_out: Path) -> None:
             print("⚠️ 渲染二维码需要 qrcode 库：uv add qrcode")
             print(f"  或手动把这个链接转成二维码用微信扫：{content}")
             return
-        qr = qrcode.QRCode(border=1)
+        qr = qrcode.QRCode(border=2, box_size=10)
         qr.add_data(content)
         qr.make(fit=True)
-        print("\n用微信扫描下面的二维码，并在手机上确认登录：\n")
-        qr.print_ascii(invert=True)
-        try:  # PNG 可选（需 pillow）
+        # 优先存 PNG 用预览扫（终端 ASCII 常被截断扫不全）。
+        saved_png = False
+        try:  # 需 pillow
             png_out.parent.mkdir(parents=True, exist_ok=True)
             qr.make_image().save(png_out)
-            print(f"\n（二维码也已存到 {png_out}）")
+            saved_png = True
         except Exception:
             pass
+        if saved_png:
+            print(f"\n✓ 登录二维码已存为图片：{png_out}")
+            print(f"  打开后用手机微信扫码并确认登录：  open {png_out}")
+            if sys.platform == "darwin":  # 顺手自动打开预览（best-effort）
+                try:
+                    import subprocess
+                    subprocess.run(["open", str(png_out)], check=False)
+                except Exception:
+                    pass
+        print("\n（或扫描下面的终端二维码，终端较小可能显示不全）：\n")
+        qr.print_ascii(invert=True)
         return
     # 兜底：base64 PNG
     png_out.parent.mkdir(parents=True, exist_ok=True)
@@ -140,7 +151,11 @@ def _render_login_qr(content: str, png_out: Path) -> None:
 
 def _prompt(name: str, default: str, *, allow_empty: bool = False) -> str:
     suffix = f" [{default}]" if default else ""
-    value = input(f"{name}{suffix}: ").strip() or default
+    try:
+        value = input(f"{name}{suffix}: ").strip() or default
+    except EOFError:  # 非交互运行（无 stdin）：用默认值
+        value = default
+        print(f"{name}{suffix}: (无 stdin，用默认值 {default!r})")
     if not value and not allow_empty:
         print(f"✗ {name} 不能为空", file=sys.stderr)
         sys.exit(2)
