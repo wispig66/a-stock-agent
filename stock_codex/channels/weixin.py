@@ -105,7 +105,9 @@ class WeixinAdapter:
 
     @staticmethod
     def _message_id(msg: dict[str, Any], sender: str, text: str, context_token: str) -> str:
-        for key in ("svr_id", "new_msg_id", "client_msg_id", "msgid", "msg_id"):
+        # iLink inbound carries a top-level int ``message_id``; older/other shapes
+        # may use these alternates. Fall back to a stable hash only if none exist.
+        for key in ("message_id", "svr_id", "new_msg_id", "client_msg_id", "msgid", "msg_id"):
             val = msg.get(key)
             if val:
                 return str(val)

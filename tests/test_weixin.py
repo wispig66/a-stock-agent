@@ -57,6 +57,19 @@ def test_normalize_ignores_bot_echo_and_nontext():
     }) is None
 
 
+def test_uses_real_toplevel_message_id():
+    # Mirrors a live iLink inbound: top-level int message_id, no svr_id.
+    msg = _adapter().normalize_event({
+        "message_id": 7467886755864689928,
+        "from_user_id": "u1@im.wechat",
+        "to_user_id": "bot@im.bot",
+        "message_type": 1,
+        "context_token": "CTX",
+        "item_list": [{"type": 1, "msg_id": "v1:179947", "text_item": {"text": "/help"}}],
+    })
+    assert msg.message_id == "7467886755864689928"
+
+
 def test_message_id_falls_back_to_hash_when_no_server_id():
     a = _adapter()
     m1 = a.normalize_event({
