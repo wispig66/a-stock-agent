@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from stock_codex.apps import tg_listener
 from stock_codex.channels import ChannelMessage, FeishuAdapter, get_default_gateway, load_env_file
+from stock_codex.channels.outbox import run_outbox_drain
 from stock_codex.infra.logger import get_logger
 from stock_codex.paths import DATA_DIR
 
@@ -488,6 +489,18 @@ def main() -> None:
     _gateway_lock = _acquire_gateway_lock()
     runtime = GatewayRuntime()
     runtime.start(channels=channels)
+    # Drain the outbox for connection-bound channels (wecom/weixin). Idle-cheap
+    # when no such sender is registered; senders appear once their listener connects.
+    drain = threading.Thread(
+        target=run_outbox_drain,
+        kwargs={
+            "logger": get_default_gateway(),
+            "should_stop": lambda: not getattr(runtime, "_running", False),
+        },
+        name="outbox-drain",
+        daemon=True,
+    )
+    drain.start()
     if "feishu" in channels and "telegram" in channels:
         t = threading.Thread(target=run_feishu_ws, kwargs={"runtime": runtime}, name="feishu-ws", daemon=True)
         t.start()

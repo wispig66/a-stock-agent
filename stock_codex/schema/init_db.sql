@@ -126,6 +126,26 @@ CREATE INDEX IF NOT EXISTS idx_channel_inbound_ts ON channel_inbound_log(timesta
 CREATE INDEX IF NOT EXISTS idx_channel_inbound_channel ON channel_inbound_log(channel, conversation_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_channel_inbound_command ON channel_inbound_log(parsed_command);
 
+-- 出站中继队列：连接绑定型通道（企业微信 WS / 个人微信 iLink）的出站必须经
+-- 持有长连接的监听进程发送。cron/skill 进程写入 pending 行，监听进程的 drain
+-- 线程消费后通过 live 连接发出，再回写 status 并补一条 channel_outbound_log。
+CREATE TABLE IF NOT EXISTS channel_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,             -- ISO 8601 入队时间
+    channel TEXT NOT NULL,
+    account_id TEXT,
+    target TEXT NOT NULL,                 -- conversation_id / 收件人
+    text TEXT NOT NULL,
+    format TEXT DEFAULT 'plain',          -- plain / markdown / card
+    source TEXT,                          -- 'stock-premarket' 等
+    status TEXT NOT NULL DEFAULT 'pending', -- pending / sent / failed
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    provider_msg_id TEXT,                 -- 发送成功后平台返回的 msg_id
+    sent_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(channel, status, id);
+
 -- 用户实盘交易流水：TG /buy /sell 命令落库，用于复盘进出场决策
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -29,6 +29,7 @@ from stock_codex.channels.base import (
     load_env_file,
     loads_json_object as _loads_json_object,
 )
+from stock_codex.channels.outbox import OutboxStore
 
 # Re-exported so `from stock_codex.channels.core import Capabilities` keeps working.
 __all__ = [
@@ -324,8 +325,11 @@ class MockAdapter:
     channel = "mock"
     account_id = "test"
 
-    def __init__(self, *, edit_text: bool = True) -> None:
-        self.capabilities = Capabilities(send_text=True, edit_text=edit_text, markdown=True, html=True)
+    def __init__(self, *, edit_text: bool = True, connection_bound: bool = False) -> None:
+        self.capabilities = Capabilities(
+            send_text=True, edit_text=edit_text, markdown=True, html=True,
+            connection_bound=connection_bound,
+        )
         self.sent: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
 
@@ -382,6 +386,12 @@ class ChannelGateway:
     ) -> Delivery:
         adapter = self.adapter_for(channel)
         conversation_id = target or adapter.default_target()
+        if getattr(adapter.capabilities, "connection_bound", False):
+            # Outbound must go through the listener-held connection: enqueue and
+            # let the drain thread send + log when it actually delivers.
+            return self._enqueue_outbound(
+                adapter, conversation_id, text, source=source, format=format
+            )
         try:
             delivery = adapter.send_text(conversation_id, text, format=format)
             self._log_outbound(delivery, source=source, text=text, format=format, success=True, error=None)
@@ -508,6 +518,59 @@ class ChannelGateway:
                 )
         except Exception as e:
             print(f"[channels] inbound log finish failed: {e}", file=sys.stderr, flush=True)
+
+    def _enqueue_outbound(
+        self,
+        adapter: ChannelAdapter,
+        conversation_id: str,
+        text: str,
+        *,
+        source: str,
+        format: str,
+    ) -> Delivery:
+        row_id = OutboxStore(self.db_path).enqueue(
+            channel=adapter.channel,
+            target=str(conversation_id),
+            text=text,
+            format=format,
+            account_id=adapter.account_id,
+            source=source,
+        )
+        return Delivery(
+            channel=adapter.channel,
+            account_id=adapter.account_id,
+            conversation_id=str(conversation_id),
+            provider_message_id="",
+            editable=False,
+            raw={"queued": True, "outbox_id": row_id},
+        )
+
+    def record_outbound(
+        self,
+        *,
+        channel: str,
+        account_id: str | None,
+        target: str,
+        provider_msg_id: str,
+        source: str | None,
+        text: str,
+        format: str,
+        success: bool,
+        error: str | None,
+    ) -> None:
+        """Log a delivery completed by the outbox drain to channel_outbound_log."""
+        delivery = Delivery(
+            channel=channel,
+            account_id=account_id or "",
+            conversation_id=str(target),
+            provider_message_id=provider_msg_id,
+            editable=False,
+            raw={},
+        )
+        self._log_outbound(
+            delivery, source=source or "outbox", text=text, format=format,
+            success=success, error=error,
+        )
 
     def _log_outbound(
         self,
