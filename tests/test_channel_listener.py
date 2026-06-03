@@ -197,6 +197,30 @@ def test_main_routes_enabled_channel_through_gateway_runtime(monkeypatch):
     assert calls[-1][0] == "feishu"
 
 
+def test_dispatch_message_dedups_and_enqueues(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(channel_listener.command_router, "handle_channel_message",
+                        lambda message: calls.append(message.message_id))
+    runtime = channel_listener.GatewayRuntime(
+        deduper=channel_listener.PersistentDeduper(tmp_path / "seen.json"),
+        state_file=tmp_path / "state.json",
+    )
+    msg = channel_listener.ChannelMessage(
+        channel="wecom", account_id="bot1", conversation_id="u1",
+        sender_id="u1", message_id="m1", event_id="m1", text="600519",
+    )
+
+    assert channel_listener._dispatch_message(runtime, msg) is True
+    assert channel_listener._dispatch_message(runtime, msg) is False  # duplicate
+    runtime._queues["u1"].join()
+
+    assert calls == ["m1"]
+
+
+def test_wecom_listed_in_listener_dispatch():
+    assert "wecom" in channel_listener._listener_dispatch()
+
+
 def test_gateway_runtime_start_writes_json_state(tmp_path):
     runtime = channel_listener.GatewayRuntime(
         policy=channel_listener.FeishuPolicy(

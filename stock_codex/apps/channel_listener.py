@@ -413,11 +413,125 @@ def handle_feishu_menu_event(data: Any, adapter: FeishuAdapter) -> bool:
     return True
 
 
+def _dispatch_message(runtime: GatewayRuntime, message: ChannelMessage) -> bool:
+    """Dedup + enqueue an inbound message to its per-chat worker.
+
+    Channel-neutral: per-channel authorization is enforced downstream by
+    command_router.handle (_is_allowed_chat). Feishu additionally pre-filters
+    via FeishuPolicy in GatewayRuntime.submit; other channels route here.
+    """
+    if runtime.deduper.seen_or_mark(message.dedupe_key()):
+        log.info("%s inbound duplicate ignored: %s", message.channel, message.dedupe_key())
+        return False
+    return runtime.submit_task(
+        GatewayTask(
+            channel=message.channel,
+            conversation_id=message.conversation_id,
+            message_id=message.message_id,
+            handle=lambda: command_router.handle_channel_message(message),
+        )
+    )
+
+
+def run_wecom_listener(runtime: GatewayRuntime | None = None) -> None:
+    """WeCom 智能机器人长连接：收 aibot_msg_callback、发 aibot_send_msg。
+
+    出站绑定在这条 WS 上，因此连接成功后注册 outbox sender，由 drain 线程消费。
+    重连用指数退避；live 行为需用真实 WECOM_BOT_ID/SECRET 验收。
+    """
+    try:
+        import websocket  # type: ignore  # websocket-client
+    except ImportError as e:
+        raise RuntimeError("WeCom listener requires `uv add websocket-client`") from e
+    from stock_codex.channels.wecom import WeComAdapter, new_req_id
+    from stock_codex.channels.outbox import register_outbox_sender, unregister_outbox_sender
+
+    runtime = runtime or GatewayRuntime()
+    adapter = get_default_gateway().adapter_for("wecom")
+    if not isinstance(adapter, WeComAdapter):
+        raise RuntimeError("configured wecom adapter is not WeComAdapter")
+
+    state: dict[str, Any] = {"ws": None}
+    send_lock = threading.Lock()
+
+    def sender(target: str, text: str, fmt: str) -> str:
+        ws = state["ws"]
+        if ws is None:
+            raise RuntimeError("wecom ws not connected")
+        req_id = new_req_id("send")
+        frame = adapter.send_frame(target, text, format=fmt, req_id=req_id)
+        with send_lock:
+            ws.send(json.dumps(frame, ensure_ascii=False))
+        return req_id
+
+    def on_open(ws):
+        state["ws"] = ws
+        with send_lock:
+            ws.send(json.dumps(adapter.subscribe_frame(), ensure_ascii=False))
+        register_outbox_sender("wecom", sender)
+        runtime.write_state(adapters={"wecom": "running"}, last_error=None)
+        log.info("WeCom listener subscribed bot=%s", adapter.bot_id)
+
+    def on_message(ws, raw):
+        try:
+            frame = json.loads(raw)
+        except Exception:
+            return
+        if frame.get("cmd") != "aibot_msg_callback":
+            return
+        msg = adapter.normalize_event(frame)
+        if msg is None:
+            return
+        log.info("WeCom inbound chat=%s sender=%s text=%s",
+                 msg.conversation_id, msg.sender_id, msg.text[:80])
+        _dispatch_message(runtime, msg)
+
+    def on_error(ws, err):
+        exc = err if isinstance(err, Exception) else Exception(str(err))
+        runtime.write_state(adapters={"wecom": "error"}, last_error=_safe_error_text(exc))
+        log.warning("WeCom ws error: %s", err)
+
+    def on_close(ws, *_args):
+        state["ws"] = None
+        unregister_outbox_sender("wecom")
+        log.info("WeCom ws closed")
+
+    def heartbeat():
+        while True:
+            time.sleep(30)
+            ws = state["ws"]
+            if ws is None:
+                continue
+            try:
+                with send_lock:
+                    ws.send(json.dumps({"cmd": "ping"}))
+            except Exception:
+                pass
+
+    threading.Thread(target=heartbeat, name="wecom-ping", daemon=True).start()
+    backoffs = [2, 5, 10, 30, 60]
+    attempt = 0
+    while True:
+        try:
+            app = websocket.WebSocketApp(
+                adapter.ws_url,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
+            )
+            app.run_forever()
+        except Exception:
+            log.exception("WeCom ws run_forever crashed")
+        attempt = min(attempt + 1, len(backoffs) - 1)
+        time.sleep(backoffs[attempt])
+
+
 def _listener_dispatch() -> dict[str, Callable[..., None]]:
     """Channel -> inbound listener. Built at call time so tests can monkeypatch
     the module-level listener functions. Outbound for connection-bound channels
     flows through the outbox regardless of whether an inbound listener exists."""
-    return {"feishu": run_feishu_ws}
+    return {"feishu": run_feishu_ws, "wecom": run_wecom_listener}
 
 
 def main() -> None:
