@@ -527,11 +527,105 @@ def run_wecom_listener(runtime: GatewayRuntime | None = None) -> None:
         time.sleep(backoffs[attempt])
 
 
+def _load_json_dict(path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items()}
+    except Exception:
+        pass
+    return {}
+
+
+def run_weixin_listener(runtime: GatewayRuntime | None = None) -> None:
+    """个人微信 iLink 长轮询：getupdates 收消息、sendmessage 发消息（回带 context_token）。
+
+    仅 1v1。出站经 outbox：sender 查 per-peer context_token 后调 sendmessage。
+    需先用 scripts/configure_weixin.py 扫码登录写入 WEIXIN_TOKEN/WEIXIN_ACCOUNT_ID。
+    live 行为需真实账号验收。
+    """
+    import requests
+    from stock_codex.channels.weixin import WeixinAdapter
+    from stock_codex.channels.outbox import register_outbox_sender, unregister_outbox_sender
+
+    runtime = runtime or GatewayRuntime()
+    adapter = get_default_gateway().adapter_for("weixin")
+    if not isinstance(adapter, WeixinAdapter):
+        raise RuntimeError("configured weixin adapter is not WeixinAdapter")
+    if not adapter.token:
+        raise RuntimeError("WEIXIN_TOKEN 未配置；先运行 scripts/configure_weixin.py 扫码登录")
+
+    ctx_file = DATA_DIR / "weixin_context_tokens.json"
+    buf_file = DATA_DIR / "weixin_updates_buf.txt"
+    ctx_lock = threading.Lock()
+    ctx_store = _load_json_dict(ctx_file)
+
+    def _save_ctx() -> None:
+        ctx_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = ctx_file.with_suffix(".tmp")
+        with ctx_lock:
+            tmp.write_text(json.dumps(ctx_store, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        tmp.replace(ctx_file)
+
+    def sender(target: str, text: str, fmt: str) -> str:
+        token = ctx_store.get(target, "")
+        body = adapter.send_payload(target, text, context_token=token)
+        r = requests.post(
+            f"{adapter.base_url}/ilink/bot/sendmessage",
+            headers=adapter.auth_headers(), json=body, timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json() if r.content else {}
+        if isinstance(data, dict) and data.get("ret") not in (0, None):
+            raise RuntimeError(f"weixin sendmessage ret={data.get('ret')}")
+        return str(data.get("svr_id") or "") if isinstance(data, dict) else ""
+
+    register_outbox_sender("weixin", sender)
+    runtime.write_state(adapters={"weixin": "running"}, last_error=None)
+    log.info("WeChat iLink listener starting account=%s", adapter.account_id)
+
+    buf = buf_file.read_text(encoding="utf-8").strip() if buf_file.exists() else ""
+    backoff = 1
+    try:
+        while True:
+            try:
+                r = requests.post(
+                    f"{adapter.base_url}/ilink/bot/getupdates",
+                    headers=adapter.auth_headers(),
+                    json=adapter.getupdates_payload(buf), timeout=40,
+                )
+                r.raise_for_status()
+                data = r.json()
+                backoff = 1
+                for m in data.get("msgs") or []:
+                    msg = adapter.normalize_event(m)
+                    if msg is None:
+                        continue
+                    token = msg.raw.get("context_token")
+                    if token:
+                        ctx_store[msg.sender_id] = token
+                        _save_ctx()
+                    log.info("WeChat iLink inbound from=%s text=%s", msg.sender_id, msg.text[:80])
+                    _dispatch_message(runtime, msg)
+                new_buf = data.get("get_updates_buf")
+                if new_buf is not None and new_buf != buf:
+                    buf = str(new_buf)
+                    buf_file.parent.mkdir(parents=True, exist_ok=True)
+                    buf_file.write_text(buf, encoding="utf-8")
+            except Exception as e:
+                runtime.write_state(adapters={"weixin": "error"}, last_error=_safe_error_text(e))
+                log.warning("WeChat iLink getupdates failed: %s", _safe_error_text(e)[:200])
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30)
+    finally:
+        unregister_outbox_sender("weixin")
+
+
 def _listener_dispatch() -> dict[str, Callable[..., None]]:
     """Channel -> inbound listener. Built at call time so tests can monkeypatch
     the module-level listener functions. Outbound for connection-bound channels
     flows through the outbox regardless of whether an inbound listener exists."""
-    return {"feishu": run_feishu_ws, "wecom": run_wecom_listener}
+    return {"feishu": run_feishu_ws, "wecom": run_wecom_listener, "weixin": run_weixin_listener}
 
 
 def main() -> None:

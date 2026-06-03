@@ -18,6 +18,7 @@ from stock_codex.channels.core import (
     reset_default_gateway_for_tests,
 )
 from stock_codex.channels.wecom import WeComAdapter
+from stock_codex.channels.weixin import WeixinAdapter
 
 __all__ = [
     "Capabilities",
@@ -28,6 +29,7 @@ __all__ = [
     "Delivery",
     "FeishuAdapter",
     "WeComAdapter",
+    "WeixinAdapter",
     "MockAdapter",
     "get_default_gateway",
     "load_env_file",

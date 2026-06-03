@@ -548,6 +548,22 @@ def _build_wecom(default_channel: str, enabled: set[str]) -> ChannelAdapter | No
     return None
 
 
+def _build_weixin(default_channel: str, enabled: set[str]) -> ChannelAdapter | None:
+    from stock_codex.channels.weixin import WeixinAdapter
+
+    account_id = os.environ.get("WEIXIN_ACCOUNT_ID", "")
+    token = os.environ.get("WEIXIN_TOKEN", "")
+    home = os.environ.get("WEIXIN_HOME_CHANNEL", "")
+    if "weixin" in enabled or default_channel == "weixin" or account_id or token:
+        return WeixinAdapter(
+            account_id=account_id,
+            token=token,
+            default_conversation_id=home,
+            base_url=os.environ.get("WEIXIN_BASE_URL", "").strip() or "https://ilinkai.weixin.qq.com",
+        )
+    return None
+
+
 def _build_feishu(default_channel: str, enabled: set[str]) -> ChannelAdapter | None:
     app_id = os.environ.get("FEISHU_APP_ID", "")
     app_secret = os.environ.get("FEISHU_APP_SECRET", "")
@@ -574,6 +590,7 @@ def _build_feishu(default_channel: str, enabled: set[str]) -> ChannelAdapter | N
 # New platforms register here; get_default_gateway iterates in insertion order.
 ADAPTER_BUILDERS: dict[str, Callable[[str, set[str]], ChannelAdapter | None]] = {
     "wecom": _build_wecom,
+    "weixin": _build_weixin,
     "feishu": _build_feishu,
 }
 
