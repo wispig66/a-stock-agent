@@ -69,6 +69,7 @@ class FeishuAdapter:
         account_id: str | None = None,
         api_base: str = "https://open.feishu.cn/open-apis",
         timeout: int = 10,
+        card_enabled: bool = False,
     ) -> None:
         self.app_id = app_id
         self.app_secret = app_secret
@@ -77,6 +78,7 @@ class FeishuAdapter:
         self.account_id = account_id or app_id or "default"
         self.api_base = api_base.rstrip("/")
         self.timeout = timeout
+        self.card_enabled = card_enabled
         self._tenant_token: str | None = None
         self._tenant_token_expires_at = 0.0
 
@@ -154,12 +156,43 @@ class FeishuAdapter:
         return target, self.receive_id_type
 
     def _message_body(self, text: str, *, format: str) -> tuple[str, str]:
-        if format in {"markdown", "lark_md", "interactive"}:
+        if format in {"markdown", "lark_md", "interactive", "card"}:
+            if self.card_enabled:
+                return "interactive", self._render_card(text)
             return "interactive", json.dumps({
                 "config": {"wide_screen_mode": True},
                 "elements": [{"tag": "markdown", "content": text}],
             }, ensure_ascii=False)
         return "text", json.dumps({"text": text}, ensure_ascii=False)
+
+    @staticmethod
+    def _header_color(text: str) -> str:
+        """Bearish -> red, bullish -> green, otherwise blue (Feishu header templates)."""
+        if any(k in text for k in ("止损", "破位", "跳水", "回避", "风险", "拦截", "清仓", "❌", "⚠️", "⌛")):
+            return "red"
+        if any(k in text for k in ("买点", "出手", "加仓", "突破", "主攻", "✅")):
+            return "green"
+        return "blue"
+
+    def _render_card(self, text: str) -> str:
+        """First non-empty line becomes a colored header title; the rest is the
+        markdown body. Keeps the raw text as body if there is only one line."""
+        stripped = text.strip()
+        lines = stripped.split("\n")
+        raw_title = lines[0].strip() if lines else ""
+        # plain_text header: drop markdown emphasis/heading markers.
+        title = raw_title.lstrip("#").replace("**", "").replace("`", "").strip() or "股票助手"
+        body = "\n".join(lines[1:]).strip()
+        elements = [{"tag": "markdown", "content": body if body else stripped}]
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": self._header_color(stripped),
+                "title": {"tag": "plain_text", "content": title[:100]},
+            },
+            "elements": elements,
+        }
+        return json.dumps(card, ensure_ascii=False)
 
     def edit_text(self, delivery: Delivery, text: str, *, format: str = "plain") -> bool:
         return False
@@ -532,6 +565,7 @@ def _build_feishu(default_channel: str, enabled: set[str]) -> ChannelAdapter | N
             app_id=app_id,
             app_secret=app_secret,
             default_conversation_id=chat_id,
+            card_enabled=os.environ.get("FEISHU_CARD", "").strip().lower() in {"1", "true", "yes", "on"},
         )
     return None
 

@@ -211,6 +211,50 @@ def test_feishu_send_text_can_render_markdown_card(monkeypatch):
     content = calls[1][1]["json"]["content"]
     assert '"tag": "markdown"' in content
     assert "**hello**" in content
+    # card disabled by default: simple markdown element, no header
+    assert "header" not in content
+
+
+def test_feishu_card_renders_colored_header_when_enabled(monkeypatch):
+    import json as _json
+
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/auth/v3/tenant_access_token/internal"):
+            return FakeResponse({"code": 0, "tenant_access_token": "t-1", "expire": 7200})
+        return FakeResponse({"code": 0, "data": {"message_id": "om_1"}})
+
+    monkeypatch.setattr("stock_codex.channels.core.requests.post", fake_post)
+    adapter = FeishuAdapter(
+        app_id="cli_x", app_secret="secret", default_conversation_id="oc_1",
+        card_enabled=True,
+    )
+
+    adapter.send_text("oc_1", "📊 600519 贵州茅台\n买点 1620 突破\n仓位 ≤15%", format="markdown")
+
+    body = _json.loads(calls[1][1]["json"]["content"])
+    assert body["header"]["title"]["content"] == "📊 600519 贵州茅台"
+    assert body["header"]["template"] == "green"  # 含“买点/突破”
+    assert body["elements"][0]["tag"] == "markdown"
+    assert "买点 1620 突破" in body["elements"][0]["content"]
+    # 标题行不重复进正文
+    assert "📊 600519 贵州茅台" not in body["elements"][0]["content"]
+
+
+def test_feishu_card_header_color_bearish():
+    adapter = FeishuAdapter(app_id="x", app_secret="y", default_conversation_id="oc", card_enabled=True)
+    import json as _json
+    body = _json.loads(adapter._render_card("⚠️ 600519\n跌破止损 1580"))
+    assert body["header"]["template"] == "red"
 
 
 def test_feishu_normalize_receive_event_strips_bot_mention():
