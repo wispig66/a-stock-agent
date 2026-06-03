@@ -623,6 +623,21 @@ def _build_telegram(default_channel: str, enabled: set[str]) -> ChannelAdapter |
     return None
 
 
+def _build_wecom(default_channel: str, enabled: set[str]) -> ChannelAdapter | None:
+    from stock_codex.channels.wecom import WeComAdapter
+
+    bot_id = os.environ.get("WECOM_BOT_ID", "")
+    secret = os.environ.get("WECOM_SECRET", "")
+    home = os.environ.get("WECOM_HOME_CHANNEL", "")
+    if "wecom" in enabled or default_channel == "wecom" or bot_id or secret:
+        return WeComAdapter(
+            bot_id=bot_id,
+            secret=secret,
+            default_conversation_id=home,
+        )
+    return None
+
+
 def _build_feishu(default_channel: str, enabled: set[str]) -> ChannelAdapter | None:
     app_id = os.environ.get("FEISHU_APP_ID", "")
     app_secret = os.environ.get("FEISHU_APP_SECRET", "")
@@ -648,6 +663,7 @@ def _build_feishu(default_channel: str, enabled: set[str]) -> ChannelAdapter | N
 # New platforms register here; get_default_gateway iterates in insertion order.
 ADAPTER_BUILDERS: dict[str, Callable[[str, set[str]], ChannelAdapter | None]] = {
     "telegram": _build_telegram,
+    "wecom": _build_wecom,
     "feishu": _build_feishu,
 }
 
