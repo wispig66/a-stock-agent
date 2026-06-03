@@ -41,7 +41,7 @@ def main() -> None:
     parser.add_argument("--env-file", type=Path, default=ENV_FILE)
     parser.add_argument("--base-url", default=DEFAULT_BASE)
     parser.add_argument("--qr-out", type=Path, default=ROOT / "data" / "weixin_login_qr.png")
-    parser.add_argument("--timeout", type=int, default=180, help="seconds to wait for scan confirm")
+    parser.add_argument("--timeout", type=int, default=300, help="seconds to wait for scan confirm")
     args = parser.parse_args()
 
     base = args.base_url.rstrip("/")
@@ -60,29 +60,27 @@ def main() -> None:
     _render_login_qr(content, args.qr_out)
     print(f"  qrcode={qr_id}")
 
-    # 2. poll scan status. 该接口可能长轮询/抖动，捕获异常继续等而不是崩溃。
+    # 2. poll scan status. 该接口长轮询：服务端最长约 35s 才返回，读超时必须 > 35s，
+    #    否则会在「confirmed」状态返回前被切断（实测 30s 太短，扫了也取不到 token）。
+    #    确认后返回顶层 {status:"confirmed", bot_token, baseurl}（iLink 官方协议）。
     deadline = time.time() + args.timeout
     bot_token = ""
     baseurl = base
     while time.time() < deadline:
-        time.sleep(2)
         try:
             sr = requests.get(f"{base}/ilink/bot/get_qrcode_status",
-                              params={"qrcode": qr_id}, headers=_headers(), timeout=30)
+                              params={"qrcode": qr_id}, headers=_headers(), timeout=60)
             sr.raise_for_status()
             sd = sr.json()
         except requests.RequestException as e:
             print(f"  轮询中…（{type(e).__name__}）")
             continue
-        data_field = sd.get("data") if isinstance(sd.get("data"), dict) else {}
-        token = sd.get("bot_token") or sd.get("token") or data_field.get("bot_token")
-        if token:
-            bot_token = str(token)
-            baseurl = str(sd.get("baseurl") or data_field.get("baseurl") or base).rstrip("/")
+        if sd.get("bot_token"):
+            bot_token = str(sd["bot_token"])
+            baseurl = str(sd.get("baseurl") or base).rstrip("/")
             break
-        status = sd.get("status") or sd.get("state") or sd.get("ret")
-        # 状态字段名未经真机核实：打印实际键名便于据实对齐。
-        print(f"  状态：{status if status is not None else '等待扫码'}  keys={list(sd.keys())}")
+        print(f"  状态：{sd.get('status') or '等待扫码'}…")
+        time.sleep(1)
     if not bot_token:
         raise SystemExit("✗ 扫码超时或未确认；重试：uv run python scripts/configure_weixin.py")
 
