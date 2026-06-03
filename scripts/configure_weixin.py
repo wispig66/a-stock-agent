@@ -51,36 +51,38 @@ def main() -> None:
                      headers=_headers(), timeout=15)
     r.raise_for_status()
     data = r.json()
-    qrcode = data.get("qrcode")
-    img_b64 = data.get("qrcode_img_content")
-    if not qrcode:
+    if data.get("ret") not in (0, None):
+        raise SystemExit(f"✗ 获取二维码失败 ret={data.get('ret')}：{data}")
+    qr_id = data.get("qrcode")
+    content = data.get("qrcode_img_content") or ""
+    if not qr_id:
         raise SystemExit(f"✗ 获取二维码失败：{data}")
-    if img_b64:
-        args.qr_out.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            args.qr_out.write_bytes(base64.b64decode(img_b64))
-            print(f"✓ 登录二维码已保存：{args.qr_out}")
-            print("  用微信扫码并在手机上确认登录…")
-        except Exception:
-            print("⚠️ 二维码图片解码失败，请改用其它方式获取二维码")
-    print(f"  qrcode={qrcode}")
+    _render_login_qr(content, args.qr_out)
+    print(f"  qrcode={qr_id}")
 
-    # 2. poll scan status
+    # 2. poll scan status. 该接口可能长轮询/抖动，捕获异常继续等而不是崩溃。
     deadline = time.time() + args.timeout
     bot_token = ""
     baseurl = base
     while time.time() < deadline:
         time.sleep(2)
-        sr = requests.get(f"{base}/ilink/bot/get_qrcode_status", params={"qrcode": qrcode},
-                          headers=_headers(), timeout=15)
-        sr.raise_for_status()
-        sd = sr.json()
-        status = str(sd.get("status") or "")
-        if status == "confirmed" and sd.get("bot_token"):
-            bot_token = str(sd["bot_token"])
-            baseurl = str(sd.get("baseurl") or base).rstrip("/")
+        try:
+            sr = requests.get(f"{base}/ilink/bot/get_qrcode_status",
+                              params={"qrcode": qr_id}, headers=_headers(), timeout=30)
+            sr.raise_for_status()
+            sd = sr.json()
+        except requests.RequestException as e:
+            print(f"  轮询中…（{type(e).__name__}）")
+            continue
+        data_field = sd.get("data") if isinstance(sd.get("data"), dict) else {}
+        token = sd.get("bot_token") or sd.get("token") or data_field.get("bot_token")
+        if token:
+            bot_token = str(token)
+            baseurl = str(sd.get("baseurl") or data_field.get("baseurl") or base).rstrip("/")
             break
-        print(f"  状态：{status or '等待扫码'}…")
+        status = sd.get("status") or sd.get("state") or sd.get("ret")
+        # 状态字段名未经真机核实：打印实际键名便于据实对齐。
+        print(f"  状态：{status if status is not None else '等待扫码'}  keys={list(sd.keys())}")
     if not bot_token:
         raise SystemExit("✗ 扫码超时或未确认；重试：uv run python scripts/configure_weixin.py")
 
@@ -102,6 +104,40 @@ def main() -> None:
     print("- 把 weixin 加入启用通道：CHANNELS_ENABLED=feishu,weixin（按需）")
     print("- 先在微信里给机器人私聊发一条消息，建立 context_token（定时推送依赖它，best-effort）")
     print("- 启动 gateway：bash scripts/start_gateway.sh")
+
+
+def _render_login_qr(content: str, png_out: Path) -> None:
+    """``qrcode_img_content`` 实测是要编码进二维码的 URL（如 liteapp 短链）。
+
+    优先在终端渲染 ASCII 二维码直接扫；若 pillow 可用顺带存一份 PNG。
+    兜底：万一某些环境返回 base64 PNG，则按图片落盘。
+    """
+    if content.startswith("http"):
+        try:
+            import qrcode  # type: ignore
+        except ImportError:
+            print("⚠️ 渲染二维码需要 qrcode 库：uv add qrcode")
+            print(f"  或手动把这个链接转成二维码用微信扫：{content}")
+            return
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(content)
+        qr.make(fit=True)
+        print("\n用微信扫描下面的二维码，并在手机上确认登录：\n")
+        qr.print_ascii(invert=True)
+        try:  # PNG 可选（需 pillow）
+            png_out.parent.mkdir(parents=True, exist_ok=True)
+            qr.make_image().save(png_out)
+            print(f"\n（二维码也已存到 {png_out}）")
+        except Exception:
+            pass
+        return
+    # 兜底：base64 PNG
+    png_out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        png_out.write_bytes(base64.b64decode(content))
+        print(f"✓ 登录二维码已保存：{png_out}，用微信扫码确认登录…")
+    except Exception:
+        print("⚠️ 二维码内容无法识别（既非 URL 也非 base64 图片）")
 
 
 def _prompt(name: str, default: str, *, allow_empty: bool = False) -> str:
