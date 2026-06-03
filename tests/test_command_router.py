@@ -1,15 +1,16 @@
-"""tg_listener.handle() 单元测试：mock 数据库 + mock subprocess + mock push。"""
+"""command_router.handle() 单元测试：mock 数据库 + mock subprocess + mock 发送。
+
+（前身 test_tg_listener.py；移除 Telegram 传输/轮询专属用例后迁来。）
+"""
 from __future__ import annotations
 import sqlite3
-import sys
 from pathlib import Path
 from unittest.mock import patch
-import requests
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from stock_codex.apps import tg_listener as tl  # noqa: E402
+from stock_codex.apps import command_router as tl  # noqa: E402
 from stock_codex.channels import ChannelMessage, Delivery  # noqa: E402
 
 
@@ -45,7 +46,8 @@ def _setup(monkeypatch, tmp_path):
     monkeypatch.setattr(tl.holdings_lib, "HOLDINGS_FILE", tmp_path / "holdings.yaml")
     monkeypatch.setattr(tl.holdings_lib, "LOCK_FILE", tmp_path / "holdings.yaml.lock")
     (tmp_path / "holdings.yaml").write_text("holdings: []\n")
-    monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "999")
+    # 默认通道 feishu：用 FEISHU 白名单放行 chat_id=999
+    monkeypatch.setenv("FEISHU_ALLOWED_CHAT_IDS", "999")
 
 
 def test_handle_unknown_silent(tmp_path, monkeypatch):
@@ -99,8 +101,8 @@ def test_handle_chinese_multi_hit(tmp_path, monkeypatch):
 
 def test_handle_fresh_dispatches_skill(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
-    with patch.object(tl, "_tg_send", return_value=42) as send, \
-         patch.object(tl, "_tg_edit") as edit, \
+    with patch.object(tl, "send_message", return_value=42) as send, \
+         patch.object(tl, "edit_message") as edit, \
          patch.object(tl, "run_skill_streaming",
                       return_value="📊 fake card") as r:
         tl.handle("600519", chat_id="999", today="2026-05-14")
@@ -108,10 +110,8 @@ def test_handle_fresh_dispatches_skill(tmp_path, monkeypatch):
     code, mode = r.call_args.args[0], r.call_args.args[1]
     assert code == "600519"
     assert mode == "fresh"
-    # 占位发送一次
     send.assert_called_once()
     assert "分析中" in send.call_args.args[0]
-    # 最终编辑落到同一条消息（msg_id=42）
     final_call = edit.call_args_list[-1]
     assert final_call.args[0] == 42
     assert "📊" in final_call.args[1] or "fake card" in final_call.args[1]
@@ -123,8 +123,8 @@ def test_handle_holding_branch(tmp_path, monkeypatch):
         "holdings:\n  - code: '600519'\n    name: 贵州茅台\n    genre: B\n"
         "    cost: 1580\n    shares: 100\n    buy_date: 2026-05-09\n"
     )
-    with patch.object(tl, "_tg_send", return_value=1), \
-         patch.object(tl, "_tg_edit"), \
+    with patch.object(tl, "send_message", return_value=1), \
+         patch.object(tl, "edit_message"), \
          patch.object(tl, "run_skill_streaming", return_value="📊 fake") as r:
         tl.handle("600519", chat_id="999", today="2026-05-14")
     assert r.call_args.args[1] == "holding"
@@ -210,9 +210,9 @@ def test_handle_watch_analyzes_and_persists_dynamic_watch(tmp_path, monkeypatch)
 
 def test_handle_wrong_chat_id_silent(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
-    monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "12345")
+    monkeypatch.setenv("FEISHU_ALLOWED_CHAT_IDS", "12345")
     with patch.object(tl, "push_reply") as p, \
-         patch.object(tl, "_tg_send") as send, \
+         patch.object(tl, "send_message") as send, \
          patch.object(tl, "run_skill_streaming") as r:
         tl.handle("600519", chat_id="999", today="2026-05-14")
     p.assert_not_called()
@@ -220,21 +220,19 @@ def test_handle_wrong_chat_id_silent(tmp_path, monkeypatch):
     r.assert_not_called()
 
 
-def test_feishu_channel_message_replies_to_feishu_and_resets_context(monkeypatch):
+def test_feishu_channel_message_replies_to_feishu(monkeypatch):
     monkeypatch.setenv("FEISHU_ALLOWED_CHAT_IDS", "oc_1")
-    monkeypatch.setattr(tl, "TG_CHAT_ID", "tg-chat")
     sent = []
 
     class FakeGateway:
         def send_text(self, text, *, source, channel, target, format):
-            msg_id = "om_1" if channel == "feishu" else "42"
             sent.append((channel, target, text, format, source))
             return Delivery(
                 channel=channel,
                 account_id="fake",
                 conversation_id=target,
-                provider_message_id=msg_id,
-                editable=channel == "telegram",
+                provider_message_id="om_1",
+                editable=False,
             )
 
         def edit_text(self, delivery, text, *, source, format):
@@ -259,16 +257,14 @@ def test_feishu_channel_message_replies_to_feishu_and_resets_context(monkeypatch
         message_id="om_in",
         text="/help",
     ))
-    tl._tg_send("after")
 
     assert sent[0][0] == "feishu"
     assert sent[0][1] == "oc_1"
     assert "交易流水命令" in sent[0][2]
-    assert sent[-1][0] == "telegram"
-    assert sent[-1][1] == "tg-chat"
+    assert sent[0][3] == "markdown"
 
 
-def test_feishu_non_editable_channel_skips_streaming_edits(monkeypatch):
+def test_non_editable_channel_skips_transient_edits(monkeypatch):
     sent = []
     delivery = Delivery(
         channel="feishu",
@@ -292,10 +288,10 @@ def test_feishu_non_editable_channel_skips_streaming_edits(monkeypatch):
     monkeypatch.setattr(tl, "get_default_gateway", lambda: FakeGateway())
     tl._response_deliveries["om_ack"] = delivery
 
-    tl._tg_edit("om_ack", "🔍 600519\n\n中间流式内容")
-    tl._tg_edit("om_ack", "<b>最终卡片</b>", parse_mode="HTML")
+    tl.edit_message("om_ack", "🔍 600519\n\n中间流式内容")       # transient -> dropped
+    tl.edit_message("om_ack", "最终卡片", final=True)            # final -> sent
 
-    assert sent == [("最终卡片", "tg-listener-edit", "plain")]
+    assert sent == [("最终卡片", "feishu-listener-edit", "markdown")]
 
 
 def test_feishu_allowed_chat_wildcard_is_explicit_opt_in(monkeypatch):
@@ -304,15 +300,10 @@ def test_feishu_allowed_chat_wildcard_is_explicit_opt_in(monkeypatch):
     assert tl._is_allowed_chat("feishu", "oc_any")
 
 
-def test_non_telegram_html_is_downgraded_to_plain_text():
-    body, fmt = tl._format_for_channel(
-        "<b>卡片</b><br><pre>风险 &amp; 买点</pre>",
-        parse_mode="HTML",
-        channel="feishu",
-    )
-
-    assert fmt == "plain"
-    assert body == "卡片\n风险 & 买点"
+def test_wecom_allowed_users_gate(monkeypatch):
+    monkeypatch.setenv("WECOM_ALLOWED_USERS", "u1,u2")
+    assert tl._is_allowed_chat("wecom", "u1") is True
+    assert tl._is_allowed_chat("wecom", "u9") is False
 
 
 def test_handle_chinese_no_hit(tmp_path, monkeypatch):
@@ -535,7 +526,6 @@ def test_handle_invalid_trade_replies_error(tmp_path, monkeypatch):
     p.assert_called_once()
     assert "❌" in p.call_args.args[0] and "理由" in p.call_args.args[0]
     r.assert_not_called()
-    # 库里不应有行
     conn = sqlite3.connect(db)
     n = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
     conn.close()
@@ -581,7 +571,6 @@ def test_handle_bad_reason_lists_options(tmp_path, monkeypatch):
     with patch.object(tl, "push_reply") as p:
         tl.handle("/buy 600519 12.34 10 瞎写", chat_id="999")
     msg = p.call_args.args[0]
-    # 错误提示里必须列全 4 个买入理由
     for r in tl.BUY_REASONS:
         assert r in msg
 
@@ -589,97 +578,9 @@ def test_handle_bad_reason_lists_options(tmp_path, monkeypatch):
 def test_handle_trade_does_not_block_query(tmp_path, monkeypatch):
     """非 /buy /sell 开头，走原 query 流程。"""
     _setup(monkeypatch, tmp_path)
-    with patch.object(tl, "_tg_send", return_value=1), \
-         patch.object(tl, "_tg_edit"), \
+    with patch.object(tl, "send_message", return_value=1), \
+         patch.object(tl, "edit_message"), \
          patch.object(tl, "run_skill_streaming",
                       return_value="📊 fake") as r:
         tl.handle("600519", chat_id="999")
     r.assert_called_once()
-
-
-def test_main_logs_recovery_after_poll_failures(monkeypatch):
-    """Telegram 长轮询短暂失败后恢复时，必须有明确恢复日志。"""
-    monkeypatch.setattr(tl, "TG_TOKEN", "token")
-    monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "999")
-    monkeypatch.setattr(tl, "_acquire_poll_lock", lambda: object())
-    monkeypatch.setattr(tl, "_load_offset", lambda: 0)
-    monkeypatch.setattr(tl, "_save_offset", lambda offset: None)
-    monkeypatch.setattr(tl.time, "sleep", lambda seconds: None)
-
-    calls = {"n": 0}
-
-    def fake_get_updates(offset):
-        calls["n"] += 1
-        if calls["n"] <= 2:
-            raise requests.exceptions.ReadTimeout("telegram timeout")
-        if calls["n"] == 3:
-            return []
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(tl, "_get_updates", fake_get_updates)
-
-    with patch.object(tl.log, "warning") as warning, \
-         patch.object(tl.log, "error") as error, \
-         patch.object(tl.log, "info") as info:
-        try:
-            tl.main()
-        except KeyboardInterrupt:
-            pass
-
-    assert warning.call_count == 2
-    error.assert_not_called()
-    assert any(
-        call.args[0] == "getUpdates recovered after %d failures, downtime %.1fs"
-        and call.args[1] == 2
-        for call in info.call_args_list
-    )
-
-
-def test_main_alerts_only_after_poll_failure_threshold(monkeypatch):
-    """连续失败达到阈值后才发 ERROR，避免短暂网络抖动刷屏。"""
-    monkeypatch.setattr(tl, "TG_TOKEN", "token")
-    monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "999")
-    monkeypatch.setattr(tl, "POLL_ALERT_AFTER_FAILURES", 3)
-    monkeypatch.setattr(tl, "POLL_ALERT_EVERY_FAILURES", 20)
-    monkeypatch.setattr(tl, "_acquire_poll_lock", lambda: object())
-    monkeypatch.setattr(tl, "_load_offset", lambda: 0)
-    monkeypatch.setattr(tl, "_save_offset", lambda offset: None)
-    monkeypatch.setattr(tl.time, "sleep", lambda seconds: None)
-
-    calls = {"n": 0}
-
-    def fake_get_updates(offset):
-        calls["n"] += 1
-        if calls["n"] <= 3:
-            raise requests.exceptions.ReadTimeout("telegram timeout")
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(tl, "_get_updates", fake_get_updates)
-
-    with patch.object(tl.log, "warning") as warning, \
-         patch.object(tl.log, "error") as error:
-        try:
-            tl.main()
-        except KeyboardInterrupt:
-            pass
-
-    assert warning.call_count == 2
-    error.assert_called_once()
-    assert "getUpdates failed #3" in error.call_args.args[0]
-    assert error.call_args.kwargs.get("exc_info") is True
-
-
-def test_acquire_poll_lock_rejects_duplicate_poller(tmp_path, monkeypatch):
-    """同一个 bot 只能有一个 getUpdates 长轮询进程。"""
-    monkeypatch.setattr(tl, "POLL_LOCK_FILE", tmp_path / "tg_listener.lock")
-    first = tl._acquire_poll_lock()
-    try:
-        with patch.object(tl.log, "critical") as critical, pytest.raises(SystemExit) as exc:
-            tl._acquire_poll_lock()
-    finally:
-        first.close()
-
-    assert exc.value.code == 78
-    critical.assert_called_once_with(
-        "tg_listener already running; refuse duplicate getUpdates poller"
-    )

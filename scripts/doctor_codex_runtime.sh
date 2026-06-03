@@ -34,7 +34,7 @@ LEGACY_LABELS=(
 )
 
 DNS_REQUIRED_HOSTS=(
-    "api.telegram.org"
+    "open.feishu.cn"
     "push2ex.eastmoney.com"
     "q.10jqka.com.cn"
 )
@@ -118,8 +118,8 @@ check_network_readiness() {
         check_dns_resolution "$host"
     done
 
-    # Do not send a Telegram message here. This only verifies DNS/TLS/routing.
-    check_https_reachable "https://api.telegram.org"
+    # Do not send an IM message here. This only verifies DNS/TLS/routing.
+    check_https_reachable "https://open.feishu.cn"
 }
 
 check_env_presence() {
@@ -212,20 +212,6 @@ PY
     ok "automation $job cwd ok"
 }
 
-check_recent_tg_listener_conflicts() {
-    local log_file="$PROJECT_ROOT/logs/tg_listener.log"
-
-    if [ ! -f "$log_file" ]; then
-        return
-    fi
-
-    if tail -n 200 "$log_file" | grep -Fq "409 Conflict"; then
-        warn "recent Telegram getUpdates 409 Conflict found in logs/tg_listener.log; another bot poller may still be running"
-    else
-        ok "no recent Telegram getUpdates conflict in tg_listener.log"
-    fi
-}
-
 legacy_label_loaded() {
     local label="$1"
 
@@ -273,8 +259,8 @@ for skill in "${SKILLS[@]}"; do
     ok "skill $skill exists"
 done
 
-check_env_presence TG_BOT_TOKEN
-check_env_presence TG_CHAT_ID
+check_env_presence FEISHU_APP_ID
+check_env_presence FEISHU_APP_SECRET
 check_network_readiness
 
 [ -f "$PROJECT_ROOT/data/daily.db" ] || fail "missing data/daily.db"
@@ -307,8 +293,6 @@ for label in "${LEGACY_LABELS[@]}"; do
     ok "legacy short LLM launchd job not loaded: $label"
     check_legacy_plist_file_absent "$label"
 done
-
-check_recent_tg_listener_conflicts
 
 echo
 echo "Codex runtime doctor complete"

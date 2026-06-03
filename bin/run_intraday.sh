@@ -28,7 +28,7 @@ done
   echo "=========================================="
 
   "$CODEX_BIN" exec --dangerously-bypass-approvals-and-sandbox -C "$PWD" - <<PROMPT
-Use the stock-intraday skill in this repository. Run the current-time intraday workflow for $NOW and push it to Telegram. Return only a concise operational summary.
+Use the stock-intraday skill in this repository. Run the current-time intraday workflow for $NOW and push it to the IM gateway. Return only a concise operational summary.
 PROMPT
 
   echo

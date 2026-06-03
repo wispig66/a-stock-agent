@@ -46,14 +46,14 @@ except Exception:
     exit 0
   fi
 
-  if ! curl -sSf --max-time 3 -o /dev/null https://api.telegram.org \
+  if ! curl -sSf --max-time 3 -o /dev/null https://open.feishu.cn \
      && ! curl -sSf --max-time 3 -o /dev/null https://push2.eastmoney.com; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ 网络不通（telegram/eastmoney 3s 超时），放弃本次运行（等下次补跑触发）"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ 网络不通（feishu/eastmoney 3s 超时），放弃本次运行（等下次补跑触发）"
     exit 99
   fi
 
   "$CODEX_BIN" exec --dangerously-bypass-approvals-and-sandbox -C "$PWD" - <<'PROMPT'
-Use the stock-premarket skill in this repository. Generate today's A-share premarket plan and push it to Telegram. Return only a concise operational summary.
+Use the stock-premarket skill in this repository. Generate today's A-share premarket plan and push it to the IM gateway. Return only a concise operational summary.
 PROMPT
 
   echo

@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from stock_codex.apps import tg_listener
+from stock_codex.apps import command_router
 from stock_codex.channels import ChannelMessage, FeishuAdapter, get_default_gateway, load_env_file
 from stock_codex.channels.outbox import run_outbox_drain
 from stock_codex.infra.logger import get_logger
@@ -30,8 +30,8 @@ GATEWAY_LOCK_FILE = DATA_DIR / "channel_gateway.lock"
 GATEWAY_STATE_FILE = DATA_DIR / "channel_gateway_state.json"
 FEISHU_DEDUP_FILE = DATA_DIR / "feishu_seen_message_ids.json"
 FEISHU_MENU_TEXTS = {
-    "help": tg_listener.HELP_TEXT,
-    "menu_help": tg_listener.HELP_TEXT,
+    "help": command_router.HELP_TEXT,
+    "menu_help": command_router.HELP_TEXT,
     "query": "直接发送 6 位股票代码或股票名称，例如：600519 或 贵州茅台。",
     "menu_query": "直接发送 6 位股票代码或股票名称，例如：600519 或 贵州茅台。",
     "ask": "发送 /ask <问题> 或 /ask+ <问题>，例如：/ask 光伏怎么样。",
@@ -46,7 +46,7 @@ def enabled_channels() -> set[str]:
         return {x.strip() for x in raw.split(",") if x.strip()}
     if os.environ.get("FEISHU_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
         return {"feishu"}
-    return {os.environ.get("CHANNEL_DEFAULT", "telegram").strip() or "telegram"}
+    return {os.environ.get("CHANNEL_DEFAULT", "feishu").strip() or "feishu"}
 
 
 @dataclass(frozen=True)
@@ -178,7 +178,7 @@ class GatewayRuntime:
                 channel=message.channel,
                 conversation_id=message.conversation_id,
                 message_id=message.message_id,
-                handle=lambda: tg_listener.handle_channel_message(message),
+                handle=lambda: command_router.handle_channel_message(message),
             )
         )
 
@@ -400,7 +400,7 @@ def handle_feishu_menu_event(data: Any, adapter: FeishuAdapter) -> bool:
         return False
     text = FEISHU_MENU_TEXTS.get(event_key)
     if not text:
-        text = f"暂不支持的菜单：{event_key}\n\n{tg_listener.HELP_TEXT}"
+        text = f"暂不支持的菜单：{event_key}\n\n{command_router.HELP_TEXT}"
     target = f"open_id:{open_id}" if open_id else adapter.default_target()
     log.info("Feishu bot menu clicked key=%s target=%s", event_key, "open_id" if open_id else "home")
     get_default_gateway().send_text(
@@ -413,75 +413,11 @@ def handle_feishu_menu_event(data: Any, adapter: FeishuAdapter) -> bool:
     return True
 
 
-def run_telegram_poll(runtime: GatewayRuntime | None = None) -> None:
-    runtime = runtime or GatewayRuntime()
-    _configure_telegram_from_env()
-    if not tg_listener.TG_TOKEN or not tg_listener.ALLOWED_CHAT_ID:
-        log.critical("TG_BOT_TOKEN / ALLOWED_CHAT_ID 未配置，退出")
-        sys.exit(2)
-    _poll_lock = tg_listener._acquire_poll_lock()
-    offset = tg_listener._load_offset()
-    log.info("Telegram poller starting offset=%d", offset)
-    runtime.write_state(adapters={"telegram": "running"}, last_error=None)
-    backoff = 1
-    poll_failures = 0
-    first_failure_at: float | None = None
-    while True:
-        try:
-            updates = tg_listener._get_updates(offset)
-            if poll_failures:
-                downtime = time.monotonic() - (first_failure_at or time.monotonic())
-                log.info("Telegram getUpdates recovered after %d failures, downtime %.1fs",
-                         poll_failures, downtime)
-                poll_failures = 0
-                first_failure_at = None
-            backoff = 1
-            for update in updates:
-                offset = max(offset, update["update_id"] + 1)
-                tg_listener._save_offset(offset)
-                msg = update.get("message") or update.get("edited_message") or {}
-                text = (msg.get("text") or "").strip()
-                chat_id = (msg.get("chat") or {}).get("id")
-                reply_to = (msg.get("reply_to_message") or {}).get("message_id")
-                user_msg_id = msg.get("message_id")
-                if not text or chat_id is None:
-                    continue
-                runtime.submit_task(
-                    GatewayTask(
-                        channel="telegram",
-                        conversation_id=str(chat_id),
-                        message_id=str(update["update_id"]),
-                        handle=lambda text=text, chat_id=chat_id, reply_to=reply_to,
-                        update_id=update["update_id"], user_msg_id=user_msg_id: tg_listener.handle(
-                            text,
-                            chat_id,
-                            reply_to_msg_id=reply_to,
-                            update_id=update_id,
-                            user_msg_id=user_msg_id,
-                        ),
-                    )
-                )
-        except Exception as e:
-            poll_failures += 1
-            if first_failure_at is None:
-                first_failure_at = time.monotonic()
-            should_alert = (
-                poll_failures == tg_listener.POLL_ALERT_AFTER_FAILURES
-                or (
-                    poll_failures > tg_listener.POLL_ALERT_AFTER_FAILURES
-                    and tg_listener.POLL_ALERT_EVERY_FAILURES > 0
-                    and poll_failures % tg_listener.POLL_ALERT_EVERY_FAILURES == 0
-                )
-            )
-            msg = ("Telegram getUpdates failed #%d (%s: %s), backoff %ds"
-                   % (poll_failures, type(e).__name__, _safe_error_text(e)[:200], backoff))
-            runtime.write_state(adapters={"telegram": "error"}, last_error=msg)
-            if should_alert:
-                log.error(msg, exc_info=True)
-            else:
-                log.warning(msg)
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 30)
+def _listener_dispatch() -> dict[str, Callable[..., None]]:
+    """Channel -> inbound listener. Built at call time so tests can monkeypatch
+    the module-level listener functions. Outbound for connection-bound channels
+    flows through the outbox regardless of whether an inbound listener exists."""
+    return {"feishu": run_feishu_ws}
 
 
 def main() -> None:
@@ -501,15 +437,20 @@ def main() -> None:
         daemon=True,
     )
     drain.start()
-    if "feishu" in channels and "telegram" in channels:
-        t = threading.Thread(target=run_feishu_ws, kwargs={"runtime": runtime}, name="feishu-ws", daemon=True)
-        t.start()
-        run_telegram_poll(runtime=runtime)
+    dispatch = _listener_dispatch()
+    listeners = [dispatch[ch] for ch in sorted(channels) if ch in dispatch]
+    if not listeners:
+        log.warning("no inbound listener for channels=%s; outbound still flows via outbox", channels)
+        while getattr(runtime, "_running", False):
+            time.sleep(3600)
         return
-    if "feishu" in channels:
-        run_feishu_ws(runtime=runtime)
-        return
-    run_telegram_poll(runtime=runtime)
+    # Run all but the last listener on background threads; the last blocks main.
+    for fn in listeners[:-1]:
+        threading.Thread(
+            target=fn, kwargs={"runtime": runtime},
+            name=f"listener-{fn.__name__}", daemon=True,
+        ).start()
+    listeners[-1](runtime=runtime)
 
 
 def _acquire_gateway_lock():
@@ -540,14 +481,6 @@ def _env_bool(name: str, *, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _configure_telegram_from_env() -> None:
-    load_env_file()
-    tg_listener.TG_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
-    tg_listener.TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
-    tg_listener.ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID") or tg_listener.TG_CHAT_ID
-    tg_listener.TG_API = f"https://api.telegram.org/bot{tg_listener.TG_TOKEN}"
-
-
 def _message_mentions_bot(message: ChannelMessage, bot_open_id: str | None) -> bool:
     mentions = message.raw.get("mentions") or []
     if not mentions:
@@ -565,7 +498,7 @@ def _message_mentions_bot(message: ChannelMessage, bot_open_id: str | None) -> b
 
 def _safe_error_text(exc: Exception) -> str:
     text = str(exc)
-    for key in ("TG_BOT_TOKEN", "FEISHU_APP_SECRET"):
+    for key in ("FEISHU_APP_SECRET", "WECOM_SECRET", "WEIXIN_TOKEN"):
         secret = os.environ.get(key)
         if secret:
             text = text.replace(secret, "<redacted>")

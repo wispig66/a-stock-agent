@@ -71,15 +71,15 @@ fi
 step "[5/6] 检查 .env"
 if [ ! -f .env ]; then
     cp .env.example .env
-    warn ".env 已从 .env.example 创建，请编辑填入 TG_BOT_TOKEN / TG_CHAT_ID 后再继续"
-    echo "    编辑：vim .env"
+    warn ".env 已从 .env.example 创建，请编辑填入 FEISHU_APP_ID / FEISHU_APP_SECRET 后再继续"
+    echo "    编辑：vim .env（或运行 uv run python scripts/configure_feishu.py）"
     echo "    填好后重跑此脚本。"
     exit 0
 fi
 
-# 简单校验（不打印 token 本身）
-if grep -qE '^TG_BOT_TOKEN=\s*$' .env || grep -qE '^TG_CHAT_ID=\s*$' .env; then
-    err ".env 中 TG_BOT_TOKEN 或 TG_CHAT_ID 为空，请先填入"
+# 简单校验（不打印 secret 本身）
+if grep -qE '^FEISHU_APP_ID=\s*$' .env || grep -qE '^FEISHU_APP_SECRET=\s*$' .env; then
+    err ".env 中 FEISHU_APP_ID 或 FEISHU_APP_SECRET 为空，请先填入"
     exit 1
 fi
 ok ".env 已填值"

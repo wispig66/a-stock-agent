@@ -38,7 +38,6 @@ __all__ = [
     "ChannelError",
     "ChannelMessage",
     "Delivery",
-    "TelegramAdapter",
     "FeishuAdapter",
     "MockAdapter",
     "ChannelGateway",
@@ -47,120 +46,6 @@ __all__ = [
     "load_env_file",
     "reset_default_gateway_for_tests",
 ]
-
-
-class TelegramAdapter:
-    channel = "telegram"
-    capabilities = Capabilities(
-        send_text=True,
-        edit_text=True,
-        markdown=False,
-        html=True,
-        card=False,
-        streaming=True,
-    )
-
-    def __init__(
-        self,
-        *,
-        token: str,
-        default_conversation_id: str,
-        account_id: str = "default",
-        api_base: str | None = None,
-        timeout: int = 10,
-    ) -> None:
-        self.token = token
-        self.default_conversation_id = default_conversation_id
-        self.account_id = account_id
-        self.api_base = api_base or f"https://api.telegram.org/bot{token}"
-        self.timeout = timeout
-
-    def default_target(self) -> str:
-        if not self.default_conversation_id:
-            raise ChannelError("Telegram default conversation is not configured")
-        return self.default_conversation_id
-
-    def _safe_error_text(self, error: object) -> str:
-        text = str(error)
-        if self.token:
-            text = text.replace(self.token, "<redacted-token>")
-        return text
-
-    def send_text(self, target: str, text: str, *, format: str = "plain") -> Delivery:
-        if not self.token:
-            raise ChannelError("TG_BOT_TOKEN is not configured")
-        payload: dict[str, Any] = {
-            "chat_id": target,
-            "text": text,
-            "disable_web_page_preview": True,
-        }
-        if format == "html":
-            payload["parse_mode"] = "HTML"
-
-        last_error: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                r = requests.post(f"{self.api_base}/sendMessage", json=payload, timeout=self.timeout)
-                data = r.json()
-                if not data.get("ok"):
-                    raise ChannelError(f"Telegram API failed: {data}")
-                msg_id = str(data["result"]["message_id"])
-                return Delivery(
-                    channel=self.channel,
-                    account_id=self.account_id,
-                    conversation_id=str(target),
-                    provider_message_id=msg_id,
-                    editable=True,
-                    raw=data,
-                )
-            except ChannelError:
-                raise
-            except (requests.RequestException, ValueError) as e:
-                last_error = e
-                if attempt == 3:
-                    break
-                time.sleep(attempt)
-        raise ChannelError(f"Telegram send failed after 3 attempts: {self._safe_error_text(last_error)}")
-
-    def edit_text(self, delivery: Delivery, text: str, *, format: str = "plain") -> bool:
-        payload: dict[str, Any] = {
-            "chat_id": delivery.conversation_id,
-            "message_id": delivery.provider_message_id,
-            "text": text,
-            "disable_web_page_preview": True,
-        }
-        if format == "html":
-            payload["parse_mode"] = "HTML"
-        r = requests.post(f"{self.api_base}/editMessageText", json=payload, timeout=self.timeout)
-        if r.status_code == 400 and format == "html":
-            try:
-                data = r.json()
-            except ValueError:
-                data = {}
-            description = str(data.get("description") or "")
-            if "message is not modified" in description.lower():
-                return True
-            payload.pop("parse_mode", None)
-            r = requests.post(f"{self.api_base}/editMessageText", json=payload, timeout=self.timeout)
-        if r.status_code == 400:
-            try:
-                data = r.json()
-            except ValueError:
-                data = {}
-            description = str(data.get("description") or "")
-            if "message is not modified" in description.lower():
-                return True
-        if r.status_code == 429:
-            try:
-                retry_after = int((r.json().get("parameters") or {}).get("retry_after") or 1)
-            except (TypeError, ValueError):
-                retry_after = 1
-            time.sleep(max(1, min(retry_after, 30)))
-            r = requests.post(f"{self.api_base}/editMessageText", json=payload, timeout=self.timeout)
-        if r.status_code == 200:
-            return True
-        r.raise_for_status()
-        return True
 
 
 class FeishuAdapter:
@@ -615,14 +500,6 @@ class ChannelGateway:
 _DEFAULT_GATEWAY: ChannelGateway | None = None
 
 
-def _build_telegram(default_channel: str, enabled: set[str]) -> ChannelAdapter | None:
-    token = os.environ.get("TG_BOT_TOKEN", "")
-    chat_id = os.environ.get("TG_CHAT_ID", "")
-    if token or chat_id or default_channel == "telegram":
-        return TelegramAdapter(token=token, default_conversation_id=chat_id)
-    return None
-
-
 def _build_wecom(default_channel: str, enabled: set[str]) -> ChannelAdapter | None:
     from stock_codex.channels.wecom import WeComAdapter
 
@@ -662,7 +539,6 @@ def _build_feishu(default_channel: str, enabled: set[str]) -> ChannelAdapter | N
 # Channel name -> builder(default_channel, channels_enabled) -> adapter | None.
 # New platforms register here; get_default_gateway iterates in insertion order.
 ADAPTER_BUILDERS: dict[str, Callable[[str, set[str]], ChannelAdapter | None]] = {
-    "telegram": _build_telegram,
     "wecom": _build_wecom,
     "feishu": _build_feishu,
 }
@@ -673,7 +549,7 @@ def get_default_gateway() -> ChannelGateway:
     if _DEFAULT_GATEWAY is not None:
         return _DEFAULT_GATEWAY
     load_env_file()
-    default_channel = os.environ.get("CHANNEL_DEFAULT", "telegram").strip() or "telegram"
+    default_channel = os.environ.get("CHANNEL_DEFAULT", "feishu").strip() or "feishu"
     enabled = {c.strip() for c in os.environ.get("CHANNELS_ENABLED", "").split(",") if c.strip()}
     adapters: dict[str, ChannelAdapter] = {}
     for name, builder in ADAPTER_BUILDERS.items():

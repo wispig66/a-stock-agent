@@ -2,8 +2,7 @@
 # 安装长时非 LLM runtime 服务。
 #
 # 用法：从仓库根目录跑 `bash scripts/install_runtime_services.sh`
-# 默认只安装长时循环服务；如需同时安装 TG listener：
-#   ENABLE_TG_LISTENER_LAUNCHD=1 bash scripts/install_runtime_services.sh
+# 只安装长时循环服务；IM gateway 监听进程单独用 scripts/start_gateway.sh 启动。
 
 set -euo pipefail
 
@@ -17,10 +16,6 @@ TEMPLATES=(
     "launchd/com.user.stockanomalyloop.plist"
     "launchd/com.user.stockthemeloop.plist"
 )
-
-if [ "${ENABLE_TG_LISTENER_LAUNCHD:-0}" = "1" ]; then
-    TEMPLATES+=("launchd/disabled/com.user.stocktglistener.plist")
-fi
 
 RENDERED_DIR=""
 

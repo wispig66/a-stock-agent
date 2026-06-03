@@ -3,7 +3,7 @@
 用法：
     from stock_codex.infra.logger import get_logger, new_req_id, set_req_id, run_subprocess
 
-    log = get_logger("tg_listener")
+    log = get_logger("command_router")
     log.info("启动")
     try:
         ...

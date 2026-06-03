@@ -5,8 +5,8 @@
 #   1. 检查/安装 uv，检查 sqlite3
 #   2. 同步依赖
 #   3. 初始化 SQLite 和运行通道迁移
-#   4. 创建/补全 .env，可交互填写 Telegram 配置
-#   5. 设置 Telegram 菜单（失败不阻塞）
+#   4. 创建/补全 .env，写入飞书等 IM 通道配置
+#   5. 设置脚本权限
 #   6. 启动统一 IM gateway
 #
 # 常用：
@@ -14,7 +14,6 @@
 #   bash scripts/quickstart.sh --no-start
 #   bash scripts/quickstart.sh --install-schedule
 #   bash scripts/quickstart.sh --with-feishu
-#   TG_BOT_TOKEN=xxx TG_CHAT_ID=yyy bash scripts/quickstart.sh
 
 set -euo pipefail
 
@@ -48,7 +47,6 @@ usage() {
   -h, --help           显示帮助
 
 也可以通过环境变量跳过交互：
-  TG_BOT_TOKEN=xxx TG_CHAT_ID=yyy bash scripts/quickstart.sh
 EOF
 }
 
@@ -208,20 +206,10 @@ else
   ok ".env 已存在，将只补全关键项"
 fi
 
-[ -n "$(env_get CHANNEL_DEFAULT)" ] || env_set CHANNEL_DEFAULT telegram
-[ -n "$(env_get CHANNELS_ENABLED)" ] || env_set CHANNELS_ENABLED telegram
-[ -n "$(env_get CHANNELS_NOTIFY)" ] || env_set CHANNELS_NOTIFY telegram
-
-if ! prompt_secret_if_empty TG_BOT_TOKEN "请输入 Telegram Bot Token（从 BotFather 获取）"; then
-  err "TG_BOT_TOKEN 为空。填好 .env 后可重跑：bash scripts/quickstart.sh"
-  exit 1
-fi
-
-if ! prompt_plain_if_empty TG_CHAT_ID "请输入 Telegram Chat ID（你的用户或群 chat id）"; then
-  err "TG_CHAT_ID 为空。填好 .env 后可重跑：bash scripts/quickstart.sh"
-  exit 1
-fi
-ok ".env 已就绪（未打印任何 secret）"
+[ -n "$(env_get CHANNEL_DEFAULT)" ] || env_set CHANNEL_DEFAULT feishu
+[ -n "$(env_get CHANNELS_ENABLED)" ] || env_set CHANNELS_ENABLED feishu
+[ -n "$(env_get CHANNELS_NOTIFY)" ] || env_set CHANNELS_NOTIFY feishu
+ok ".env 已就绪（飞书凭证将在下一步用 configure_feishu.py 写入，未打印任何 secret）"
 
 step "[5/8] 刷新交易日历"
 if uv run --no-sync python -m stock_codex.tools.refresh_calendar; then
@@ -230,13 +218,9 @@ else
   warn "交易日历刷新失败，可能是网络或数据源问题；后续可重跑：uv run --no-sync python -m stock_codex.tools.refresh_calendar"
 fi
 
-step "[6/8] 设置脚本权限和 Telegram 菜单"
+step "[6/8] 设置脚本权限"
 chmod +x bin/run_*.sh scripts/*.sh
-if uv run --no-sync python scripts/set_tg_commands.py; then
-  ok "Telegram 菜单已设置"
-else
-  warn "Telegram 菜单设置失败，不影响 gateway 启动；请检查 TG_BOT_TOKEN 是否正确"
-fi
+ok "脚本权限已设置"
 
 if [ "$CONFIGURE_FEISHU" -eq 1 ]; then
   step "[7/8] 配置飞书"
@@ -267,8 +251,8 @@ fi
 
 if [ "$START_GATEWAY" -eq 1 ]; then
   step "启动统一 IM gateway"
-  bash scripts/start_tg_listener.sh
-  ok "已启动。现在可以在 Telegram 发送 /help、股票代码或 /ask 问题。"
+  bash scripts/start_gateway.sh
+  ok "已启动。现在可以在飞书私聊机器人发送 /help、股票代码或 /ask 问题。"
 else
-  ok "安装完成，未启动 gateway。启动命令：bash scripts/start_tg_listener.sh"
+  ok "安装完成，未启动 gateway。启动命令：bash scripts/start_gateway.sh"
 fi
