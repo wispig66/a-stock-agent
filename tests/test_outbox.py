@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from stock_codex.channels import ChannelGateway, MockAdapter
-from stock_codex.channels.outbox import OutboxStore, drain_once
+from stock_codex.channels.outbox import OutboxStore, drain_once, retry_backoff_seconds
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -99,3 +99,55 @@ def test_drain_retries_then_fails_after_max_attempts(tmp_path):
         log = conn.execute("SELECT success, error FROM channel_outbound_log").fetchone()
     assert row[0] == "failed" and row[1] == 2 and "ws down" in row[2]
     assert log == (0, "ws down")
+
+
+def test_backoff_seconds_grows_and_caps():
+    assert retry_backoff_seconds(1) == 2
+    assert retry_backoff_seconds(2) == 4
+    assert retry_backoff_seconds(3) == 8
+    assert retry_backoff_seconds(99) == 300  # capped at 5min
+
+
+def test_failing_row_is_skipped_while_backing_off(tmp_path):
+    db = _db(tmp_path / "t.db")
+    store = OutboxStore(db)
+    store.enqueue(channel="wecom", target="u1", text="x", source="unit")
+
+    calls = []
+
+    def boom(target, text, fmt):
+        calls.append(1)
+        raise RuntimeError("ws down")
+
+    retry_state: dict[int, float] = {}
+    # t=0: first attempt fails, scheduled to retry at t+2
+    assert drain_once(store, {"wecom": boom}, retry_state=retry_state, now=0.0) == 0
+    assert len(calls) == 1
+    # t=1: still backing off -> sender NOT called again
+    assert drain_once(store, {"wecom": boom}, retry_state=retry_state, now=1.0) == 0
+    assert len(calls) == 1
+    # t=3: backoff elapsed -> retried
+    assert drain_once(store, {"wecom": boom}, retry_state=retry_state, now=3.0) == 0
+    assert len(calls) == 2
+
+
+def test_recovery_resends_after_backoff(tmp_path):
+    db = _db(tmp_path / "t.db")
+    store = OutboxStore(db)
+    store.enqueue(channel="wecom", target="u1", text="x", source="unit")
+
+    flap = {"up": False}
+
+    def sender(target, text, fmt):
+        if not flap["up"]:
+            raise RuntimeError("ws down")
+        return "ok-1"
+
+    retry_state: dict[int, float] = {}
+    assert drain_once(store, {"wecom": sender}, retry_state=retry_state, now=0.0) == 0
+    flap["up"] = True  # connection recovers
+    # once backoff elapses the row is resent, not lost
+    assert drain_once(store, {"wecom": sender}, retry_state=retry_state, now=5.0) == 1
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT status FROM channel_outbox").fetchone()[0] == "sent"
+    assert retry_state == {}  # evicted after success

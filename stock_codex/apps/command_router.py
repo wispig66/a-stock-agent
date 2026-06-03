@@ -707,6 +707,8 @@ def _is_allowed_chat(channel: str, chat_id) -> bool:
         )
     elif channel == "wecom":
         raw = os.environ.get("WECOM_ALLOWED_USERS") or os.environ.get("WECOM_HOME_CHANNEL", "")
+    elif channel == "weixin":
+        raw = os.environ.get("WEIXIN_ALLOWED_USERS") or os.environ.get("WEIXIN_HOME_CHANNEL", "")
     else:
         return False
     if raw.strip() == "*":

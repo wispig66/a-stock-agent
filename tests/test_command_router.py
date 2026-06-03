@@ -306,6 +306,20 @@ def test_wecom_allowed_users_gate(monkeypatch):
     assert tl._is_allowed_chat("wecom", "u9") is False
 
 
+def test_weixin_allowed_users_gate(monkeypatch):
+    monkeypatch.delenv("WEIXIN_HOME_CHANNEL", raising=False)
+    monkeypatch.setenv("WEIXIN_ALLOWED_USERS", "peer1,peer2")
+    assert tl._is_allowed_chat("weixin", "peer1") is True
+    assert tl._is_allowed_chat("weixin", "stranger") is False
+
+
+def test_weixin_falls_back_to_home_channel(monkeypatch):
+    monkeypatch.delenv("WEIXIN_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("WEIXIN_HOME_CHANNEL", "peer1")
+    assert tl._is_allowed_chat("weixin", "peer1") is True
+    assert tl._is_allowed_chat("weixin", "peer9") is False
+
+
 def test_handle_chinese_no_hit(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
     with patch.object(tl, "push_reply") as p, \

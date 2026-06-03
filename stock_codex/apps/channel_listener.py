@@ -1,8 +1,9 @@
 """Unified IM gateway listener.
 
-Telegram remains the stable production path. Feishu is handled by a small
-gateway runtime that keeps SDK callbacks non-blocking and processes each chat
-serially.
+Feishu (WebSocket), WeCom AI Bot (WS), and WeChat iLink (long-poll) each have a
+listener here. A shared GatewayRuntime keeps callbacks non-blocking and
+processes each chat serially; connection-bound channels (wecom/weixin) send
+outbound through the outbox drain thread.
 """
 from __future__ import annotations
 
@@ -451,7 +452,7 @@ def run_wecom_listener(runtime: GatewayRuntime | None = None) -> None:
     if not isinstance(adapter, WeComAdapter):
         raise RuntimeError("configured wecom adapter is not WeComAdapter")
 
-    state: dict[str, Any] = {"ws": None}
+    state: dict[str, Any] = {"ws": None, "attempt": 0}
     send_lock = threading.Lock()
 
     def sender(target: str, text: str, fmt: str) -> str:
@@ -466,6 +467,7 @@ def run_wecom_listener(runtime: GatewayRuntime | None = None) -> None:
 
     def on_open(ws):
         state["ws"] = ws
+        state["attempt"] = 0  # healthy connection resets reconnect backoff
         with send_lock:
             ws.send(json.dumps(adapter.subscribe_frame(), ensure_ascii=False))
         register_outbox_sender("wecom", sender)
@@ -510,7 +512,6 @@ def run_wecom_listener(runtime: GatewayRuntime | None = None) -> None:
 
     threading.Thread(target=heartbeat, name="wecom-ping", daemon=True).start()
     backoffs = [2, 5, 10, 30, 60]
-    attempt = 0
     while True:
         try:
             app = websocket.WebSocketApp(
@@ -523,8 +524,9 @@ def run_wecom_listener(runtime: GatewayRuntime | None = None) -> None:
             app.run_forever()
         except Exception:
             log.exception("WeCom ws run_forever crashed")
-        attempt = min(attempt + 1, len(backoffs) - 1)
-        time.sleep(backoffs[attempt])
+        # on_open resets attempt to 0, so a long healthy session reconnects fast.
+        time.sleep(backoffs[min(state["attempt"], len(backoffs) - 1)])
+        state["attempt"] += 1
 
 
 def _load_json_dict(path: Path) -> dict[str, str]:
