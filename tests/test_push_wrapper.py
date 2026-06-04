@@ -83,7 +83,7 @@ def test_enforce_rejects_invalid_card_without_sending(monkeypatch):
             return {"kind": self.kind, "target": self.target}
 
     monkeypatch.setattr(push_wrapper, "_validate", lambda text, source, mode: (False, [FakeViolation()]))
-    monkeypatch.setattr(push_wrapper, "push", lambda *args, **kwargs: pytest.fail("Telegram push should be blocked"))
+    monkeypatch.setattr(push_wrapper, "push", lambda *args, **kwargs: pytest.fail("IM push should be blocked"))
     log_dir = push.ROOT / "data" / "card_violations"
     before = set(log_dir.glob("*_stock-intraday.json")) if log_dir.exists() else set()
 
@@ -97,6 +97,21 @@ def test_enforce_rejects_invalid_card_without_sending(monkeypatch):
     log = new_logs.pop()
     assert '"mode": "enforce"' in log.read_text(encoding="utf-8")
     log.unlink()
+
+
+def test_push_cli_prints_feishu_raw_message_id_without_retry_error(monkeypatch, capsys):
+    push = load_push_module()
+    monkeypatch.setattr(
+        push,
+        "push_text",
+        lambda text, source, notify_blocked=False: [
+            {"code": 0, "data": {"message_id": "om_test"}, "msg": "success"}
+        ],
+    )
+
+    push.main(["--text", "ok", "--source", "stock-intraday"])
+
+    assert "chunk 1/1 msg_id=om_test" in capsys.readouterr().out
 
 
 def test_push_text_chunks_through_gateway(monkeypatch):

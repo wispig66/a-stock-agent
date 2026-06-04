@@ -62,7 +62,25 @@ def main(argv: list[str] | None = None):
         sys.exit(2)
 
     for i, r in enumerate(results, 1):
-        print(f"chunk {i}/{len(results)} msg_id={r['result']['message_id']}")
+        msg_id = _message_id_from_response(r)
+        if msg_id is None:
+            print(f"chunk {i}/{len(results)} msg_id=<unknown>")
+            continue
+        print(f"chunk {i}/{len(results)} msg_id={msg_id}")
+
+
+def _message_id_from_response(response: dict) -> object | None:
+    """Best-effort printable id; push already happened, so this must not raise."""
+    for container_key in ("result", "data", "message"):
+        container = response.get(container_key)
+        if isinstance(container, dict):
+            value = container.get("message_id")
+            if value:
+                return value
+            message = container.get("message")
+            if isinstance(message, dict) and message.get("message_id"):
+                return message["message_id"]
+    return response.get("message_id") or response.get("msg_id")
 
 
 if __name__ == "__main__":
