@@ -7,7 +7,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from stock_codex.market import intent, sector_pack, event_pack  # noqa: E402
+from stock_codex.apps import stock_ask_pipeline  # noqa: E402
+from stock_codex.domain import holdings  # noqa: E402
+from stock_codex.market import intent, sector_pack, event_pack, query  # noqa: E402
 
 
 @pytest.fixture
@@ -38,6 +40,28 @@ def test_e2e_stock_intent_short_circuits(db):
     assert r["intent"] == "stock"
     assert r["extracted"] == "600519"
     # 真正的 stock-query 调用走 skill 层，e2e 不验证
+
+
+def test_stock_match_marks_existing_holding(db, tmp_path, monkeypatch):
+    holdings_file = tmp_path / "holdings.yaml"
+    holdings_file.write_text(
+        "holdings:\n"
+        "- code: '300750'\n"
+        "  name: 宁德\n"
+        "  genre: B\n"
+        "  cost: 200.0\n"
+        "  shares: 100\n"
+        "  buy_date: '2026-05-14'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(query, "DB", db)
+    monkeypatch.setattr(holdings, "HOLDINGS_FILE", holdings_file)
+    monkeypatch.setattr(holdings, "LOCK_FILE", tmp_path / "holdings.yaml.lock")
+
+    matched = stock_ask_pipeline.task_stock_match("300750")
+
+    assert matched["matched"] is True
+    assert matched["is_holding"] is True
 
 
 def test_e2e_event_intent(db):

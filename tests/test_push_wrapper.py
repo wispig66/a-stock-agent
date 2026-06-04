@@ -28,6 +28,7 @@ def test_scheduled_card_sources_default_to_enforce(monkeypatch):
     assert push.validator_mode("stock-intraday") == "enforce"
     assert push.validator_mode("stock-postmarket") == "enforce"
     assert push.validator_mode("stock-weekly") == "enforce"
+    assert push.validator_mode("stock-market-dynamic") == "enforce"
     assert push.validator_mode("manual") == "warn"
 
 
@@ -36,6 +37,23 @@ def test_card_validator_mode_env_overrides_default(monkeypatch):
     monkeypatch.setenv("CARD_VALIDATOR_MODE", "warn")
 
     assert push.validator_mode("stock-intraday") == "warn"
+
+
+def test_enforce_validator_exception_fails_closed(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "allowed_latest_stock-market-dynamic.json").write_text("{", encoding="utf-8")
+    monkeypatch.setattr(push_wrapper, "ROOT", tmp_path)
+
+    with pytest.raises(RuntimeError, match="validator failed"):
+        push_wrapper._validate("card", "stock-market-dynamic", "enforce")
+
+
+def test_enforce_missing_allowed_file_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(push_wrapper, "ROOT", tmp_path)
+
+    with pytest.raises(RuntimeError, match="missing ALLOWED"):
+        push_wrapper._validate("card", "stock-market-dynamic", "enforce")
 
 
 def test_strip_machine_blocks_removes_decision_json():

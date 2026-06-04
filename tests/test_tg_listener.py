@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 from stock_codex.apps import tg_listener as tl  # noqa: E402
 from stock_codex.channels import ChannelMessage, Delivery  # noqa: E402
+from stock_codex.domain import decision as decision_lib  # noqa: E402
 
 
 def _seed_db(path):
@@ -481,6 +482,73 @@ def test_handle_buy_command_writes_and_replies(tmp_path, monkeypatch):
     assert holdings[0].source == "bot_buy"
 
 
+def test_handle_buy_command_inherits_today_decision_ticket(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    db = tmp_path / "t.db"
+    monkeypatch.setattr(tl, "TRADES_DB", db)
+    monkeypatch.setattr(tl, "DB_PATH", db)
+    today = tl.date.today().isoformat()
+    decision_lib.replace_tickets(db, today, [{
+        "trade_date": today,
+        "code": "600519",
+        "name": "贵州茅台",
+        "concept": "白酒",
+        "lane": "main",
+        "faction": "A",
+        "action": "buy_if",
+        "entry_low": 12.20,
+        "entry_high": 12.35,
+        "max_chase_price": 12.50,
+        "stop_price": 11.90,
+        "target_pct": 3.0,
+        "deadline_time": "10:30",
+        "size_pct": 15,
+        "thesis": "白酒低位换手二板，只看回封确认。",
+    }])
+
+    parsed = tl.parse_trade_command("/buy 600519 12.34 10")
+    ack = tl.handle_trade(parsed, source_msg_id=None)
+
+    holding = tl.holdings_lib.read_holdings()[0]
+    assert holding.genre == "A"
+    assert holding.stop_loss == 11.90
+    assert holding.take_profit == 12.71
+    assert holding.note == "白酒 · 白酒低位换手二板，只看回封确认。"
+    assert "继承决策单止损 11.9，止盈 12.71" in ack
+    ticket = decision_lib.load_tickets(db, today)[0]
+    assert ticket["status"] == "bought"
+
+
+def test_addon_buy_recalculates_take_profit_from_merged_cost(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    db = tmp_path / "t.db"
+    monkeypatch.setattr(tl, "TRADES_DB", db)
+    monkeypatch.setattr(tl, "DB_PATH", db)
+    today = tl.date.today().isoformat()
+    decision_lib.replace_tickets(db, today, [{
+        "trade_date": today,
+        "code": "600519",
+        "name": "贵州茅台",
+        "lane": "main",
+        "faction": "A",
+        "action": "buy_if",
+        "entry_low": 12.20,
+        "entry_high": 12.35,
+        "max_chase_price": 13.50,
+        "stop_price": 11.90,
+        "target_pct": 3.0,
+        "deadline_time": "10:30",
+        "size_pct": 15,
+    }])
+
+    tl.handle_trade(tl.parse_trade_command("/buy 600519 12.34 10"), source_msg_id=None)
+    tl.handle_trade(tl.parse_trade_command("/buy 600519 13.34 10"), source_msg_id=None)
+
+    holding = tl.holdings_lib.read_holdings()[0]
+    assert holding.cost == 12.84
+    assert holding.take_profit == 13.23
+
+
 def test_handle_sell_command_reduces_holdings(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
     db = tmp_path / "t.db"
@@ -636,11 +704,12 @@ def test_main_logs_recovery_after_poll_failures(monkeypatch):
 
 
 def test_main_alerts_only_after_poll_failure_threshold(monkeypatch):
-    """连续失败达到阈值后才发 ERROR，避免短暂网络抖动刷屏。"""
+    """连续失败且持续超过阈值后才发 ERROR，避免短暂网络抖动刷屏。"""
     monkeypatch.setattr(tl, "TG_TOKEN", "token")
     monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "999")
     monkeypatch.setattr(tl, "POLL_ALERT_AFTER_FAILURES", 3)
     monkeypatch.setattr(tl, "POLL_ALERT_EVERY_FAILURES", 20)
+    monkeypatch.setattr(tl, "POLL_ALERT_AFTER_SECONDS", 0)
     monkeypatch.setattr(tl, "_acquire_poll_lock", lambda: object())
     monkeypatch.setattr(tl, "_load_offset", lambda: 0)
     monkeypatch.setattr(tl, "_save_offset", lambda offset: None)
@@ -667,6 +736,39 @@ def test_main_alerts_only_after_poll_failure_threshold(monkeypatch):
     error.assert_called_once()
     assert "getUpdates failed #3" in error.call_args.args[0]
     assert error.call_args.kwargs.get("exc_info") is True
+
+
+def test_main_does_not_alert_for_short_poll_flap(monkeypatch):
+    """连续失败次数达标但持续时间太短时，只记 warning，不触发 TG ERROR 告警。"""
+    monkeypatch.setattr(tl, "TG_TOKEN", "token")
+    monkeypatch.setattr(tl, "ALLOWED_CHAT_ID", "999")
+    monkeypatch.setattr(tl, "POLL_ALERT_AFTER_FAILURES", 3)
+    monkeypatch.setattr(tl, "POLL_ALERT_AFTER_SECONDS", 900)
+    monkeypatch.setattr(tl, "_acquire_poll_lock", lambda: object())
+    monkeypatch.setattr(tl, "_load_offset", lambda: 0)
+    monkeypatch.setattr(tl, "_save_offset", lambda offset: None)
+    monkeypatch.setattr(tl.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(tl.time, "monotonic", lambda: 100.0)
+
+    calls = {"n": 0}
+
+    def fake_get_updates(offset):
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            raise requests.exceptions.ReadTimeout("telegram timeout")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(tl, "_get_updates", fake_get_updates)
+
+    with patch.object(tl.log, "warning") as warning, \
+         patch.object(tl.log, "error") as error:
+        try:
+            tl.main()
+        except KeyboardInterrupt:
+            pass
+
+    assert warning.call_count == 3
+    error.assert_not_called()
 
 
 def test_acquire_poll_lock_rejects_duplicate_poller(tmp_path, monkeypatch):

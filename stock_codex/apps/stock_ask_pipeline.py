@@ -44,25 +44,37 @@ def task_lexicon(text: str) -> dict:
 
 def task_stock_match(text: str) -> dict:
     """个股精确匹配（本地 DB，<1s）。"""
+    from stock_codex.domain.holdings import read_holdings
     from stock_codex.market import query
+
+    try:
+        holding_by_code = {h.code: h for h in read_holdings()}
+    except Exception:
+        log.exception("读取 holdings.yaml 失败")
+        holding_by_code = {}
+
+    def _matched(code: str, name: str | None, via: str) -> dict:
+        holding = holding_by_code.get(code)
+        return {
+            "matched": True,
+            "code": code,
+            "name": name or (holding.name if holding else None),
+            "board": query.board_of(code),
+            "is_st": query.is_st(code),
+            "is_holding": holding is not None,
+            "via": via,
+        }
+
     kind, val = query.parse_input(text)
     if kind == "code":
         board = query.board_of(val)
         if board:
-            return {
-                "matched": True, "code": val, "name": None,
-                "board": board, "is_st": query.is_st(val),
-                "via": "code",
-            }
+            return _matched(val, None, "code")
     elif kind == "name":
         hits = query.lookup_by_name(val)
         if len(hits) == 1:
             code, name = hits[0]
-            return {
-                "matched": True, "code": code, "name": name,
-                "board": query.board_of(code), "is_st": query.is_st(code),
-                "via": "name_unique",
-            }
+            return _matched(code, name, "name_unique")
         if len(hits) > 1:
             return {
                 "matched": False, "via": "name_ambiguous",

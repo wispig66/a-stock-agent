@@ -464,14 +464,8 @@ def run_telegram_poll(runtime: GatewayRuntime | None = None) -> None:
             poll_failures += 1
             if first_failure_at is None:
                 first_failure_at = time.monotonic()
-            should_alert = (
-                poll_failures == tg_listener.POLL_ALERT_AFTER_FAILURES
-                or (
-                    poll_failures > tg_listener.POLL_ALERT_AFTER_FAILURES
-                    and tg_listener.POLL_ALERT_EVERY_FAILURES > 0
-                    and poll_failures % tg_listener.POLL_ALERT_EVERY_FAILURES == 0
-                )
-            )
+            downtime = time.monotonic() - first_failure_at
+            should_alert = tg_listener._should_alert_poll_failure(poll_failures, downtime)
             msg = ("Telegram getUpdates failed #%d (%s: %s), backoff %ds"
                    % (poll_failures, type(e).__name__, _safe_error_text(e)[:200], backoff))
             runtime.write_state(adapters={"telegram": "error"}, last_error=msg)

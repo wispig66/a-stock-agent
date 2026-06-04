@@ -27,6 +27,7 @@ import yaml
 from stock_codex.channels import ChannelMessage, Delivery, get_default_gateway
 from stock_codex.market import query  # noqa: E402
 from stock_codex.domain import holdings as holdings_lib  # noqa: E402
+from stock_codex.domain import decision as decision_lib  # noqa: E402
 from stock_codex.market.card_validator import (  # noqa: E402
     validate_card, load_stock_name_dict, format_violations,
 )
@@ -68,6 +69,7 @@ EDIT_THROTTLE = 1.0         # Telegram editMessageText 限速：≥1s/chat 才�
 TG_MAX_LEN = 4000           # 4096 上限，留 96 字 buffer
 POLL_ALERT_AFTER_FAILURES = int(os.environ.get("TG_POLL_ALERT_AFTER_FAILURES", "3"))
 POLL_ALERT_EVERY_FAILURES = int(os.environ.get("TG_POLL_ALERT_EVERY_FAILURES", "20"))
+POLL_ALERT_AFTER_SECONDS = int(os.environ.get("TG_POLL_ALERT_AFTER_SECONDS", "900"))
 
 _running = 0
 _waiting = 0
@@ -757,25 +759,87 @@ def _stock_name_for_code(code: str) -> str:
     return code
 
 
+def _decision_ticket_for_buy(code: str, trade_date: date) -> Optional[dict]:
+    """返回当日该股票的可执行决策单，供成交后继承交易计划。"""
+    try:
+        tickets = decision_lib.load_tickets(DB_PATH, trade_date.isoformat())
+    except Exception:
+        log.exception("decision_tickets 查询失败 code=%s trade_date=%s", code, trade_date)
+        return None
+    return next(
+        (
+            ticket for ticket in tickets
+            if ticket["code"] == code
+            and ticket["lane"] in {"main", "ambush", "backup", "trend"}
+            and ticket["action"] in {"buy_if", "wait"}
+            and ticket["status"] in {"pending", "triggered", "bought"}
+        ),
+        None,
+    )
+
+
+def _holding_note_from_ticket(ticket: dict, fallback: str) -> str:
+    parts = [ticket.get("concept"), ticket.get("thesis")]
+    note = " · ".join(str(part).strip() for part in parts if part and str(part).strip())
+    return note or fallback
+
+
+def _take_profit_for_buy(code: str, price: float, qty: int, target_pct: float | None) -> float | None:
+    """按本次成交后持仓的加权成本计算止盈价。"""
+    if target_pct is None:
+        return None
+    merged_cost = price
+    try:
+        existing = next((h for h in holdings_lib.read_holdings() if h.code == code), None)
+        if existing and existing.shares > 0:
+            merged_cost = round(
+                (existing.cost * existing.shares + price * qty) / (existing.shares + qty),
+                4,
+            )
+    except Exception:
+        log.exception("持仓成本读取失败，止盈价按本次成交价计算 code=%s", code)
+    return round(merged_cost * (1 + float(target_pct) / 100), 2)
+
+
 def _sync_trade_to_holdings(parsed: dict, now: Optional[datetime] = None) -> str:
     ts = _build_ts(parsed["ts_override"], now=now)
     trade_date = datetime.fromisoformat(ts).date()
     if parsed["side"] == "buy":
+        ticket = _decision_ticket_for_buy(parsed["code"], trade_date)
+        target_pct = (ticket or {}).get("target_pct")
+        take_profit = _take_profit_for_buy(
+            parsed["code"], parsed["price"], parsed["qty"], target_pct,
+        )
+        fallback_genre = BUY_REASON_GENRE.get(parsed["reason"] or "", "未标记")
+        fallback_note = parsed["reason"] or "TG /buy"
         rec = holdings_lib.Holding(
             code=parsed["code"],
             name=_stock_name_for_code(parsed["code"]),
-            genre=BUY_REASON_GENRE.get(parsed["reason"] or "", "未标记"),
+            genre=(ticket or {}).get("faction") or fallback_genre,
             cost=parsed["price"],
             shares=parsed["qty"],
             buy_date=trade_date,
+            stop_loss=(ticket or {}).get("stop_price"),
+            take_profit=take_profit,
             source="bot_buy",
-            note=parsed["reason"] or "TG /buy",
+            note=_holding_note_from_ticket(ticket, fallback_note) if ticket else fallback_note,
         )
         final = holdings_lib.upsert_holding(rec)
-        return (
+        message = (
             f"已同步 holdings.yaml：{final.name} {final.shares} 股，"
             f"成本 {final.cost}，T+1 解锁 {final.unlock_date.isoformat()}"
         )
+        if ticket:
+            try:
+                decision_lib.mark_ticket_status(
+                    DB_PATH, trade_date.isoformat(), parsed["code"], ticket["lane"], "bought",
+                )
+            except Exception:
+                log.exception("decision_tickets bought 状态回写失败 code=%s", parsed["code"])
+            message += f"；继承决策单止损 {ticket.get('stop_price')}"
+            if take_profit is not None:
+                message += f"，止盈 {take_profit}"
+        return message
 
     try:
         old, remaining = holdings_lib.reduce_holding(parsed["code"], parsed["qty"])
@@ -1239,6 +1303,17 @@ def _get_updates(offset: int) -> list[dict]:
     return data.get("result") or []
 
 
+def _should_alert_poll_failure(poll_failures: int, downtime: float) -> bool:
+    """Return True only for sustained poll outages, not short network flaps."""
+    if poll_failures < POLL_ALERT_AFTER_FAILURES:
+        return False
+    if downtime < POLL_ALERT_AFTER_SECONDS:
+        return False
+    if poll_failures == POLL_ALERT_AFTER_FAILURES:
+        return True
+    return POLL_ALERT_EVERY_FAILURES > 0 and poll_failures % POLL_ALERT_EVERY_FAILURES == 0
+
+
 def main() -> None:
     if not TG_TOKEN or not ALLOWED_CHAT_ID:
         log.critical("TG_BOT_TOKEN / ALLOWED_CHAT_ID 未配置，退出")
@@ -1277,14 +1352,8 @@ def main() -> None:
             poll_failures += 1
             if first_failure_at is None:
                 first_failure_at = time.monotonic()
-            should_alert = (
-                poll_failures == POLL_ALERT_AFTER_FAILURES
-                or (
-                    poll_failures > POLL_ALERT_AFTER_FAILURES
-                    and POLL_ALERT_EVERY_FAILURES > 0
-                    and poll_failures % POLL_ALERT_EVERY_FAILURES == 0
-                )
-            )
+            downtime = time.monotonic() - first_failure_at
+            should_alert = _should_alert_poll_failure(poll_failures, downtime)
             msg = ("getUpdates failed #%d (%s: %s), backoff %ds"
                    % (poll_failures, type(e).__name__, _safe_error_text(e)[:200], backoff))
             if should_alert:

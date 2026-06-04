@@ -25,6 +25,7 @@ AUTOMATION_ENFORCE_SOURCES = {
     "stock-intraday",
     "stock-postmarket",
     "stock-weekly",
+    "stock-market-dynamic",
 }
 MACHINE_BLOCK_RE = re.compile(r"\n?```decision_tickets\s*.*?```\n?", re.DOTALL)
 
@@ -65,6 +66,8 @@ def _validate(text: str, source: str, mode: str) -> tuple[bool, list]:
         return (True, [])
     allowed_file = ROOT / "data" / f"allowed_latest_{source}.json"
     if not allowed_file.exists():
+        if mode == "enforce":
+            raise RuntimeError(f"validator failed: missing ALLOWED file for source={source}")
         return (True, [])
     try:
         from stock_codex.market.card_validator import load_stock_name_dict, validate_card
@@ -73,6 +76,8 @@ def _validate(text: str, source: str, mode: str) -> tuple[bool, list]:
         name_dict = load_stock_name_dict(DB_PATH) if DB_PATH.exists() else None
         return validate_card(text, allowed, stock_name_dict=name_dict)
     except Exception as e:
+        if mode == "enforce":
+            raise RuntimeError(f"validator failed for source={source}: {e}") from e
         print(f"[push] validator 异常（fail-open）：{e}", file=sys.stderr, flush=True)
         return (True, [])
 

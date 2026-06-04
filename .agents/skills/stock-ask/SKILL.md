@@ -31,6 +31,7 @@ stdout 是 JSON。预期 3-10 秒返回。4 个字段并发跑完：
 | `lexicon.nearest_sectors` | 题材库 Top 3 最相似项 | 即便 rule_intent=ambiguous 也能拿到候选 |
 | `lexicon.lexicon_size` | 题材库总条数 | 为 0 说明 DB 没数据，全部按 event 走 |
 | `stock_match.matched` + `via` | 个股精确匹配（code / name_unique / name_ambiguous） | matched=True 时直接转 stock-query |
+| `stock_match.is_holding` | 该股票是否存在于 holdings.yaml | True 时必须按持仓模式分析 |
 | `db_frequency.ths_hot_reason_hits` | 近 7 日命中条数 | >3 说明是近期热点 |
 | `db_frequency.sample_reasons` | 命中的 reason 原文 | 用来定标准题材名（例 "算力租赁+Token工厂+通信网络管维" 里抽 "Token工厂"） |
 | `local_news.news` | 近 24h 含该词的新闻 | 不为空说明是近期事件型话题 |
@@ -41,7 +42,7 @@ stdout 是 JSON。预期 3-10 秒返回。4 个字段并发跑完：
 
 | 判定 | 触发条件 | 行动 |
 |---|---|---|
-| **个股** | `stock_match.matched == True` 且 `via in ("code","name_unique")` | 用 Skill 工具调 `stock-query`，参数 `code=<code> mode=fresh`，**直接退出本 skill** |
+| **个股** | `stock_match.matched == True` 且 `via in ("code","name_unique")` | 用 Skill 工具调 `stock-query`，参数 `code=<code> mode=holding`（`is_holding=True`）或 `mode=fresh`（否则），**直接退出本 skill** |
 | **个股歧义** | `stock_match.via == "name_ambiguous"` | 输出候选列表让用户重选（不调 stock-query） |
 | **已知题材** | `lexicon.rule_intent == "sector"` 或 `nearest_sectors[0]` 在 `sample_reasons` 里出现 | Step 3a 板块卡，sector_name 用 `nearest_sectors[0]` 或从 `sample_reasons` 里抽出的标准名 |
 | **新事件** | 上面都不命中，但 `local_news.news` 非空（或 `db_frequency.ths_hot_reason_hits > 0`） | Step 3b 事件卡 |

@@ -25,6 +25,7 @@ import contextvars
 import logging
 import logging.handlers
 import os
+import re
 import subprocess
 import sys
 import time
@@ -39,6 +40,15 @@ LOG_DIR.mkdir(exist_ok=True)
 _req_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("req_id", default="-")
 _loggers: dict[str, logging.Logger] = {}
 _in_tg_handler = False  # 防递归
+
+
+def _redact_secrets(text: str) -> str:
+    for key in ("TG_BOT_TOKEN", "FEISHU_APP_SECRET"):
+        secret = os.environ.get(key)
+        if secret:
+            text = text.replace(secret, "<redacted>")
+    text = re.sub(r"/bot[^/\s]+", "/bot<redacted>", text)
+    return text
 
 
 def new_req_id() -> str:
@@ -90,12 +100,12 @@ class _TgErrorHandler(logging.Handler):
         lines = [
             f"🚨 [{record.name}] {record.levelname}",
             f"req={getattr(record, 'req_id', '-')}  exc={exc_type}",
-            f"msg: {record.getMessage()[:300]}",
+            f"msg: {_redact_secrets(record.getMessage())[:300]}",
         ]
         if record.exc_info:
             tb = "".join(traceback.format_exception(*record.exc_info))
             tail = "\n".join(tb.strip().splitlines()[-6:])
-            lines.append(f"```\n{tail[:800]}\n```")
+            lines.append(f"```\n{_redact_secrets(tail)[:800]}\n```")
         text = "\n".join(lines)
 
         _in_tg_handler = True
