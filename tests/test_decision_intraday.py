@@ -54,6 +54,7 @@ def test_load_today_watchlist_prefers_decision_tickets(monkeypatch, tmp_path):
         "entry_high": 10.3,
         "max_chase_price": 10.4,
         "stop_loss": 9.7,
+        "target_pct": None,
         "deadline_time": "10:30",
         "position_max_pct": 20,
         "status": "pending",
@@ -101,6 +102,25 @@ def test_load_today_watchlist_merges_dynamic_trend_candidates(monkeypatch, tmp_p
     assert trend["max_chase_price"] == 9.02
     assert trend["deadline_time"] == "10:30"
     assert trend["source"] == "watchlist_dynamic"
+
+
+def test_load_dynamic_watchlist_ignores_incomplete_automatic_candidates(monkeypatch, tmp_path):
+    db = make_db(tmp_path)
+    today = date.today().isoformat()
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """INSERT INTO watchlist_dynamic
+           (trade_date, created_at, concept_tag, code, name, role, entry_price,
+            stop_price, target_pct, discipline_type, action_window, status, source_emergence_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (today, f"{today}T10:10:00", "CPO光模块", "600487", "亨通光电", "follower",
+         None, None, 5.0, "D", "before_1030", "pending", 123),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(fetch_realtime, "DB", db)
+
+    assert fetch_realtime.load_dynamic_watchlist(today) == []
 
 
 def test_watch_loop_ambush_alerts_only_inside_low_absorb_zone():

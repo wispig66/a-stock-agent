@@ -26,12 +26,19 @@ def _row(code="601991", name="大唐发电", price=6.40, pct=-4.5, vol=1.0):
     }
 
 
-def _hold(code="601991", name="大唐发电", cost=6.77, stop_loss=6.50, unlock_date="2026-05-14"):
+def _hold(
+    code="601991",
+    name="大唐发电",
+    cost=6.77,
+    stop_loss=6.50,
+    take_profit=None,
+    unlock_date="2026-05-14",
+):
     """构造 hold_map 条目（与 fetch_realtime.load_holdings 输出格式一致）。"""
     return {
         "code": code, "name": name, "cost": cost, "shares": 1000,
         "buy_date": "2026-05-13", "genre": "A",
-        "stop_loss": stop_loss, "take_profit": None,
+        "stop_loss": stop_loss, "take_profit": take_profit,
         "unlock_date": unlock_date, "source": "manual", "note": "",
     }
 
@@ -98,3 +105,34 @@ def test_unlock_date_missing_treated_as_unlocked():
     kinds = [k for k, _ in alerts]
     assert "hold_stop" in kinds
     assert "hold_stop_locked" not in kinds
+
+
+def test_unlocked_holding_take_profit_alert():
+    row = _row(price=7.05, pct=4.1)
+    hold_map = {"601991": _hold(take_profit=7.0, unlock_date="2026-05-13")}
+
+    alerts = watch_loop.evaluate(
+        row,
+        watch_map={},
+        hold_map=hold_map,
+        today=date(2026, 5, 14),
+    )
+
+    msg = next(m for k, m in alerts if k == "hold_take_profit")
+    assert "持仓到达止盈位" in msg
+    assert "分批兑现" in msg
+
+
+def test_locked_holding_take_profit_alert():
+    row = _row(price=7.05, pct=4.1)
+    hold_map = {"601991": _hold(take_profit=7.0, unlock_date="2026-05-15")}
+
+    alerts = watch_loop.evaluate(
+        row,
+        watch_map={},
+        hold_map=hold_map,
+        today=date(2026, 5, 14),
+    )
+
+    msg = next(m for k, m in alerts if k == "hold_take_profit_locked")
+    assert "T+1 不可出" in msg

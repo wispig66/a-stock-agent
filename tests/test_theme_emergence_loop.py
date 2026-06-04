@@ -6,6 +6,9 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -14,6 +17,7 @@ from stock_codex.apps.theme_emergence_loop import (  # noqa: E402
     PageHinkley, Whitelist, map_to_concept, pick_candidates,
     load_whitelist, _norm_seal_time,
 )
+from stock_codex.tools import analyze_theme_loop  # noqa: E402
 
 
 # ─── PageHinkley ───
@@ -153,10 +157,7 @@ def test_pick_candidates_before_1030_leader_is_A_派():
     }
     now = datetime(2026, 5, 18, 10, 15)
     cands = pick_candidates("2026-05-18", "存储芯片", signals, now)
-    assert len(cands) >= 1
-    leader = next(c for c in cands if c["role"] == "leader")
-    assert leader["discipline_type"] == "A"
-    assert leader["action_window"] == "before_1030"
+    assert cands == [], "涨停池成员只能作为题材锚点，不能生成自动交易候选"
 
 
 def test_pick_candidates_after_1400_returns_empty():
@@ -191,6 +192,18 @@ def test_pick_candidates_excludes_blown_followers():
     cands = pick_candidates("2026-05-18", "存储芯片", signals, now)
     codes = [c["code"] for c in cands]
     assert "002074" not in codes
+
+
+def test_pick_candidates_never_returns_limit_up_members():
+    signals = {
+        "first_leader": {"code": "301666", "name": "大普微"},
+        "members": [
+            {"code": "301666", "name": "大普微", "open_count": 0},
+            {"code": "301308", "name": "江波龙", "open_count": 0},
+        ],
+    }
+
+    assert pick_candidates("2026-05-18", "存储芯片", signals, datetime(2026, 5, 18, 10, 15)) == []
 
 
 def _sample_signals() -> dict:
@@ -239,3 +252,129 @@ def test_push_t2_after_safe_window_is_observation_not_order_signal(monkeypatch):
     assert len(sent) == 1
     assert "无盘中可下单候选" in sent[0]
     assert "✅ 可下单信号" not in sent[0]
+
+
+def test_calibration_metrics_exclude_dates_without_ground_truth():
+    detections = {
+        ("2026-05-18", "存储芯片"): datetime(2026, 5, 18, 10, 0),
+        ("2026-05-19", "机器人"): datetime(2026, 5, 19, 10, 0),
+    }
+    metrics = analyze_theme_loop.classification_metrics(
+        detections,
+        {"2026-05-18": {"存储芯片"}},
+    )
+
+    assert metrics["predicted"] == 1
+    assert metrics["true_positive"] == 1
+    assert metrics["false_positive"] == 0
+    assert metrics["precision_pct"] == 100.0
+
+
+def test_candidate_engine_builds_only_for_t1_evaluations_and_invalidates_on_cooling():
+    calls = []
+
+    class FakeCandidateEngine:
+        def build(self, theme, state, snapshot, now, source_ref):
+            calls.append(("build", theme, state, source_ref))
+            return [{"code": "600000", "concept": theme}]
+
+        def write(self, tickets, now):
+            calls.append(("write", len(tickets)))
+            return tickets
+
+        def invalidate(self, theme, snapshot, now, reason=None):
+            calls.append(("invalidate", theme, reason))
+            return []
+
+    transitions = [
+        {"id": 1, "theme": "CPO光模块", "event_type": "T1"},
+        {"id": 2, "theme": "AI硬件", "event_type": "T2"},
+        {"id": 3, "theme": "电力", "event_type": "cooling"},
+    ]
+    evaluations = [
+        SimpleNamespace(theme="CPO光模块", state="T1"),
+        SimpleNamespace(theme="AI硬件", state="T2"),
+    ]
+
+    added, invalidated = theme_loop.handle_candidate_transitions(
+        FakeCandidateEngine(),
+        transitions,
+        evaluations,
+        {},
+        datetime(2026, 6, 3, 10, 0),
+    )
+
+    assert added == [{"code": "600000", "concept": "CPO光模块"}]
+    assert invalidated == []
+    assert ("build", "CPO光模块", "T1", "market_state_event:1") in calls
+    assert not any(call[:2] == ("build", "AI硬件") for call in calls)
+    assert ("invalidate", "电力", "题材降温") in calls
+
+
+def test_candidate_engine_retries_build_while_theme_remains_t1():
+    calls = []
+
+    class FakeCandidateEngine:
+        def build(self, theme, state, snapshot, now, source_ref):
+            calls.append(("build", theme, state, source_ref))
+            return [{"code": "600000", "concept": theme}]
+
+        def write(self, tickets, now):
+            return tickets
+
+        def invalidate(self, theme, snapshot, now, reason=None):
+            return []
+
+    now = datetime(2026, 6, 3, 10, 5)
+    added, _ = theme_loop.handle_candidate_transitions(
+        FakeCandidateEngine(),
+        [],
+        [SimpleNamespace(theme="CPO光模块", state="T1")],
+        {},
+        now,
+    )
+
+    assert added == [{"code": "600000", "concept": "CPO光模块"}]
+    assert calls == [
+        ("build", "CPO光模块", "T1", "theme_state_snapshot:2026-06-03T10:05:00"),
+    ]
+
+
+def test_main_tick_advances_anomaly_cursor_only_after_success(tmp_path, monkeypatch):
+    db = tmp_path / "daily.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript((ROOT / "stock_codex" / "schema" / "init_db.sql").read_text())
+    graph = _load_sample_whitelist(tmp_path, monkeypatch, init_ths_table=False)
+    monkeypatch.setattr(theme_loop, "DB", db)
+    monkeypatch.setattr(theme_loop, "RAW_DIR", tmp_path / "anomaly_raw")
+    monkeypatch.setattr(
+        theme_loop,
+        "fetch_anomaly_all",
+        lambda now: [{
+            "symbol": "火箭发射",
+            "code": "301666",
+            "name": "大普微",
+            "event_time": "10:00:00",
+            "info": "HBM",
+            "sector_hint": "",
+        }],
+    )
+    monkeypatch.setattr(theme_loop, "fetch_zt_pool", lambda today: [])
+
+    class FailingSnapshot:
+        def capture(self, now):
+            raise RuntimeError("snapshot failed")
+
+    state = {"consecutive_failures": 0, "snapshot_service": FailingSnapshot()}
+
+    with pytest.raises(RuntimeError, match="snapshot failed"):
+        theme_loop.main_tick(
+            datetime(2026, 6, 3, 10, 0),
+            "2026-06-03",
+            graph,
+            {},
+            state,
+        )
+
+    pending = theme_loop.anomaly_events.read_new_events(db, "theme-loop", "2026-06-03")
+    assert [event["code"] for event in pending] == ["301666"]

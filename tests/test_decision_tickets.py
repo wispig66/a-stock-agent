@@ -33,6 +33,7 @@ def test_replace_and_load_decision_tickets_roundtrip_json_fields(tmp_path):
             "entry_high": 10.3,
             "max_chase_price": 10.4,
             "stop_price": 9.7,
+            "target_pct": 3.0,
             "deadline_time": "10:30",
             "size_pct": 20,
             "thesis": "板块启动，主攻一只",
@@ -67,6 +68,7 @@ def test_replace_and_load_decision_tickets_roundtrip_json_fields(tmp_path):
     assert written == 2
     assert [t["lane"] for t in loaded] == ["main", "ambush"]
     assert loaded[0]["evidence"]["limit_up_count"] == 3
+    assert loaded[0]["target_pct"] == 3.0
     assert loaded[1]["invalid_conditions"] == ["催化落地无反应"]
 
 
@@ -93,6 +95,19 @@ def test_validate_tickets_rejects_multiple_main_and_oversized_ambush(tmp_path):
             {**base, "lane": "ambush", "faction": "E", "code": f"00000{i}"}
             for i in range(3)
         ])
+
+
+def test_validate_tickets_rejects_non_finite_target_pct(tmp_path):
+    db = make_db(tmp_path)
+    with pytest.raises(ValueError, match="target_pct"):
+        decision.replace_tickets(db, "2026-05-19", [{
+            "trade_date": "2026-05-19",
+            "code": "600000",
+            "name": "浦发银行",
+            "lane": "ban",
+            "action": "avoid",
+            "target_pct": float("nan"),
+        }])
 
 
 def test_watchlist_compat_exposes_only_actionable_lanes(tmp_path):
@@ -150,6 +165,7 @@ def test_watchlist_compat_exposes_only_actionable_lanes(tmp_path):
 
     assert [w["code"] for w in compat] == ["600000", "000001", "600003"]
     assert compat[0]["buy"] == 10.3
+    assert compat[0]["target_pct"] is None
     assert compat[0]["status"] == "pending"
     assert compat[1]["buy"] == 8.8
     assert compat[1]["entry_high"] == 9.1
@@ -315,3 +331,136 @@ def test_ensure_schema_migrates_existing_decision_table_to_allow_trend(tmp_path)
 
     assert decision.load_tickets(db, "2026-05-19")[0]["code"] == "600000"
     assert decision.load_tickets(db, "2026-05-20")[0]["lane"] == "trend"
+
+
+def test_ensure_schema_adds_target_pct_to_existing_trend_table(tmp_path):
+    db = make_db(tmp_path)
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE decision_tickets RENAME TO decision_tickets_with_target")
+    schema_without_target = decision.SCHEMA.replace("    target_pct REAL,\n", "")
+    conn.executescript(schema_without_target)
+    conn.execute(
+        """INSERT INTO decision_tickets
+           (trade_date, code, name, lane, faction, action)
+           VALUES ('2026-05-19', '600000', '旧票', 'ban', 'D', 'avoid')""",
+    )
+    conn.execute("DROP TABLE decision_tickets_with_target")
+    conn.commit()
+    conn.close()
+
+    decision.ensure_schema(db)
+    columns = {
+        row[1] for row in sqlite3.connect(db).execute("PRAGMA table_info(decision_tickets)")
+    }
+
+    assert "target_pct" in columns
+    assert decision.load_tickets(db, "2026-05-19")[0]["target_pct"] is None
+
+
+def test_upsert_ticket_records_origin_and_does_not_overwrite_premarket_ticket(tmp_path):
+    db = make_db(tmp_path)
+    premarket = {
+        "trade_date": "2026-05-19",
+        "code": "600003",
+        "name": "盘前趋势票",
+        "concept": "CPO光模块",
+        "lane": "trend",
+        "faction": "D",
+        "entry_low": 12.0,
+        "entry_high": 12.2,
+        "max_chase_price": 12.5,
+        "stop_price": 11.6,
+        "deadline_time": "10:30",
+        "size_pct": 10,
+        "origin": "premarket",
+        "source_ref": "premarket:card",
+    }
+    decision.upsert_ticket(db, premarket)
+
+    result = decision.upsert_ticket(db, {
+        **premarket,
+        "name": "自动候选不应覆盖",
+        "entry_low": 13.0,
+        "origin": "theme_candidate",
+        "source_ref": "market_state_event:1",
+    })
+    loaded = decision.load_tickets(db, "2026-05-19")
+
+    assert result is None
+    assert loaded[0]["name"] == "盘前趋势票"
+    assert loaded[0]["entry_low"] == 12.0
+    assert loaded[0]["origin"] == "premarket"
+    assert loaded[0]["source_ref"] == "premarket:card"
+
+
+def test_theme_candidate_upsert_cannot_overwrite_concurrent_manual_ticket(tmp_path):
+    db = make_db(tmp_path)
+    with sqlite3.connect(db) as conn:
+        conn.executescript("""
+        CREATE TRIGGER inject_manual_before_theme_candidate
+        BEFORE INSERT ON decision_tickets
+        WHEN NEW.origin='theme_candidate'
+        BEGIN
+            INSERT OR IGNORE INTO decision_tickets
+                (trade_date, code, name, lane, origin)
+            VALUES
+                (NEW.trade_date, NEW.code, '并发手工票', NEW.lane, 'manual');
+        END;
+        """)
+
+    result = decision.upsert_ticket(db, {
+        "trade_date": "2026-05-19",
+        "code": "600003",
+        "name": "自动候选",
+        "concept": "CPO光模块",
+        "lane": "trend",
+        "faction": "D",
+        "entry_low": 12.0,
+        "entry_high": 12.2,
+        "max_chase_price": 12.5,
+        "stop_price": 11.6,
+        "deadline_time": "14:00",
+        "size_pct": 10,
+        "origin": "theme_candidate",
+        "source_ref": "market_state_event:1",
+    })
+    loaded = decision.load_tickets(db, "2026-05-19")
+
+    assert result is None
+    assert loaded[0]["name"] == "并发手工票"
+    assert loaded[0]["origin"] == "manual"
+
+
+def test_invalidate_tickets_only_invalidates_untriggered_matching_origin(tmp_path):
+    db = make_db(tmp_path)
+    base = {
+        "trade_date": "2026-05-19",
+        "name": "趋势票",
+        "concept": "CPO光模块",
+        "lane": "trend",
+        "faction": "D",
+        "entry_low": 12.0,
+        "entry_high": 12.2,
+        "max_chase_price": 12.5,
+        "stop_price": 11.6,
+        "deadline_time": "14:00",
+        "size_pct": 10,
+        "origin": "theme_candidate",
+    }
+    decision.upsert_ticket(db, {**base, "code": "600001", "source_ref": "event:1"})
+    decision.upsert_ticket(db, {**base, "code": "600002", "source_ref": "event:2", "status": "triggered"})
+    decision.upsert_ticket(db, {**base, "code": "600003", "source_ref": "manual", "origin": "premarket"})
+
+    count = decision.invalidate_tickets(
+        db,
+        "2026-05-19",
+        origin="theme_candidate",
+        concept="CPO光模块",
+        reason="题材降温",
+    )
+    loaded = {ticket["code"]: ticket for ticket in decision.load_tickets(db, "2026-05-19")}
+
+    assert count == 1
+    assert loaded["600001"]["status"] == "invalid"
+    assert loaded["600002"]["status"] == "triggered"
+    assert loaded["600003"]["status"] == "pending"
