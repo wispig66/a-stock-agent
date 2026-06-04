@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
 
-from stock_codex.infra.db import connect as db_connect
+from stock_codex.infra.db import connect_close as db_connect
 
 
 LANES = {"main", "ambush", "backup", "trend", "ban"}
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS decision_tickets (
     entry_high REAL,
     max_chase_price REAL,
     stop_price REAL,
+    target_pct REAL,
     invalid_price REAL,
     deadline_time TEXT,
     size_pct INTEGER,
@@ -37,6 +39,8 @@ CREATE TABLE IF NOT EXISTS decision_tickets (
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK(status IN ('pending','triggered','bought','expired','invalid','reviewed')),
     source_msg_id INTEGER,
+    origin TEXT,
+    source_ref TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(trade_date, code, lane)
@@ -92,6 +96,15 @@ def ensure_schema(db: str | Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_decision_tickets_date ON decision_tickets(trade_date);
             CREATE INDEX IF NOT EXISTS idx_decision_tickets_lane ON decision_tickets(trade_date, lane);
             """)
+        columns = {
+            column[1] for column in conn.execute("PRAGMA table_info(decision_tickets)").fetchall()
+        }
+        if "target_pct" not in columns:
+            conn.execute("ALTER TABLE decision_tickets ADD COLUMN target_pct REAL")
+        if "origin" not in columns:
+            conn.execute("ALTER TABLE decision_tickets ADD COLUMN origin TEXT")
+        if "source_ref" not in columns:
+            conn.execute("ALTER TABLE decision_tickets ADD COLUMN source_ref TEXT")
 
 
 def _json_default(value: Any) -> str:
@@ -131,6 +144,14 @@ def validate_tickets(tickets: list[dict[str, Any]]) -> None:
             raise ValueError("code is required")
         if not t.get("name"):
             raise ValueError("name is required")
+        target_pct = t.get("target_pct")
+        if target_pct is not None:
+            try:
+                target_pct_value = float(target_pct)
+                if not math.isfinite(target_pct_value) or target_pct_value <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError("target_pct must be a positive number") from None
         _validate_actionable_ticket(t)
 
 
@@ -185,20 +206,22 @@ def replace_tickets(db: str | Path, trade_date: str, tickets: list[dict[str, Any
             conn.execute(
                 """INSERT INTO decision_tickets
                    (trade_date, code, name, concept, lane, faction, action,
-                    entry_low, entry_high, max_chase_price, stop_price, invalid_price,
+                    entry_low, entry_high, max_chase_price, stop_price, target_pct, invalid_price,
                     deadline_time, size_pct, thesis, evidence_json,
-                    invalid_conditions_json, upgrade_conditions_json, status, source_msg_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    invalid_conditions_json, upgrade_conditions_json, status, source_msg_id,
+                    origin, source_ref)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     t["trade_date"], t["code"], t["name"], t.get("concept"),
                     t["lane"], t.get("faction"), t.get("action", "wait"),
                     t.get("entry_low"), t.get("entry_high"), t.get("max_chase_price"),
-                    t.get("stop_price"), t.get("invalid_price"),
+                    t.get("stop_price"), t.get("target_pct"), t.get("invalid_price"),
                     t.get("deadline_time"), t.get("size_pct"), t.get("thesis"),
                     _json_default(t.get("evidence", {})),
                     _json_default(t.get("invalid_conditions", [])),
                     _json_default(t.get("upgrade_conditions", [])),
                     t.get("status", "pending"), t.get("source_msg_id"),
+                    t.get("origin", "premarket"), t.get("source_ref"),
                 ),
             )
     return len(tickets)
@@ -218,15 +241,18 @@ def _row_to_ticket(row: Any) -> dict[str, Any]:
         "entry_high": row[9],
         "max_chase_price": row[10],
         "stop_price": row[11],
-        "invalid_price": row[12],
-        "deadline_time": row[13],
-        "size_pct": row[14],
-        "thesis": row[15],
-        "evidence": _json_load(row[16], {}),
-        "invalid_conditions": _json_load(row[17], []),
-        "upgrade_conditions": _json_load(row[18], []),
-        "status": row[19],
-        "source_msg_id": row[20],
+        "target_pct": row[12],
+        "invalid_price": row[13],
+        "deadline_time": row[14],
+        "size_pct": row[15],
+        "thesis": row[16],
+        "evidence": _json_load(row[17], {}),
+        "invalid_conditions": _json_load(row[18], []),
+        "upgrade_conditions": _json_load(row[19], []),
+        "status": row[20],
+        "source_msg_id": row[21],
+        "origin": row[22],
+        "source_ref": row[23],
     }
 
 
@@ -235,9 +261,10 @@ def load_tickets(db: str | Path, trade_date: str) -> list[dict[str, Any]]:
     with db_connect(db) as conn:
         rows = conn.execute(
             """SELECT id, trade_date, code, name, concept, lane, faction, action,
-                      entry_low, entry_high, max_chase_price, stop_price, invalid_price,
-                      deadline_time, size_pct, thesis, evidence_json,
-                      invalid_conditions_json, upgrade_conditions_json, status, source_msg_id
+                      entry_low, entry_high, max_chase_price, stop_price, target_pct,
+                      invalid_price, deadline_time, size_pct, thesis, evidence_json,
+                      invalid_conditions_json, upgrade_conditions_json, status, source_msg_id,
+                      origin, source_ref
                FROM decision_tickets
                WHERE trade_date=?
                ORDER BY
@@ -260,6 +287,8 @@ def load_watchlist_compat(db: str | Path, trade_date: str) -> list[dict[str, Any
     for t in load_tickets(db, trade_date):
         if t["lane"] not in {"main", "ambush", "backup", "trend"}:
             continue
+        if t["status"] not in {"pending", "triggered"}:
+            continue
         if t["lane"] == "ambush":
             buy = t.get("entry_low")
         else:
@@ -274,6 +303,7 @@ def load_watchlist_compat(db: str | Path, trade_date: str) -> list[dict[str, Any
             "entry_high": t.get("entry_high"),
             "max_chase_price": t.get("max_chase_price"),
             "stop_loss": t.get("stop_price"),
+            "target_pct": t.get("target_pct"),
             "deadline_time": t.get("deadline_time"),
             "position_max_pct": t.get("size_pct"),
             "status": t.get("status"),
@@ -294,3 +324,135 @@ def mark_ticket_status(db: str | Path, trade_date: str, code: str, lane: str, st
             (status, trade_date, code, lane),
         )
         return cur.rowcount > 0
+
+
+def upsert_ticket(db: str | Path, ticket: dict[str, Any]) -> int | None:
+    """插入或更新单张决策单；自动题材候选不得覆盖盘前或手工记录。"""
+    validate_tickets([ticket])
+    ensure_schema(db)
+    incoming_origin = ticket.get("origin") or "premarket"
+    with db_connect(db) as conn:
+        existing = conn.execute(
+            """SELECT id, origin FROM decision_tickets
+               WHERE trade_date=? AND code=? AND lane=?""",
+            (ticket["trade_date"], ticket["code"], ticket["lane"]),
+        ).fetchone()
+        if (
+            existing
+            and incoming_origin == "theme_candidate"
+            and (existing[1] or "premarket") != "theme_candidate"
+        ):
+            return None
+        conn.execute(
+            """INSERT INTO decision_tickets
+               (trade_date, code, name, concept, lane, faction, action,
+                entry_low, entry_high, max_chase_price, stop_price, target_pct,
+                invalid_price, deadline_time, size_pct, thesis, evidence_json,
+                invalid_conditions_json, upgrade_conditions_json, status,
+                source_msg_id, origin, source_ref)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(trade_date, code, lane) DO UPDATE SET
+                   name=excluded.name,
+                   concept=excluded.concept,
+                   faction=excluded.faction,
+                   action=excluded.action,
+                   entry_low=excluded.entry_low,
+                   entry_high=excluded.entry_high,
+                   max_chase_price=excluded.max_chase_price,
+                   stop_price=excluded.stop_price,
+                   target_pct=excluded.target_pct,
+                   invalid_price=excluded.invalid_price,
+                   deadline_time=excluded.deadline_time,
+                   size_pct=excluded.size_pct,
+                   thesis=excluded.thesis,
+                   evidence_json=excluded.evidence_json,
+                   invalid_conditions_json=excluded.invalid_conditions_json,
+                   upgrade_conditions_json=excluded.upgrade_conditions_json,
+                   status=excluded.status,
+                   source_msg_id=excluded.source_msg_id,
+                   origin=excluded.origin,
+                   source_ref=excluded.source_ref,
+                   updated_at=CURRENT_TIMESTAMP
+               WHERE excluded.origin != 'theme_candidate'
+                  OR COALESCE(decision_tickets.origin, 'premarket') = 'theme_candidate'""",
+            (
+                ticket["trade_date"],
+                ticket["code"],
+                ticket["name"],
+                ticket.get("concept"),
+                ticket["lane"],
+                ticket.get("faction"),
+                ticket.get("action", "wait"),
+                ticket.get("entry_low"),
+                ticket.get("entry_high"),
+                ticket.get("max_chase_price"),
+                ticket.get("stop_price"),
+                ticket.get("target_pct"),
+                ticket.get("invalid_price"),
+                ticket.get("deadline_time"),
+                ticket.get("size_pct"),
+                ticket.get("thesis"),
+                _json_default(ticket.get("evidence", {})),
+                _json_default(ticket.get("invalid_conditions", [])),
+                _json_default(ticket.get("upgrade_conditions", [])),
+                ticket.get("status", "pending"),
+                ticket.get("source_msg_id"),
+                incoming_origin,
+                ticket.get("source_ref"),
+            ),
+        )
+        row = conn.execute(
+            """SELECT id, origin FROM decision_tickets
+               WHERE trade_date=? AND code=? AND lane=?""",
+            (ticket["trade_date"], ticket["code"], ticket["lane"]),
+        ).fetchone()
+        if not row:
+            return None
+        if incoming_origin == "theme_candidate" and (row[1] or "premarket") != "theme_candidate":
+            return None
+        return int(row[0])
+
+
+def invalidate_tickets(
+    db: str | Path,
+    trade_date: str,
+    *,
+    origin: str | None = None,
+    concept: str | None = None,
+    codes: list[str] | None = None,
+    source_ref: str | None = None,
+    reason: str | None = None,
+) -> int:
+    """将匹配的未触发决策单标为 invalid。"""
+    ensure_schema(db)
+    where = ["trade_date=?", "status='pending'"]
+    params: list[Any] = [trade_date]
+    if origin is not None:
+        where.append("origin=?")
+        params.append(origin)
+    if concept is not None:
+        where.append("concept=?")
+        params.append(concept)
+    if source_ref is not None:
+        where.append("source_ref=?")
+        params.append(source_ref)
+    if codes:
+        where.append(f"code IN ({','.join('?' for _ in codes)})")
+        params.extend(codes)
+
+    with db_connect(db) as conn:
+        rows = conn.execute(
+            f"SELECT id, invalid_conditions_json FROM decision_tickets WHERE {' AND '.join(where)}",
+            params,
+        ).fetchall()
+        for ticket_id, raw_conditions in rows:
+            conditions = _json_load(raw_conditions, [])
+            if reason and reason not in conditions:
+                conditions.append(reason)
+            conn.execute(
+                """UPDATE decision_tickets
+                   SET status='invalid', invalid_conditions_json=?, updated_at=CURRENT_TIMESTAMP
+                   WHERE id=?""",
+                (_json_default(conditions), ticket_id),
+            )
+    return len(rows)

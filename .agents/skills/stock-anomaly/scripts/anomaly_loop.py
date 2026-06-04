@@ -18,9 +18,7 @@
 
 去重：(code, kind) 一会话只推一次；新一轮只看 时间 > 上轮最大时间 的条目。
 过滤：**只推**持仓 + 今日观察池中的代码（不推全市场，避免 TG 洪流）。
-      持仓+观察池为空时 daemon 直接退出，节省资源。
-      load_today_watchlist 和 load_holdings 在启动时加载一次，
-      盘中修改 holdings.yaml 不会被 daemon 看到（需重启）。
+      每轮重新读取观察池和持仓，盘中新买入无需重启 daemon。
 
 用法：
   uv run anomaly_loop.py
@@ -30,7 +28,6 @@
 
 from __future__ import annotations
 import argparse
-import json
 import sys
 import time
 from datetime import datetime, time as dtime
@@ -42,6 +39,8 @@ sys.path.insert(0, str(ROOT / ".agents" / "skills" / "stock-intraday" / "scripts
 from fetch_realtime import load_today_watchlist, load_holdings  # noqa: E402
 from stock_codex.infra.logger import get_logger, init_req_id_from_env  # noqa: E402
 from stock_codex.infra.push_wrapper import push_one  # noqa: E402
+from stock_codex.market import anomaly_events  # noqa: E402
+from stock_codex.paths import DB_FILE  # noqa: E402
 
 init_req_id_from_env()
 log = get_logger("anomaly_loop")
@@ -125,21 +124,42 @@ def snapshot_holdings(now: datetime) -> None:
         log.info("holdings 快照 → %s", dst.name)
 
 
-def append_raw(now: datetime, symbol: str, df) -> None:
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
-    path = RAW_DIR / f"{now.strftime('%Y%m%d')}.jsonl"
-    round_ts = now.isoformat(timespec="seconds")
-    with path.open("a") as f:
-        for _, row in df.iterrows():
-            rec = {
-                "round_ts": round_ts,
-                "symbol": symbol,
-                "code": row["代码"],
-                "name": row["名称"],
-                "time": fmt_time(row.get("时间")),
-                "info": row.get("相关信息", ""),
-            }
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+def load_watched_codes() -> set[str]:
+    """重新读取观察池和持仓代码，确保盘中新成交立即进入异动过滤。"""
+    try:
+        watch_codes = {w["code"] for w in load_today_watchlist()}
+    except Exception:
+        log.exception("观察池重载失败，本轮仅监控持仓")
+        watch_codes = set()
+    try:
+        holding_codes = {h["code"] for h in load_holdings()}
+    except Exception:
+        log.exception("持仓重载失败，本轮仅监控观察池")
+        holding_codes = set()
+    return watch_codes | holding_codes
+
+
+def _df_events(symbol: str, df) -> list[dict]:
+    return [
+        {
+            "symbol": symbol,
+            "code": row["代码"],
+            "name": row["名称"],
+            "event_time": fmt_time(row.get("时间")),
+            "info": row.get("相关信息", ""),
+            "sector_hint": row.get("板块", ""),
+        }
+        for _, row in df.iterrows()
+    ]
+
+
+def _event_to_row(event: dict) -> dict:
+    return {
+        "代码": event["code"],
+        "名称": event["name"],
+        "时间": event["event_time"],
+        "相关信息": event["info"],
+    }
 
 
 def main():
@@ -149,15 +169,12 @@ def main():
     p.add_argument("--no-raw", action="store_true", help="不落全量 jsonl（默认落）")
     args = p.parse_args()
 
-    watched = {w["code"] for w in load_today_watchlist()} | {h["code"] for h in load_holdings()}
-    if not watched:
-        log.info("持仓+观察池均为空，无监控目标，退出")
-        return
+    watched = load_watched_codes()
     log.info("监控持仓+观察池 %d 只", len(watched))
     snapshot_holdings(datetime.now())
+    anomaly_events.ensure_schema(DB_FILE)
 
     sent: set[tuple[str, str]] = set()
-    last_max_time: dict[str, str] = {sym: "" for sym in SYMBOLS}
     round_idx = 0
 
     while True:
@@ -174,6 +191,9 @@ def main():
             continue
 
         round_idx += 1
+        watched = load_watched_codes()
+        if not watched:
+            log.info("round %d 持仓+观察池均为空，本轮只维护共享异动事件库", round_idx)
         total_new = 0
         rocket_buffer: list[dict] = []  # 本轮命中持仓/观察池的火箭条目，整轮末压成 1 条 digest
         for symbol, label in SYMBOLS.items():
@@ -185,39 +205,42 @@ def main():
             if df is None or df.empty:
                 continue
 
-            if not args.no_raw:
-                try:
-                    append_raw(now, symbol, df)
-                except Exception:
-                    log.exception("raw 落盘失败 %s", symbol)
+            try:
+                anomaly_events.insert_events(
+                    DB_FILE,
+                    now.strftime("%Y-%m-%d"),
+                    now,
+                    _df_events(symbol, df),
+                    raw_dir=None if args.no_raw else RAW_DIR,
+                )
+            except Exception:
+                log.exception("共享异动事件入库失败 %s", symbol)
 
-            new_max = last_max_time[symbol]
-            for _, row in df.iterrows():
-                code = row["代码"]
-                t = fmt_time(row.get("时间"))
-                if code not in watched:
-                    continue
-                if t <= last_max_time[symbol]:
-                    continue
-                key = (code, symbol)
-                if key in sent:
-                    if t > new_max:
-                        new_max = t
-                    continue
-                sent.add(key)
-                total_new += 1
-                if symbol == "火箭发射":
-                    rocket_buffer.append(row.to_dict())
-                else:
-                    msg = format_alert(now, symbol, label, row.to_dict())
-                    try:
-                        r = push_one(msg, source="stock-anomaly")
-                        log.info("PUSH %s %s msg_id=%s", code, symbol, r["result"]["message_id"])
-                    except Exception:
-                        log.exception("push 失败 %s %s", code, symbol)
-                if t > new_max:
-                    new_max = t
-            last_max_time[symbol] = new_max
+        today = now.strftime("%Y-%m-%d")
+        pending = anomaly_events.read_new_events(DB_FILE, "stock-anomaly", today)
+        for event in pending:
+            symbol = event["symbol"]
+            label = SYMBOLS.get(symbol)
+            code = event["code"]
+            if label is None or code not in watched:
+                continue
+            key = (code, symbol)
+            if key in sent:
+                continue
+            sent.add(key)
+            total_new += 1
+            row = _event_to_row(event)
+            if symbol == "火箭发射":
+                rocket_buffer.append(row)
+            else:
+                msg = format_alert(now, symbol, label, row)
+                try:
+                    r = push_one(msg, source="stock-anomaly")
+                    log.info("PUSH %s %s msg_id=%s", code, symbol, r["result"]["message_id"])
+                except Exception:
+                    log.exception("push 失败 %s %s", code, symbol)
+        if pending:
+            anomaly_events.advance_cursor(DB_FILE, "stock-anomaly", today, pending[-1]["id"])
 
         if rocket_buffer:
             digest = format_rocket_digest(now, rocket_buffer)

@@ -219,6 +219,88 @@ CREATE TABLE IF NOT EXISTS stock_basic (
 
 CREATE INDEX IF NOT EXISTS idx_stock_basic_board ON stock_basic(board);
 
+-- 全市场异动唯一事实库。两个 daemon 可并发拉快照，但只消费首次入库事件。
+CREATE TABLE IF NOT EXISTS anomaly_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    event_key TEXT NOT NULL UNIQUE,
+    observed_at TEXT NOT NULL,
+    event_time TEXT,
+    symbol TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT,
+    sector_hint TEXT,
+    info TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_anomaly_event_date_id ON anomaly_event(trade_date, id);
+CREATE INDEX IF NOT EXISTS idx_anomaly_event_date_code ON anomaly_event(trade_date, code);
+
+-- 每个下游独立确认消费进度，避免重启重复消费或双 daemon 互相抢事件。
+CREATE TABLE IF NOT EXISTS anomaly_consumer_cursor (
+    consumer TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    last_event_id INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (consumer, trade_date)
+);
+
+-- 每 5 分钟紧凑市场事实快照，供状态机、固定时点 intraday 和回放复用。
+CREATE TABLE IF NOT EXISTS market_snapshot (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_ts TEXT NOT NULL UNIQUE,
+    trade_date TEXT NOT NULL,
+    is_stale INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_market_snapshot_date_ts ON market_snapshot(trade_date, snapshot_ts);
+
+-- 每次题材评分状态快照。
+CREATE TABLE IF NOT EXISTS theme_state_snapshot (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    evaluated_at TEXT NOT NULL,
+    market_snapshot_ts TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    concept_tag TEXT NOT NULL,
+    state TEXT NOT NULL,
+    score REAL NOT NULL,
+    components_json TEXT NOT NULL,
+    consecutive_high INTEGER NOT NULL DEFAULT 0,
+    consecutive_low INTEGER NOT NULL DEFAULT 0,
+    is_stale INTEGER NOT NULL DEFAULT 0,
+    primary_anchor TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(evaluated_at, concept_tag)
+);
+CREATE INDEX IF NOT EXISTS idx_theme_state_date_tag
+    ON theme_state_snapshot(trade_date, concept_tag, evaluated_at);
+
+-- 题材状态迁移事件队列。即时短讯和后续盘面动态 worker 独立消费。
+CREATE TABLE IF NOT EXISTS market_state_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_ts TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    concept_tag TEXT NOT NULL,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    score REAL NOT NULL,
+    payload_json TEXT NOT NULL,
+    queue_status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TEXT,
+    processing_started_at TEXT,
+    short_pushed_at TEXT,
+    full_card_processed_at TEXT,
+    error TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_market_state_event_queue
+    ON market_state_event(trade_date, queue_status, event_ts);
+CREATE INDEX IF NOT EXISTS idx_market_state_event_theme
+    ON market_state_event(trade_date, concept_tag, event_ts);
+
 
 -- ──────────────────────────────────────────────────────────────
 -- theme_emergence_loop（Layer 1：盘中新主线浮现识别）
@@ -241,7 +323,7 @@ CREATE TABLE IF NOT EXISTS theme_emergence_log (
 );
 CREATE INDEX IF NOT EXISTS idx_tel_date_tag ON theme_emergence_log(trade_date, concept_tag);
 
--- 动态观察池（Layer 2 intraday/postmarket 读这张）
+-- 手工 /watch 观察池（Layer 2 intraday/postmarket 只读取买点和止损完整的记录）
 CREATE TABLE IF NOT EXISTS watchlist_dynamic (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_date      TEXT NOT NULL,
@@ -249,12 +331,12 @@ CREATE TABLE IF NOT EXISTS watchlist_dynamic (
     concept_tag     TEXT NOT NULL,
     code            TEXT NOT NULL,
     name            TEXT NOT NULL,
-    role            TEXT NOT NULL,         -- leader / follower
+    role            TEXT NOT NULL,         -- manual
     entry_price     REAL,
     stop_price      REAL,
     target_pct      REAL,
-    discipline_type TEXT NOT NULL,         -- A / B / D
-    action_window   TEXT NOT NULL,         -- before_1030 / 1030_1400 / after_1400
+    discipline_type TEXT NOT NULL,         -- 手工盯盘默认 D
+    action_window   TEXT NOT NULL,         -- 手工盯盘默认 before_1030
     status          TEXT DEFAULT 'pending',-- pending/triggered/expired/skipped
     source_emergence_id INTEGER,
     UNIQUE(trade_date, code, concept_tag)
@@ -278,6 +360,7 @@ CREATE TABLE IF NOT EXISTS decision_tickets (
     entry_high REAL,
     max_chase_price REAL,
     stop_price REAL,
+    target_pct REAL,
     invalid_price REAL,
     deadline_time TEXT,
     size_pct INTEGER,
@@ -288,6 +371,8 @@ CREATE TABLE IF NOT EXISTS decision_tickets (
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK(status IN ('pending','triggered','bought','expired','invalid','reviewed')),
     source_msg_id INTEGER,
+    origin TEXT,                       -- premarket / theme_candidate / manual
+    source_ref TEXT,                   -- 来源事件或卡片引用
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(trade_date, code, lane)

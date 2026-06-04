@@ -3,17 +3,18 @@
 
 每 60 秒一个 tick：
   ① 拉 ak.stock_changes_em（4 类异动）+ ak.stock_zt_pool_em（涨停池）
-  ② 映射到一级题材（concept_whitelist.yaml）
-  ③ 每题材一个 PageHinkley detector，喂异动事件计数
-  ④ 检查 5 个信号 → T1 / T2 触发 → 写 theme_emergence_log
-  ⑤ T2 触发：选 2-3 只候选写 watchlist_dynamic + 推 TG
+     全量异动先写共享唯一事件库，再按 theme-loop 独立游标消费
+  ② 每 5 分钟采集紧凑市场快照，异动流每分钟映射到题材图谱
+  ③ 五维评分状态机触发 T0 / T1 / T2 / 降温 / 轮出
+  ④ T1 / T2 继续写 theme_emergence_log 兼容审计
+  ⑤ 状态迁移写事件队列并按冷却纪律推即时短讯
 
 监控时段：09:30-11:30 / 13:00-15:00
-学习期：09:30-10:00（喂数据但不触发告警，避开集合竞价噪声）
+T1 最早触发：09:35
 
 数据落盘：
-  data/anomaly_raw/{date}.jsonl  全市场异动原始事件（与 anomaly_loop 兼容文件名）
-  data/daily.db                  4 张新表（见 init_db.sql 末尾）
+  data/anomaly_raw/{date}.jsonl  首次入库的全市场异动事件审计副本
+  data/daily.db                  5 张新表（见 init_db.sql）
 
 用法：
   uv run theme_emergence_loop.py
@@ -28,11 +29,14 @@ import time
 from collections import defaultdict
 from datetime import datetime, time as dtime, timedelta
 
-import yaml
-
 from stock_codex.infra.db import connect_close as db_connect  # noqa: E402 — daemon 用自动关闭版
 from stock_codex.infra.logger import get_logger, init_req_id_from_env  # noqa: E402
 from stock_codex.infra.push_wrapper import push_one  # noqa: E402
+from stock_codex.market import anomaly_events  # noqa: E402
+from stock_codex.market.market_snapshot import MarketSnapshot  # noqa: E402
+from stock_codex.market.theme_candidates import ThemeCandidateEngine  # noqa: E402
+from stock_codex.market.theme_graph import ThemeGraph  # noqa: E402
+from stock_codex.market.theme_signal import ThemeSignal  # noqa: E402
 from stock_codex.paths import DATA_DIR, DB_FILE
 
 init_req_id_from_env()
@@ -44,7 +48,6 @@ RAW_DIR = DATA_DIR / "anomaly_raw"
 
 SESSION_AM = (dtime(9, 30), dtime(11, 30))
 SESSION_PM = (dtime(13, 0), dtime(15, 0))
-LEARNING_END = dtime(10, 0)
 DEFAULT_INTERVAL = 60
 
 # PH 参数（首版起点，calibration 后调）
@@ -149,48 +152,29 @@ class Whitelist:
         return len(self.themes)
 
 
-def load_whitelist() -> Whitelist:
+def load_whitelist() -> ThemeGraph:
     if not WHITELIST.exists():
-        log.warning("concept_whitelist.yaml 不存在，所有事件归入 fallback")
-        return Whitelist({}, {}, [], {})
-    with WHITELIST.open() as f:
-        themes = yaml.safe_load(f) or {}
-    code_idx, kw_idx = {}, []
-    for tag, conf in themes.items():
-        for c in (conf or {}).get("members") or []:
-            code_idx[str(c).zfill(6)] = tag
-        for kw in (conf or {}).get("keywords") or []:
-            kw_idx.append((kw, tag))
-    # 从 ths_hot_reason 拉近 30 日 code → reason，作为 keyword 匹配的语料。
-    # 这只是增强匹配的可选缓存；新环境、测试库或未初始化 DB 可以没有这张表。
-    concept_cache: dict[str, str] = {}
-    if not DB.exists():
-        log.warning("daily.db 不存在，concept_cache 为空: %s", DB)
-    else:
-        try:
-            with db_connect(DB) as conn:
-                has_table = conn.execute(
-                    """SELECT 1 FROM sqlite_master
-                       WHERE type='table' AND name='ths_hot_reason'"""
-                ).fetchone()
-                if has_table:
-                    cur = conn.execute(
-                        """SELECT code, GROUP_CONCAT(reason, ' ') FROM ths_hot_reason
-                           WHERE date >= date('now', '-30 day')
-                           GROUP BY code""")
-                    for code, reason in cur.fetchall():
-                        concept_cache[str(code).zfill(6)] = reason or ""
-                else:
-                    log.warning("ths_hot_reason 表不存在，concept_cache 为空")
-        except Exception:
-            log.exception("加载 ths_hot_reason 失败，concept_cache 为空")
-    log.info("白名单 %d 题材 / %d 成员 / %d 关键词 / cache %d 只股票",
-             len(themes), len(code_idx), len(kw_idx), len(concept_cache))
-    return Whitelist(themes, code_idx, kw_idx, concept_cache)
+        log.warning("本地 concept_whitelist.yaml 不存在，使用随代码发布的默认题材目录")
+    graph = ThemeGraph(WHITELIST, db_path=DB)
+    member_count = sum(len(graph.member_records(theme)) for theme in graph.themes)
+    log.info("题材图谱 %d 题材 / %d 成员", len(graph), member_count)
+    return graph
 
 
-def map_to_concept(code: str, name: str, info: str, wl: Whitelist) -> str | None:
-    """优先级：member → keyword(name + cache reason + info) → None"""
+def map_to_concept(
+    code: str,
+    name: str,
+    info: str,
+    wl: ThemeGraph | Whitelist,
+    *,
+    sector_hint: str = "",
+    as_of: datetime | None = None,
+) -> str | None:
+    """兼容旧调用：返回题材图谱主标签。"""
+    if isinstance(wl, ThemeGraph):
+        matches = wl.resolve(code, name, sector_hint, info, as_of or datetime.now())
+        primary = next((match for match in matches if match.is_primary), None)
+        return primary.theme if primary else None
     code = str(code).zfill(6)
     if code in wl.code_idx:
         return wl.code_idx[code]
@@ -212,7 +196,7 @@ def in_session(now: datetime) -> bool:
 
 
 def fetch_anomaly_all(now: datetime):
-    """拉全市场异动事件，返回 [(symbol, code, name, time, info)]"""
+    """拉全市场异动事件，返回共享事件库可直接写入的 dict。"""
     import akshare as ak
     rows = []
     for sym in ANOMALY_SYMBOLS:
@@ -220,8 +204,14 @@ def fetch_anomaly_all(now: datetime):
             try:
                 df = ak.stock_changes_em(symbol=sym)
                 for _, r in df.iterrows():
-                    rows.append((sym, str(r["代码"]), r["名称"],
-                                 str(r.get("时间", "")), str(r.get("相关信息", ""))))
+                    rows.append({
+                        "symbol": sym,
+                        "code": str(r["代码"]),
+                        "name": r["名称"],
+                        "event_time": str(r.get("时间", "")),
+                        "info": str(r.get("相关信息", "")),
+                        "sector_hint": str(r.get("板块", "")),
+                    })
                 break
             except Exception as e:
                 if attempt == 2:
@@ -244,20 +234,7 @@ def fetch_zt_pool(today: str):
             time.sleep(1)
     return []
 
-
-def append_raw(now: datetime, rows: list):
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
-    path = RAW_DIR / f"{now.strftime('%Y%m%d')}.jsonl"
-    round_ts = now.isoformat(timespec="seconds")
-    with path.open("a") as f:
-        for sym, code, name, t, info in rows:
-            f.write(json.dumps({
-                "round_ts": round_ts, "symbol": sym, "code": code,
-                "name": name, "time": t, "info": info
-            }, ensure_ascii=False) + "\n")
-
-
-def snapshot_zt_pool(now: datetime, today: str, pool: list, wl: Whitelist):
+def snapshot_zt_pool(now: datetime, today: str, pool: list, wl: ThemeGraph | Whitelist):
     if not pool:
         return
     ts = now.isoformat(timespec="seconds")
@@ -266,7 +243,7 @@ def snapshot_zt_pool(now: datetime, today: str, pool: list, wl: Whitelist):
             code = str(r.get("代码", "")).zfill(6)
             # 用所属行业 + 涨停统计作为额外 keyword 语料
             extra = f"{r.get('所属行业', '')} {r.get('涨停统计', '')}"
-            concept = map_to_concept(code, r.get("名称", ""), extra, wl)
+            concept = map_to_concept(code, r.get("名称", ""), extra, wl, as_of=now)
             conn.execute(
                 """INSERT OR REPLACE INTO intraday_limit_up_snapshot
                    (snapshot_ts, trade_date, code, name, limit_up_count,
@@ -439,61 +416,178 @@ def _should_push(level: str) -> bool:
 
 
 def pick_candidates(today: str, concept: str, signals: dict, now: datetime) -> list[dict]:
-    """2-3 只候选 + 买卖纪律。leader 走 A 派接力（仅 1030 前），followers 走 D 派首板。"""
-    members = signals.get("members") or []
-    if not members:
-        return []
-    leader = signals.get("first_leader")
-    candidates = []
-    now_t = now.time()
-    if now_t < dtime(10, 30):
-        window = "before_1030"
-    elif now_t < dtime(14, 0):
-        window = "1030_1400"
-    else:
-        # ≥14:00 不追新主线（追高风险大），仅记录到 watchlist_dynamic 供明日 1 进 2 参考
-        return []
-
-    # Leader：A 派接力，仅当 leader 是首板且当前 < 10:30
-    if leader and window == "before_1030" and (leader.get("limit_up_count") or 1) == 1:
-        # 没有实时价格 → 买卖纪律用百分比描述
-        candidates.append({
-            "code": leader["code"], "name": leader["name"], "role": "leader",
-            "entry_price": None, "stop_price": None, "target_pct": 5.0,
-            "discipline_type": "A", "action_window": window, "size_cap": 30,
-        })
-    # Followers：板块内非 leader 的首板/二板，最多 2 只
-    for m in members:
-        if leader and m["code"] == leader["code"]:
-            continue
-        if (m.get("open_count") or 0) > 2:
-            continue
-        candidates.append({
-            "code": m["code"], "name": m["name"], "role": "follower",
-            "entry_price": None, "stop_price": None, "target_pct": 5.0,
-            "discipline_type": "B" if window == "1030_1400" else "D",
-            "action_window": window, "size_cap": 25,
-        })
-        if len(candidates) >= 3:
-            break
-    return candidates
+    """旧 T2 只掌握涨停池成员，不能据此生成自动交易候选。"""
+    return []
 
 
-def write_watchlist_dynamic(today: str, concept: str, candidates: list[dict],
-                            source_id: int, now: datetime):
+def recent_theme_events(
+    now: datetime,
+    wl: ThemeGraph | Whitelist,
+    *,
+    window_minutes: int = 5,
+) -> dict[str, list[dict]]:
+    """读取最近窗口内已首次入库的唯一事件，并按图谱做多标签归因。"""
+    cutoff = (now - timedelta(minutes=window_minutes)).isoformat(timespec="seconds")
+    today = now.strftime("%Y-%m-%d")
     with db_connect(DB) as conn:
-        for c in candidates:
+        cur = conn.execute(
+            """SELECT id, event_key, observed_at, event_time, symbol, code, name,
+                      sector_hint, info
+               FROM anomaly_event
+               WHERE trade_date=? AND observed_at>=? AND observed_at<=?
+               ORDER BY id""",
+            (today, cutoff, now.isoformat(timespec="seconds")),
+        )
+        cols = [col[0] for col in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    out: dict[str, list[dict]] = defaultdict(list)
+    for event in rows:
+        if isinstance(wl, ThemeGraph):
+            matches = wl.resolve(
+                event["code"],
+                event["name"],
+                event.get("sector_hint", ""),
+                event["info"],
+                now,
+            )
+            concepts = [match.theme for match in matches]
+        else:
+            concept = map_to_concept(event["code"], event["name"], event["info"], wl)
+            concepts = [concept] if concept else []
+        for concept in concepts:
+            out[concept].append(event)
+    return dict(out)
+
+
+def latest_limit_up_counts(today: str) -> dict[str, int]:
+    with db_connect(DB) as conn:
+        rows = conn.execute(
+            """SELECT concept_top1, COUNT(DISTINCT code)
+               FROM intraday_limit_up_snapshot
+               WHERE trade_date=? AND concept_top1 IS NOT NULL
+                 AND snapshot_ts=(
+                     SELECT MAX(snapshot_ts) FROM intraday_limit_up_snapshot
+                     WHERE trade_date=?
+                 )
+               GROUP BY concept_top1""",
+            (today, today),
+        ).fetchall()
+    return {str(theme): int(count) for theme, count in rows}
+
+
+def log_score_emergence(today: str, transition: dict, now: datetime, limit_up_count: int) -> None:
+    """把 v2 T1/T2 状态迁移写入旧表，维持现有校准工具兼容。"""
+    event_type = transition["event_type"]
+    if event_type not in {"T1", "T2"}:
+        return
+    levels = ["T1", "T2"] if event_type == "T2" else ["T1"]
+    for level in levels:
+        if already_logged(today, transition["theme"], level):
+            continue
+        with db_connect(DB) as conn:
             conn.execute(
-                """INSERT OR IGNORE INTO watchlist_dynamic
-                   (trade_date, created_at, concept_tag, code, name, role,
-                    entry_price, stop_price, target_pct,
-                    discipline_type, action_window, source_emergence_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (today, now.isoformat(timespec="seconds"), concept,
-                 c["code"], c["name"], c["role"],
-                 c.get("entry_price"), c.get("stop_price"), c.get("target_pct"),
-                 c["discipline_type"], c["action_window"], source_id))
-        conn.commit()
+                """INSERT INTO theme_emergence_log
+                   (detected_at, trade_date, concept_tag, signal_level, signals_hit,
+                    cluster_count, first_leader, ph_value, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    now.isoformat(timespec="seconds"),
+                    today,
+                    transition["theme"],
+                    level,
+                    json.dumps(transition["components"], ensure_ascii=False),
+                    limit_up_count,
+                    transition.get("primary_anchor"),
+                    transition["score"],
+                    "theme_signal_v2",
+                ),
+            )
+
+
+def format_state_short(transition: dict, now: datetime) -> str:
+    labels = {
+        "T0": "题材观察",
+        "T1": "主线浮现",
+        "T2": "主线确认",
+        "cooling": "题材降温",
+        "rotation": "主线轮出",
+    }
+    components = transition["components"]
+    lines = [
+        f"📍 [{now.strftime('%H:%M')}] {labels[transition['event_type']]} · {transition['theme']}",
+        f"评分 {transition['score']:.0f} · 异动 {components['anomaly_flow']:.0f} / "
+        f"广度 {components['breadth']:.0f} / 锚点 {components['anchor']:.0f} / "
+        f"催化 {components['catalyst']:.0f} / 涨停确认 {components['confirmation']:.0f}",
+    ]
+    if transition.get("primary_anchor"):
+        lines.append(f"锚点：{transition['primary_anchor']}")
+    if transition["event_type"] in {"T0", "T1", "T2"}:
+        lines.append("仅作题材状态提醒，不追涨停股；等待可执行买点。")
+    return "\n".join(lines)
+
+
+def handle_state_transitions(
+    signal_engine: ThemeSignal,
+    transitions: list[dict],
+    now: datetime,
+    limit_up_counts: dict[str, int],
+) -> None:
+    today = now.strftime("%Y-%m-%d")
+    for transition in transitions:
+        log_score_emergence(
+            today,
+            transition,
+            now,
+            limit_up_counts.get(transition["theme"], 0),
+        )
+        if not _should_push(transition["event_type"]):
+            continue
+        if not signal_engine.can_push_short(transition["id"], now):
+            continue
+        try:
+            push_one(format_state_short(transition, now), source="theme-loop")
+            signal_engine.mark_short_pushed(transition["id"], now)
+        except Exception:
+            log.exception("状态短讯推送失败: %s %s", transition["theme"], transition["event_type"])
+
+
+def handle_candidate_transitions(
+    candidate_engine: ThemeCandidateEngine,
+    transitions: list[dict],
+    evaluations: list,
+    market_snapshot: dict,
+    now: datetime,
+) -> tuple[list[dict], list[dict]]:
+    """T1 持续尝试生成趋势票，并按状态迁移或价格/截止时间失效。"""
+    added: list[dict] = []
+    invalidated: list[dict] = []
+    t1_sources: dict[str, str] = {}
+    for transition in transitions:
+        event_type = transition["event_type"]
+        theme = transition["theme"]
+        if event_type == "T1":
+            t1_sources[theme] = f"market_state_event:{transition['id']}"
+        elif event_type in {"cooling", "rotation"}:
+            reason = "题材降温" if event_type == "cooling" else "题材轮出"
+            invalidated.extend(candidate_engine.invalidate(theme, market_snapshot, now, reason=reason))
+
+    for evaluation in evaluations:
+        if getattr(evaluation, "state", None) == "T1":
+            source_ref = t1_sources.get(
+                evaluation.theme,
+                f"theme_state_snapshot:{now.isoformat(timespec='seconds')}",
+            )
+            tickets = candidate_engine.build(
+                evaluation.theme,
+                "T1",
+                market_snapshot,
+                now,
+                source_ref=source_ref,
+            )
+            added.extend(candidate_engine.write(tickets, now))
+        invalidated.extend(candidate_engine.invalidate(evaluation.theme, market_snapshot, now))
+    return added, invalidated
 
 
 # ─────────────────────────────────────────────────────
@@ -534,83 +628,71 @@ def load_ph_state(today: str, detectors: dict[str, PageHinkley]) -> int:
 # ─────────────────────────────────────────────────────
 # Main loop
 # ─────────────────────────────────────────────────────
-def main_tick(now: datetime, today: str, wl: Whitelist,
+def main_tick(now: datetime, today: str, wl: ThemeGraph | Whitelist,
               detectors: dict[str, PageHinkley],
               state: dict):
-    """主 tick。state 持有跨 tick 的可变状态（consecutive_failures、tick_count）。"""
+    """主 tick。detectors 参数仅为旧调用兼容，v2 触发由 ThemeSignal 负责。"""
     if not in_session(now):
         return
-    rows = fetch_anomaly_all(now)
+    fetched_rows = fetch_anomaly_all(now)
     pool = fetch_zt_pool(today)
-    if not rows and not pool:
+    if fetched_rows:
+        anomaly_events.insert_events(DB, today, now, fetched_rows, raw_dir=RAW_DIR)
+    rows = anomaly_events.read_new_events(DB, "theme-loop", today)
+    if not fetched_rows and not pool and not rows:
         state["consecutive_failures"] += 1
         if state["consecutive_failures"] == 5 and PUSH_LEVEL != "shadow":
             push_one(f"⚠️ theme_loop 数据源连续 5 tick 失联 · {now.strftime('%H:%M')}", source="theme-loop")
-        return
-    state["consecutive_failures"] = 0
-    append_raw(now, rows)
+    else:
+        state["consecutive_failures"] = 0
     snapshot_zt_pool(now, today, pool, wl)
 
-    # 聚合事件到题材
-    events_by_concept = defaultdict(int)
-    seen_concepts = set()
-    for sym, code, name, t, info in rows:
-        concept = map_to_concept(code, name, info, wl)
-        if not concept:
-            continue
-        events_by_concept[concept] += 1
-        seen_concepts.add(concept)
+    graph = wl if isinstance(wl, ThemeGraph) else ThemeGraph(WHITELIST, db_path=DB)
+    snapshot_service = state.get("snapshot_service")
+    if snapshot_service is None:
+        snapshot_service = MarketSnapshot(DB, graph)
+        state["snapshot_service"] = snapshot_service
+    signal_engine = state.get("signal_engine")
+    if signal_engine is None:
+        signal_engine = ThemeSignal(DB)
+        state["signal_engine"] = signal_engine
+    candidate_engine = state.get("candidate_engine")
+    if candidate_engine is None:
+        candidate_engine = ThemeCandidateEngine(DB, graph)
+        state["candidate_engine"] = candidate_engine
 
-    # 喂 PH：每 tick 喂一次"该题材本 tick 事件计数"
-    # 这样空窗 tick 喂 0 衰减，热点 tick 喂 N 累积
-    for tag in seen_concepts:
-        if tag not in detectors:
-            detectors[tag] = PageHinkley()
-    for tag, ph in detectors.items():
-        ph.update(float(events_by_concept.get(tag, 0)))
-
-    # PH 状态持久化节流（每 5 tick 一次）
-    state["tick_count"] = state.get("tick_count", 0) + 1
-    if state["tick_count"] % SAVE_PH_EVERY_N_TICKS == 0:
-        save_ph_state(today, detectors, now)
-
-    # 学习期：只喂数据，不触发
-    if now.time() < LEARNING_END:
-        return
-
-    # 评估触发：所有 detector 都要查（P2-3 修复 — 不只看 seen_concepts，
-    # 否则 T1 后该题材静默几 tick 就永远等不到 T2）
-    for tag in list(detectors.keys()):
-        ph = detectors[tag]
-        signals = check_signals(today, tag, now, ph)
-        ph_hit = signals["PH"]
-        cluster_hit = signals["cluster3"]
-
-        # T1
-        if ph_hit and cluster_hit and not already_logged(today, tag, "T1"):
-            sid = log_emergence(today, tag, "T1", signals, ph, now)
-            try:
-                push_t1_card(tag, signals, now)
-            except Exception:
-                log.exception("T1 推送失败: %s", tag)
-            log.info("T1 触发 · %s · cluster=%d", tag, signals["cluster_count"])
-            continue
-
-        # T2
-        t1_at = t1_triggered_at(today, tag)
-        if t1_at and (now - t1_at).total_seconds() >= T2_PERSISTENCE_MIN * 60:
-            bool_sigs = [signals["PH"], signals["cluster3"],
-                         signals["first_seal_1030"], signals["second_board"]]
-            if sum(bool_sigs) >= T2_MIN_SIGNALS and not already_logged(today, tag, "T2"):
-                sid = log_emergence(today, tag, "T2", signals, ph, now)
-                cands = pick_candidates(today, tag, signals, now)
-                if cands:
-                    write_watchlist_dynamic(today, tag, cands, sid, now)
-                try:
-                    push_t2_card(tag, signals, cands, now)
-                except Exception:
-                    log.exception("T2 推送失败: %s", tag)
-                log.info("T2 触发 · %s · 候选 %d 只", tag, len(cands))
+    market_snapshot = snapshot_service.capture(now)
+    events_by_theme = recent_theme_events(now, wl)
+    limit_up_counts = latest_limit_up_counts(today)
+    evaluations, transitions = signal_engine.evaluate(
+        now,
+        market_snapshot,
+        events_by_theme,
+        limit_up_counts=limit_up_counts,
+    )
+    state["latest_market_snapshot"] = market_snapshot
+    state["latest_evaluations"] = evaluations
+    added, invalidated = handle_candidate_transitions(
+        candidate_engine,
+        transitions,
+        evaluations,
+        market_snapshot,
+        now,
+    )
+    state["latest_candidates_added"] = added
+    state["latest_candidates_invalidated"] = invalidated
+    handle_state_transitions(signal_engine, transitions, now, limit_up_counts)
+    for transition in transitions:
+        log.info(
+            "%s · %s · score=%.0f",
+            transition["event_type"],
+            transition["theme"],
+            transition["score"],
+        )
+    if added or invalidated:
+        log.info("候选新增 %d / 失效 %d", len(added), len(invalidated))
+    if rows:
+        anomaly_events.advance_cursor(DB, "theme-loop", today, rows[-1]["id"])
 
 
 def main():
@@ -628,9 +710,9 @@ def main():
 
     wl = load_whitelist()
     detectors: dict[str, PageHinkley] = {}
-    state = {"consecutive_failures": 0, "tick_count": 0}
+    state = {"consecutive_failures": 0}
     today = datetime.now().strftime("%Y-%m-%d")
-    load_ph_state(today, detectors)
+    anomaly_events.ensure_schema(DB)
     log.warning("theme_emergence_loop 启动 · interval=%ds · push_level=%s · 题材=%d",
                 args.interval, PUSH_LEVEL, len(wl))
 
@@ -650,7 +732,6 @@ def main():
             log.info("跨日重置：%s → %s", today, cur_date)
             detectors.clear()
             today = cur_date
-            state["tick_count"] = 0
         try:
             main_tick(now, today, wl, detectors, state)
         except Exception:
