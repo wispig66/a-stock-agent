@@ -8,9 +8,9 @@
 
 请不要在公开 issue 中粘贴以下内容：
 
-- Telegram bot token
 - 飞书/Lark app secret
-- 私人 chat id
+- 个人微信 iLink token
+- 私人 chat id、open id、微信 peer id
 - 持仓、账户金额或交易日志
 - SQLite 数据库或生成的运行态文件
 - 含凭证的日志
@@ -23,7 +23,7 @@
 
 ```bash
 git status --short
-git grep -n -I -E 'TG_BOT_TOKEN=[0-9]{6,}:[A-Za-z0-9_-]{20,}|FEISHU_APP_SECRET=[A-Za-z0-9_-]{20,}|Authorization:[[:space:]]+Bearer[[:space:]]+[A-Za-z0-9._-]{20,}' -- . ':!uv.lock' ':!README.md' ':!SECURITY.md'
+git grep -n -I -E 'FEISHU_APP_SECRET=[A-Za-z0-9_-]{20,}|WEIXIN_TOKEN=[^[:space:]]{20,}|Authorization:[[:space:]]+Bearer[[:space:]]+[A-Za-z0-9._:@-]{20,}' -- . ':!uv.lock' ':!README.md' ':!SECURITY.md'
 ```
 
 如果 token 曾经出现在日志、终端输出、截图、聊天记录或提交历史里，请直接轮换。

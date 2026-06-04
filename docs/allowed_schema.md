@@ -104,4 +104,4 @@ print(json.dumps(allowed, ensure_ascii=False, indent=2))
 print("=== /ALLOWED ===")
 ```
 
-tg_listener 提卡前从 subprocess stdout 抽这一段反序列化，传给 validate_card。
+统一 `push.py` 在推送前读取这段 ALLOWED 数据，反序列化后传给 validate_card。

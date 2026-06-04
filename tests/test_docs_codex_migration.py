@@ -95,8 +95,49 @@ def test_codex_runbook_documents_local_runtime_deploy():
             "~/Library/LaunchAgents/",
             "scripts/doctor_codex_runtime.sh",
             "scripts/disable_legacy_llm_launchd.sh",
+            "scripts/start_gateway.sh",
+            "com.user.stockchannelgateway",
         ],
         label="Codex automation runbook",
+    )
+    assert_contains_none(
+        text,
+        [
+            "Telegram bot token",
+            "push Telegram",
+            "api.telegram.org",
+            "com.user.stocktglistener",
+        ],
+        label="Codex automation runbook current IM docs",
+    )
+
+
+def test_im_gateway_runbook_documents_feishu_weixin_runtime():
+    readme = read("README.md")
+    runbook = read("docs/im_gateway.md")
+
+    assert_contains_all(
+        readme,
+        ["docs/im_gateway.md", "CHANNELS_ENABLED=feishu,weixin", "scripts/configure_weixin.py"],
+        label="README IM gateway section",
+    )
+    assert_contains_all(
+        runbook,
+        [
+            "CHANNELS_ENABLED=feishu,weixin",
+            "CHANNELS_NOTIFY=feishu,weixin",
+            "WEIXIN_HOME_CHANNEL",
+            "channel_outbox",
+            "channel_outbound_log",
+            "com.user.stockchannelgateway",
+            "notify test",
+        ],
+        label="IM gateway runbook",
+    )
+    assert_contains_none(
+        runbook,
+        ["Telegram listener", "tg_listener", "stocktglistener"],
+        label="IM gateway runbook",
     )
 
 

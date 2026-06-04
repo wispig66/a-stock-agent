@@ -20,13 +20,11 @@
 
 ## 切换 enforce 操作
 
-当前默认策略仍是 `warn`：`push.py` 和 `tg_listener.py` 在 env 不设时都会默认
-`warn`。当前还没有一条可执行命令能把所有 Codex automation short LLM jobs
-切到 `enforce`；切换前需要先实现并选定项目级策略：
+当前短时 LLM jobs 通过 `.agents/skills/stock-premarket/scripts/push.py` 推送。Codex automation prompt 已要求 `CARD_VALIDATOR_MODE=enforce`，如果 env 不设，`push.py` 仍会按 source 对 scheduled jobs 走 enforce 默认策略。切换或回滚时只需要维护这条统一 push 路径，不再维护旧入站 listener。
 
 - 在 Codex automation prompt 里明确期望 `CARD_VALIDATOR_MODE=enforce`
-- 新增 runtime config，让 `push.py` 读取统一配置
-- 等 Codex automation 支持环境配置后，再通过 automation env 注入
+- 确认所有 scheduled skills 都通过统一 `push.py` 路径推送
+- 重新安装 automation，让本机 `~/.codex/automations/` 里的 prompt 生效
 
 完成策略实现后，再重新安装 automation 并做 doctor 检查：
 
@@ -39,16 +37,13 @@ bash scripts/doctor_codex_runtime.sh
 
 `short LLM` jobs 由 `Codex automation` 触发，不再通过 short-job launchd plist
 注入环境变量。盘前、盘中、盘后、周报这类短时 LLM 调度应在 Codex automation
-侧落实 enforce 策略；在未完成项目级策略前，它们继续依赖 `push.py` 的默认
-`warn` 行为。
+侧落实 enforce 策略。当前 `push.py` 会对 scheduled sources 默认 enforce。
 
 旧 short-job launchd plist 不再保存在仓库里；它们不是 active job，不要重新安装为当前调度入口。
 
 ### launchd daemon
 
-长时 `launchd daemon` 仍可通过 shell 脚本里的 `CARD_VALIDATOR_MODE` 控制，例如
-`tg_listener`、`anomaly_loop`。如果要让这些 daemon 进入 `enforce`，更新对应
-启动脚本中的环境变量后，重启服务使配置生效。
+长时 `launchd daemon` 仍可通过 shell 脚本里的 `CARD_VALIDATOR_MODE` 控制，例如 `anomaly_loop`、`watch_loop` 和 `theme_emergence_loop`。如果要让这些 daemon 进入 `enforce`，更新对应启动脚本中的环境变量后，重启服务使配置生效。
 
 ## 切完 enforce 后的预期
 
@@ -59,12 +54,12 @@ bash scripts/doctor_codex_runtime.sh
 
 ## 紧急回滚
 
-当前可执行回滚只适用于长时 launchd daemon：把相关 shell 脚本里的
-`CARD_VALIDATOR_MODE=enforce` 改回 `warn`，然后重启对应服务。
+当前可执行回滚分两类。短时 Codex automation 回滚时，调整 prompt 或环境后重装 automation；长时 launchd daemon 回滚时，把相关 shell 脚本里的 `CARD_VALIDATOR_MODE=enforce` 改回 `warn`，然后重启对应服务。
 
 ```bash
 sed -i '' 's/CARD_VALIDATOR_MODE=enforce/CARD_VALIDATOR_MODE=warn/' bin/run_*.sh
-launchctl kickstart -k gui/$(id -u)/com.user.stocktglistener
+bash scripts/install_codex_automations.sh
+bash scripts/doctor_codex_runtime.sh
 ```
 
 如果未来为 Codex automation short LLM jobs 落地了 runtime config 或 automation
@@ -78,7 +73,6 @@ bash scripts/doctor_codex_runtime.sh
 ## 模式判定逻辑代码位置
 
 - `stock_codex/market/card_validator.py` — validate_card() 不感知模式，只返回 violations
-- `.agents/skills/stock-premarket/scripts/push.py` — `_validate()` 读 env
-- `scripts/tg_listener.py` — `_validate_card_for_push()` 读 env
+- `.agents/skills/stock-premarket/scripts/push.py` — `_validate()` 读 env，并按 scheduled source 设置默认策略
 
-env 不设时默认 `warn`（push.py 和 tg_listener.py 各自的 default）。
+env 不设时，`push.py` 对 scheduled source 默认 enforce，对手工 source 默认 warn。

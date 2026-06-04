@@ -19,18 +19,21 @@ cd /path/to/a-stock-agent
 
 uv sync --group dev
 cp .env.example .env
-# 编辑 .env，填 Telegram bot token / chat_id 等运行参数
+# 编辑 .env，填飞书和微信 iLink 等 IM 运行参数
 
+mkdir -p data
 sqlite3 data/daily.db < stock_codex/schema/init_db.sql
+uv run --no-sync python scripts/migrate_channels.py
 uv run python -m stock_codex.tools.refresh_calendar
 
 bash scripts/sync_codex_skills.sh
 bash scripts/install_codex_automations.sh
 bash scripts/install_runtime_services.sh
+bash scripts/start_gateway.sh
 bash scripts/doctor_codex_runtime.sh
 ```
 
-`scripts/install_codex_automations.sh` 只负责短时 LLM jobs；`scripts/install_runtime_services.sh` 负责长时 launchd daemon。
+`scripts/install_codex_automations.sh` 只负责短时 LLM jobs；`scripts/install_runtime_services.sh` 负责长时 launchd daemon。IM gateway 由 `scripts/start_gateway.sh` 启动，macOS 下会注册为 `com.user.stockchannelgateway`。
 
 ## Active Codex Jobs
 
@@ -38,7 +41,7 @@ bash scripts/doctor_codex_runtime.sh
 
 | Job ID | Schedule | Task |
 |---|---:|---|
-| `stock-premarket` | Mon-Fri 08:00 | Run `stock-premarket` and push Telegram |
+| `stock-premarket` | Mon-Fri 08:00 | Run `stock-premarket` and push through IM gateway |
 | `stock-intraday-09-30` | Mon-Fri 09:30 | Run `stock-intraday` current-time branch |
 | `stock-intraday-09-45` | Mon-Fri 09:45 | Run `stock-intraday` current-time branch |
 | `stock-intraday-11-30` | Mon-Fri 11:30 | Run `stock-intraday` current-time branch |
@@ -59,9 +62,9 @@ Codex 在本机保存 automation 文件的位置：
 - `com.user.stockwatchloop`
 - `com.user.stockanomalyloop`
 - `com.user.stockthemeloop`
-- `com.user.stocktglistener` if explicitly enabled
+- `com.user.stockchannelgateway`
 
-这些任务是盘中常驻进程或长时间轮询，不是短时 LLM jobs。保留在 launchd 可以避免让 Codex agent 从 09:25 到 15:00 持续运行。
+这些任务是盘中常驻进程或长时间轮询，不是短时 LLM jobs。保留在 launchd 可以避免让 Codex agent 从 09:25 到 15:00 持续运行。`stockchannelgateway` 需要常驻，因为微信出站依赖 listener 持有的 iLink 连接和 outbox drain。
 
 ## Legacy short LLM launchd
 
@@ -85,4 +88,4 @@ uv run pytest tests/test_docs_codex_migration.py tests/test_codex_runtime_script
 - Codex automations 位于本机 `~/.codex/automations/`。
 - 长时 daemon label 仍由 launchd 管理：`com.user.stockwatchloop`、`com.user.stockanomalyloop`、`com.user.stockthemeloop`。
 - legacy short LLM jobs 不应被重新安装为 active launchd jobs。
-- `doctor_codex_runtime.sh` 会在不发送 Telegram 消息的前提下检查 `api.telegram.org`、东财和同花顺域名解析，以及到 Telegram API 的 HTTPS 连通性；如果这里失败，当天盘前/盘中推送大概率也会失败或降级。
+- `doctor_codex_runtime.sh` 不发送真实 IM 消息，只检查本机依赖、Codex automation 配置、飞书网络入口和 A 股数据源域名。完整 IM 推送验证单独运行 `uv run --no-sync python -m stock_codex.infra.notify test`。
