@@ -86,16 +86,28 @@ def test_message_id_falls_back_to_hash_when_no_server_id():
 
 
 def test_send_payload_echoes_context_token():
-    payload = _adapter().send_payload("u1@im.wechat", "卡片正文", context_token="CTX-123")
+    # client_id pinned so the shape is deterministic; production generates one.
+    payload = _adapter().send_payload(
+        "u1@im.wechat", "卡片正文", context_token="CTX-123", client_id="cid-1"
+    )
     assert payload == {
         "msg": {
+            "from_user_id": "",
             "to_user_id": "u1@im.wechat",
+            "client_id": "cid-1",
             "message_type": 2,
             "message_state": 2,
             "context_token": "CTX-123",
             "item_list": [{"type": 1, "text_item": {"text": "卡片正文"}}],
-        }
+        },
+        "base_info": {"channel_version": "1.0.2"},
     }
+
+
+def test_send_payload_generates_client_id_and_base_info():
+    payload = _adapter().send_payload("u1@im.wechat", "hi", context_token="CTX")
+    assert payload["msg"]["client_id"].startswith("wechat-ilink-")
+    assert payload["base_info"] == {"channel_version": "1.0.2"}
 
 
 def test_auth_headers_carry_bearer_token():

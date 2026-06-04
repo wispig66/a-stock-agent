@@ -92,15 +92,34 @@ class WeixinAdapter:
     def getupdates_payload(self, buf: str = "") -> dict[str, Any]:
         return {"get_updates_buf": buf, "base_info": {"channel_version": CHANNEL_VERSION}}
 
-    def send_payload(self, to_user_id: str, text: str, *, context_token: str) -> dict[str, Any]:
+    @staticmethod
+    def new_client_id() -> str:
+        # Outbound dedupe id the relay expects on every send (mirrors the
+        # reference client's ``wechat-ilink-<rand>``).
+        return "wechat-ilink-" + secrets.token_hex(12)
+
+    def send_payload(
+        self,
+        to_user_id: str,
+        text: str,
+        *,
+        context_token: str,
+        client_id: str | None = None,
+    ) -> dict[str, Any]:
+        # The iLink relay silently drops sends missing ``base_info`` or
+        # ``client_id`` (200 + empty ``{}``, no error). ``from_user_id`` is
+        # echoed empty per the reference client; routing is by context_token.
         return {
             "msg": {
+                "from_user_id": "",
                 "to_user_id": to_user_id,
+                "client_id": client_id or self.new_client_id(),
                 "message_type": _MSG_FROM_BOT,
                 "message_state": _STATE_FINISH,
                 "context_token": context_token or "",
                 "item_list": [{"type": _ITEM_TEXT, "text_item": {"text": text}}],
-            }
+            },
+            "base_info": {"channel_version": CHANNEL_VERSION},
         }
 
     @staticmethod
