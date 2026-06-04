@@ -2,7 +2,7 @@
 
 基于可配置多 Agent 自动化调度的本地 A 股短线研究 Agent。
 
-它把「盘前计划、盘中纪律、盘后复盘、周复盘、异动监控、随时问答」拆成一组可审计的 Codex skill：先由确定性脚本拉取行情、题材、消息和持仓数据，形成 fact pack；再由 Codex/LLM 生成交易研究卡片；最后通过飞书 / 个人微信推送给用户。
+它把「盘前计划、盘中纪律、盘后复盘、周复盘、异动监控、随时问答」拆成一组可审计的 skill：先由确定性脚本拉取行情、题材、消息和持仓数据，形成 fact pack；再由 AI agent 生成交易研究卡片；最后通过飞书 / 个人微信推送给用户。
 
 > 本项目只做研究、记录和提醒，不自动下单，不连接券商，不承诺收益。所有交易决策和实际下单都由使用者自行完成。
 
@@ -40,13 +40,13 @@
 
 ## 核心定位
 
-A Stock Agent 不是普通行情脚本，也不是聊天机器人。它的核心是一个本机运行的 **Codex Agent 工作流**：
+A Stock Agent 不是普通行情脚本，也不是聊天机器人。它的核心是一个本机运行的 **AI Agent 工作流**：
 
 ```text
-Codex automation 到点触发
+自动化调度到点触发（支持 Codex / Claude Code / Cline / OpenClaw / Hermes 等）
   -> 运行对应 stock-* skill
   -> skill 调用确定性脚本生成 fact pack
-  -> Codex/LLM 基于 fact pack 写研究卡片
+  -> AI agent 基于 fact pack 写研究卡片
   -> card validator 校验关键数据来源
   -> 飞书 / 微信推送
   -> SQLite 留痕，供后续复盘和下一轮分析使用
@@ -58,25 +58,25 @@ Codex automation 到点触发
 launchd 运行长时 daemon
   -> watch_loop / anomaly_loop / theme_emergence_loop
   -> 命中阈值后直接推送或写入上下文
-  -> Codex skill 在固定时点读取这些上下文做综合判断
+  -> stock-* skill 在固定时点读取这些上下文做综合判断
 ```
 
 这个设计的目标是：让 LLM 做它擅长的叙事、归因和决策整理，让确定性脚本负责数据抓取、状态记录、去重、校验和推送。
 
 ## 架构和流程
 
-运行时分成三层：Codex skills 负责研究任务，确定性 Python 模块负责数据和校验，IM gateway 负责用户入口和推送。SQLite 是中间状态和审计日志，不把关键状态藏在聊天上下文里。
+运行时分成三层：stock-* skills 负责研究任务，确定性 Python 模块负责数据和校验，IM gateway 负责用户入口和推送。SQLite 是中间状态和审计日志，不把关键状态藏在聊天上下文里。
 
 ```mermaid
 flowchart LR
     User["用户<br/>飞书 / 微信"] --> Gateway["IM gateway<br/>channel_listener.py"]
     Gateway --> Router["命令路由<br/>stock-ask / stock-query"]
-    Scheduler["Codex automations"] --> Skills["stock-* skills"]
+    Scheduler["自动化调度<br/>config/jobs.yaml"] --> Skills["stock-* skills"]
     Router --> Skills
 
     Skills --> Scripts["确定性脚本<br/>行情 / 题材 / 消息 / 持仓"]
     Scripts --> FactPack["fact pack<br/>ALLOWED 白名单"]
-    FactPack --> LLM["Codex / LLM<br/>研究卡片"]
+    FactPack --> LLM["AI agent<br/>研究卡片"]
     LLM --> Validator["card validator<br/>enforce 校验"]
     Validator --> Notify["notify.push<br/>飞书 / 微信"]
     Notify --> User
@@ -86,15 +86,15 @@ flowchart LR
     Gateway --> DB
 ```
 
-每天的固定任务由 Codex automations 触发，盘中长轮询交给 launchd daemon。这样做是为了让 LLM 只在需要归因和整理时运行，行情轮询、阈值判断和日志记录都留给可重复执行的脚本。
+每天的固定任务由自动化调度触发（`config/jobs.yaml` 定义，支持多种 AI agent），盘中长轮询交给 launchd daemon。这样做是为了让 LLM 只在需要归因和整理时运行，行情轮询、阈值判断和日志记录都留给可重复执行的脚本。
 
 ```mermaid
 sequenceDiagram
-    participant Auto as Codex automations
+    participant Auto as 自动化调度
     participant Skill as stock-* skill
     participant Data as 数据脚本
     participant DB as SQLite
-    participant LLM as Codex / LLM
+    participant LLM as AI agent
     participant Push as 飞书 / 微信
     participant Daemon as launchd daemon
 
@@ -129,9 +129,9 @@ sequenceDiagram
 ## 适合谁
 
 - 你已经在做 A 股短线研究，希望把盘前、盘中、盘后流程固定下来。
-- 你希望 Codex 到点自动生成研究卡片，而不是每天手动整理行情和消息。
+- 你希望 AI agent 到点自动生成研究卡片，而不是每天手动整理行情和消息。
 - 你希望通过飞书 / 微信随时问单股、题材、事件，但数据和记录仍保存在本机。
-- 你能接受本项目需要本机环境、IM 机器人、Codex 和数据源共同稳定运行。
+- 你能接受本项目需要本机环境、IM 机器人、AI agent CLI 和数据源共同稳定运行。
 
 不适合：
 
@@ -226,13 +226,13 @@ bash scripts/doctor_codex_runtime.sh
 | 依赖 | 说明 |
 |------|------|
 | macOS | 当前主要支持的运行环境；launchd 调度按 macOS 设计。 |
-| Codex | 用于执行 `stock-*` skills 和 Codex automations。 |
+| AI agent CLI | 至少安装一种：Codex（默认）/ Claude Code / Cline / OpenClaw / Hermes / OpenCode / KimiCode。 |
 | Python 3.11/3.12 | 由 `uv` 管理。 |
 | SQLite | 保存本地运行状态和审计日志。 |
 | 飞书 bot | 默认 IM 入口和推送通道；使用官方 WebSocket SDK，不需要公网 webhook。 |
 | 个人微信 iLink | 当前启用的第二通道；扫码登录、仅 1v1，定时推送 best-effort。 |
 
-如果只是开发或跑单元测试，Codex 和 IM 凭证不是必须的；如果要完整跑自动化研究流程，Codex、IM 通道和本机常驻环境都需要配置好。
+如果只是开发或跑单元测试，AI agent CLI 和 IM 凭证不是必须的；如果要完整跑自动化研究流程，AI agent CLI、IM 通道和本机常驻环境都需要配置好。
 
 ## 手动安装
 
@@ -398,7 +398,7 @@ sqlite3 data/daily.db "SELECT channel, success, source FROM channel_outbound_log
 ## 项目结构
 
 ```text
-.agents/skills/          Codex skill 定义：盘前、盘中、盘后、周复盘、异动、问答
+.agents/skills/          skill 定义：盘前、盘中、盘后、周复盘、异动、问答
 stock_codex/             Python 包
   apps/                  runtime 入口
   channels/              飞书 / 微信 gateway adapter
@@ -419,7 +419,7 @@ docs/                    运行手册和设计文档
 # 快速安装/启动
 bash scripts/quickstart.sh
 
-# 安装 Codex automations 和 launchd daemon
+# 安装自动化调度和 launchd daemon
 bash scripts/quickstart.sh --install-schedule
 
 # 诊断本机运行环境
@@ -469,7 +469,7 @@ uv run --no-sync pytest -q
 
 贡献方向：
 
-- Codex skill contract 和 fact pack 质量。
+- skill contract 和 fact pack 质量。
 - 数据源字段变更适配和降级策略。
 - 飞书 / 微信 gateway 稳定性。
 - 更多 IM adapter。
