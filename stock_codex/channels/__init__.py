@@ -13,11 +13,12 @@ from stock_codex.channels.core import (
     Delivery,
     FeishuAdapter,
     MockAdapter,
-    TelegramAdapter,
     get_default_gateway,
     load_env_file,
     reset_default_gateway_for_tests,
 )
+from stock_codex.channels.wecom import WeComAdapter
+from stock_codex.channels.weixin import WeixinAdapter
 
 __all__ = [
     "Capabilities",
@@ -27,8 +28,9 @@ __all__ = [
     "ChannelMessage",
     "Delivery",
     "FeishuAdapter",
+    "WeComAdapter",
+    "WeixinAdapter",
     "MockAdapter",
-    "TelegramAdapter",
     "get_default_gateway",
     "load_env_file",
     "reset_default_gateway_for_tests",

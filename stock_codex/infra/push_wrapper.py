@@ -108,7 +108,7 @@ def strip_machine_blocks(text: str) -> str:
 
 
 def split_chunks(text: str) -> list[str]:
-    """Split by paragraphs first to avoid hard-cutting Telegram messages."""
+    """Split by paragraphs first to avoid hard-cutting IM messages."""
     if len(text) <= CHUNK_LIMIT:
         return [text]
     chunks: list[str] = []
@@ -170,5 +170,5 @@ def push_text(text: str, *, source: str = "stock-premarket", notify_blocked: boo
 
 
 def push_one(text: str, *, source: str = "stock-premarket", notify_blocked: bool = False) -> dict:
-    """Compatibility helper for callers that expect one Telegram response dict."""
+    """Compatibility helper for callers that expect one IM response dict."""
     return push_text(text, source=source, notify_blocked=notify_blocked)[0]

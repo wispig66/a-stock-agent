@@ -2,7 +2,7 @@
 
 基于 Codex skills 和 Codex automations 的本地 A 股短线研究 Agent。
 
-它把「盘前计划、盘中纪律、盘后复盘、周复盘、异动监控、随时问答」拆成一组可审计的 Codex skill：先由确定性脚本拉取行情、题材、消息和持仓数据，形成 fact pack；再由 Codex/LLM 生成交易研究卡片；最后通过 Telegram 或飞书推送给用户。
+它把「盘前计划、盘中纪律、盘后复盘、周复盘、异动监控、随时问答」拆成一组可审计的 Codex skill：先由确定性脚本拉取行情、题材、消息和持仓数据，形成 fact pack；再由 Codex/LLM 生成交易研究卡片；最后通过飞书 / 个人微信推送给用户。
 
 > 本项目只做研究、记录和提醒，不自动下单，不连接券商，不承诺收益。所有交易决策和实际下单都由使用者自行完成。
 
@@ -17,8 +17,7 @@
 
 当前项目处于 **个人本地运行 / 早期开源** 阶段：
 
-- Telegram 是默认稳定通道。
-- 飞书已支持 WebSocket 接入，仍建议先灰度使用。
+- 飞书和个人微信 iLink 是当前运行通道；飞书使用官方 WebSocket 长连，个人微信扫码登录、仅 1v1。
 - Codex automations 是完整自动化流程的核心依赖。
 - macOS 是主要支持环境；Linux 可运行部分 Python 逻辑，但 launchd 调度不适用。
 
@@ -47,7 +46,7 @@ Codex automation 到点触发
   -> skill 调用确定性脚本生成 fact pack
   -> Codex/LLM 基于 fact pack 写研究卡片
   -> card validator 校验关键数据来源
-  -> Telegram / 飞书推送
+  -> 飞书 / 微信推送
   -> SQLite 留痕，供后续复盘和下一轮分析使用
 ```
 
@@ -68,7 +67,7 @@ launchd 运行长时 daemon
 
 ```mermaid
 flowchart LR
-    User["用户<br/>Telegram / 飞书"] --> Gateway["IM gateway<br/>channel_listener.py"]
+    User["用户<br/>飞书 / 微信"] --> Gateway["IM gateway<br/>channel_listener.py"]
     Gateway --> Router["命令路由<br/>stock-ask / stock-query"]
     Scheduler["Codex automations"] --> Skills["stock-* skills"]
     Router --> Skills
@@ -77,7 +76,7 @@ flowchart LR
     Scripts --> FactPack["fact pack<br/>ALLOWED 白名单"]
     FactPack --> LLM["Codex / LLM<br/>研究卡片"]
     LLM --> Validator["card validator<br/>enforce 校验"]
-    Validator --> Notify["notify.push<br/>Telegram / 飞书"]
+    Validator --> Notify["notify.push<br/>飞书 / 微信"]
     Notify --> User
 
     Scripts --> DB[(SQLite)]
@@ -94,7 +93,7 @@ sequenceDiagram
     participant Data as 数据脚本
     participant DB as SQLite
     participant LLM as Codex / LLM
-    participant Push as Telegram / 飞书
+    participant Push as 飞书 / 微信
     participant Daemon as launchd daemon
 
     Auto->>Skill: 到点触发盘前/盘中/盘后/周复盘
@@ -129,7 +128,7 @@ sequenceDiagram
 
 - 你已经在做 A 股短线研究，希望把盘前、盘中、盘后流程固定下来。
 - 你希望 Codex 到点自动生成研究卡片，而不是每天手动整理行情和消息。
-- 你希望通过 Telegram 或飞书随时问单股、题材、事件，但数据和记录仍保存在本机。
+- 你希望通过飞书 / 微信随时问单股、题材、事件，但数据和记录仍保存在本机。
 - 你能接受本项目需要本机环境、IM 机器人、Codex 和数据源共同稳定运行。
 
 不适合：
@@ -149,12 +148,12 @@ sequenceDiagram
 | 异动汇总 | `stock-anomaly` | 把盘中异动日志聚类成“新方向是否冒头”的叙事卡片。 |
 | 单股分析 | `stock-query` | 输入 6 位代码或股票名，输出买入/观察/回避或持仓处理建议。 |
 | 随时分析 | `stock-ask` | 输入题材、事件或自由问题，自动路由到单股、板块或事件卡。 |
-| IM 网关 | `channel_listener.py` | 统一处理 Telegram long polling 和飞书 WebSocket 入站消息。 |
+| IM 网关 | `channel_listener.py` | 统一处理飞书 WebSocket、微信 iLink 长轮询入站消息，连接绑定型通道经 outbox 出站。 |
 | 本地审计 | SQLite | 记录入站命令、出站推送、决策票、运行状态和历史复盘。 |
 
 ## 三分钟快速开始
 
-新用户建议先跑 IM 问答模式，把本地依赖、数据库、Telegram 配置和 IM 网关跑起来：
+新用户建议先跑 IM 问答模式，把本地依赖、数据库、飞书配置和 IM 网关跑起来：
 
 ```bash
 git clone https://github.com/wispig66/a-stock-agent.git
@@ -162,9 +161,9 @@ cd a-stock-agent
 bash scripts/quickstart.sh
 ```
 
-脚本会检查或安装 `uv`，同步 Python 依赖，初始化 SQLite，创建 `.env`，引导你填写 Telegram Bot Token 和 Chat ID，设置 Telegram 菜单，并启动统一 IM gateway。
+脚本会检查或安装 `uv`，同步 Python 依赖，初始化 SQLite，创建 `.env`，写入飞书等通道默认配置，并启动统一 IM gateway。飞书凭证可在安装后运行 `scripts/configure_feishu.py` 写入。
 
-这一步只代表 **随时问答入口可用**。启动成功后，你可以在 Telegram 里发送：
+这一步只代表 **随时问答入口可用**。启动成功后，你可以在飞书私聊机器人发送：
 
 ```text
 /help
@@ -184,8 +183,8 @@ bash scripts/quickstart.sh --with-feishu
 # 安装后跑测试
 bash scripts/quickstart.sh --test
 
-# 非交互安装，适合脚本化部署
-TG_BOT_TOKEN=xxx TG_CHAT_ID=yyy bash scripts/quickstart.sh
+# 非交互安装，适合脚本化部署（飞书凭证先写好 .env）
+FEISHU_APP_ID=xxx FEISHU_APP_SECRET=yyy bash scripts/quickstart.sh
 ```
 
 ## 完整自动化运行
@@ -218,10 +217,10 @@ bash scripts/doctor_codex_runtime.sh
 | Codex | 用于执行 `stock-*` skills 和 Codex automations。 |
 | Python 3.11/3.12 | 由 `uv` 管理。 |
 | SQLite | 保存本地运行状态和审计日志。 |
-| Telegram bot | 默认 IM 入口和推送通道。 |
-| 飞书 bot | 可选；使用官方 WebSocket SDK，不需要公网 webhook。 |
+| 飞书 bot | 默认 IM 入口和推送通道；使用官方 WebSocket SDK，不需要公网 webhook。 |
+| 个人微信 iLink | 当前启用的第二通道；扫码登录、仅 1v1，定时推送 best-effort。 |
 
-如果只是开发或跑单元测试，Codex 和 IM token 不是必须的；如果要完整跑自动化研究流程，Codex、Telegram 和本机常驻环境都需要配置好。
+如果只是开发或跑单元测试，Codex 和 IM 凭证不是必须的；如果要完整跑自动化研究流程，Codex、IM 通道和本机常驻环境都需要配置好。
 
 ## 手动安装
 
@@ -241,26 +240,27 @@ uv run --no-sync python -m stock_codex.tools.refresh_calendar
 编辑 `.env`，至少填入：
 
 ```dotenv
-TG_BOT_TOKEN=
-TG_CHAT_ID=
-CHANNEL_DEFAULT=telegram
-CHANNELS_ENABLED=telegram
-CHANNELS_NOTIFY=telegram
+CHANNEL_DEFAULT=feishu
+CHANNELS_ENABLED=feishu,weixin
+CHANNELS_NOTIFY=feishu,weixin
+FEISHU_ENABLED=1
+FEISHU_APP_ID=
+FEISHU_APP_SECRET=
 ```
 
 启动 IM gateway：
 
 ```bash
-bash scripts/start_tg_listener.sh
+bash scripts/start_gateway.sh
 ```
 
 停止：
 
 ```bash
-bash scripts/stop_tg_listener.sh
+pkill -f stock_codex.apps.channel_listener
 ```
 
-`start_tg_listener.sh` 是历史兼容名称；当前实际启动的是统一 IM gateway：`scripts/channel_listener.py`。
+`start_gateway.sh` 后台运行 `stock_codex.apps.channel_listener`：按 `CHANNELS_ENABLED` 启动各通道 listener 和 outbox drain。
 
 ## 调度
 
@@ -278,32 +278,14 @@ bash scripts/stop_tg_listener.sh
 | launchd 运行长时 daemon | 观察池/持仓轮询 | `com.user.stockwatchloop` |
 | launchd 运行长时 daemon | 全市场异动监控 | `com.user.stockanomalyloop` |
 | launchd 运行长时 daemon | 题材冒头监控 | `com.user.stockthemeloop` |
-| launchd 运行长时 daemon | 可选 IM gateway 常驻 | `com.user.stocktglistener` |
 
-注意：如果仓库放在 `~/Desktop` 等受 macOS TCC 保护的目录，launchd 后台进程可能无法正常读取当前目录。更推荐放在 `~/code/a-stock-agent`，或者用 `bash scripts/start_tg_listener.sh` 在交互式终端里启动 IM gateway。
+IM gateway 监听进程不走 launchd，用 `bash scripts/start_gateway.sh` 在交互式终端常驻（连接绑定型通道的出站发送依赖它持有的连接）。
+
+注意：如果仓库放在 `~/Desktop` 等受 macOS TCC 保护的目录，launchd 后台进程可能无法正常读取当前目录。更推荐放在 `~/code/a-stock-agent`，或者用 `bash scripts/start_gateway.sh` 在交互式终端里启动 IM gateway。
 
 ## IM 接入
 
-### Telegram
-
-1. 在 Telegram 找到 `@BotFather`。
-2. 创建 bot，拿到 `TG_BOT_TOKEN`。
-3. 给 bot 发一条消息，或把 bot 拉进群。
-4. 获取 `TG_CHAT_ID`。
-5. 写入 `.env`。
-6. 运行：
-
-```bash
-uv run --no-sync python scripts/set_tg_commands.py
-bash scripts/start_tg_listener.sh
-```
-
-如果出现 `409 Conflict`，通常说明同一个 bot token 有两个进程在同时 long polling。先停旧进程，再重新启动：
-
-```bash
-bash scripts/stop_tg_listener.sh
-bash scripts/start_tg_listener.sh
-```
+当前版本只启用飞书和个人微信（`CHANNELS_ENABLED=feishu,weixin`）。连接绑定型通道（微信）的出站经 outbox 由监听进程发送，因此 `start_gateway.sh` 需常驻。
 
 ### 飞书
 
@@ -316,8 +298,8 @@ uv run --no-sync python scripts/configure_feishu.py
 最小配置：
 
 ```dotenv
-CHANNELS_ENABLED=telegram,feishu
-CHANNELS_NOTIFY=telegram,feishu
+CHANNELS_ENABLED=feishu
+CHANNELS_NOTIFY=feishu
 FEISHU_ENABLED=1
 FEISHU_APP_ID=
 FEISHU_APP_SECRET=
@@ -325,6 +307,7 @@ FEISHU_HOME_CHANNEL=
 FEISHU_ALLOWED_CHAT_IDS=
 FEISHU_CONNECTION_MODE=websocket
 FEISHU_REQUIRE_MENTION=true
+FEISHU_CARD=true
 ```
 
 飞书开放平台建议开启：
@@ -344,6 +327,18 @@ FEISHU_REQUIRE_MENTION=true
 | 单股分析 | `query` | 提示用户发送代码或股票名 |
 | 随时分析 | `ask` | 提示用户使用 `/ask` |
 
+`FEISHU_CARD=true` 时，markdown 推送会渲染成带彩色标题的交互卡片（看涨绿 / 看跌红 / 中性蓝）。
+
+### 个人微信（iLink）
+
+腾讯官方 iLink Bot（`ilinkai.weixin.qq.com`），扫码登录、仅 1v1（进不了普通群）。定时推送依赖 per-peer context_token 的新鲜度，属 best-effort，不建议作为主推送通道。
+
+```bash
+uv run --no-sync python scripts/configure_weixin.py
+```
+
+向导会请求登录二维码、等你扫码确认，并把 `WEIXIN_TOKEN` / `WEIXIN_BASE_URL` 写入 `.env`。启用后先在微信里给机器人私聊一条消息建立 context_token。
+
 ## 数据可信度和校验
 
 项目要求研究卡片里的关键事实来自 fact pack，而不是模型凭印象编写。
@@ -361,7 +356,7 @@ FEISHU_REQUIRE_MENTION=true
 .agents/skills/          Codex skill 定义：盘前、盘中、盘后、周复盘、异动、问答
 stock_codex/             Python 包
   apps/                  runtime 入口
-  channels/              Telegram / 飞书 gateway adapter
+  channels/              飞书 / 微信 gateway adapter
   domain/                交易日历、持仓、风控、决策票
   infra/                 SQLite、日志、通知
   market/                行情、题材、事件、卡片校验
@@ -386,8 +381,8 @@ bash scripts/quickstart.sh --install-schedule
 bash scripts/doctor_codex_runtime.sh
 
 # 启动/停止 IM gateway
-bash scripts/start_tg_listener.sh
-bash scripts/stop_tg_listener.sh
+bash scripts/start_gateway.sh
+pkill -f stock_codex.apps.channel_listener
 
 # 配置飞书
 uv run --no-sync python scripts/configure_feishu.py
@@ -428,7 +423,7 @@ uv run --no-sync pytest -q
 
 - Codex skill contract 和 fact pack 质量。
 - 数据源字段变更适配和降级策略。
-- Telegram/飞书 gateway 稳定性。
+- 飞书 / 微信 gateway 稳定性。
 - 更多 IM adapter。
 - 卡片校验、复盘记录、风险提示和文档体验。
 

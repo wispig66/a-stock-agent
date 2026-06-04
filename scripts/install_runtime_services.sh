@@ -2,8 +2,7 @@
 # 安装长时非 LLM runtime 服务。
 #
 # 用法：从仓库根目录跑 `bash scripts/install_runtime_services.sh`
-# 默认只安装长时循环服务；如需同时安装 TG listener：
-#   ENABLE_TG_LISTENER_LAUNCHD=1 bash scripts/install_runtime_services.sh
+# 默认只安装长时循环服务；IM gateway 单独用 scripts/start_gateway.sh 启动。
 # 盘面动态 worker 在题材发现 V2 验收通过前保持关闭；显式启用：
 #   ENABLE_MARKET_DYNAMIC_LAUNCHD=1 bash scripts/install_runtime_services.sh
 
@@ -23,11 +22,6 @@ TEMPLATES=(
 if [ "${ENABLE_MARKET_DYNAMIC_LAUNCHD:-0}" = "1" ]; then
     TEMPLATES+=("launchd/com.user.stockmarketdynamic.plist")
 fi
-
-if [ "${ENABLE_TG_LISTENER_LAUNCHD:-0}" = "1" ]; then
-    TEMPLATES+=("launchd/disabled/com.user.stocktglistener.plist")
-fi
-
 RENDERED_DIR=""
 
 preflight() {

@@ -6,20 +6,20 @@ from stock_codex.apps import channel_listener
 from stock_codex.channels import FeishuAdapter
 
 
-def test_enabled_channels_defaults_to_telegram(monkeypatch):
+def test_enabled_channels_defaults_to_feishu(monkeypatch):
     monkeypatch.setattr(channel_listener, "load_env_file", lambda: None)
     monkeypatch.delenv("CHANNELS_ENABLED", raising=False)
     monkeypatch.delenv("CHANNEL_DEFAULT", raising=False)
     monkeypatch.delenv("FEISHU_ENABLED", raising=False)
 
-    assert channel_listener.enabled_channels() == {"telegram"}
+    assert channel_listener.enabled_channels() == {"feishu"}
 
 
 def test_enabled_channels_parses_env(monkeypatch):
     monkeypatch.setattr(channel_listener, "load_env_file", lambda: None)
-    monkeypatch.setenv("CHANNELS_ENABLED", "telegram, feishu")
+    monkeypatch.setenv("CHANNELS_ENABLED", "feishu, weixin")
 
-    assert channel_listener.enabled_channels() == {"telegram", "feishu"}
+    assert channel_listener.enabled_channels() == {"feishu", "weixin"}
 
 
 def test_feishu_message_from_sdk_event_converts_to_channel_message():
@@ -139,7 +139,7 @@ def test_gateway_runtime_submit_is_non_blocking_and_serial_per_chat(tmp_path, mo
     def fake_handle(message):
         calls.append(message.message_id)
 
-    monkeypatch.setattr(channel_listener.tg_listener, "handle_channel_message", fake_handle)
+    monkeypatch.setattr(channel_listener.command_router, "handle_channel_message", fake_handle)
     runtime = channel_listener.GatewayRuntime(
         policy=channel_listener.FeishuPolicy(
             allowed_chat_ids=frozenset({"oc_1"}),
@@ -159,7 +159,7 @@ def test_gateway_runtime_submit_is_non_blocking_and_serial_per_chat(tmp_path, mo
 
 def test_gateway_runtime_dedupes_before_worker(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(channel_listener.tg_listener, "handle_channel_message", lambda message: calls.append(message))
+    monkeypatch.setattr(channel_listener.command_router, "handle_channel_message", lambda message: calls.append(message))
     runtime = channel_listener.GatewayRuntime(
         policy=channel_listener.FeishuPolicy(
             allowed_chat_ids=frozenset({"oc_1"}),
@@ -177,24 +177,82 @@ def test_gateway_runtime_dedupes_before_worker(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_main_routes_telegram_through_gateway_runtime(monkeypatch):
+def test_main_routes_enabled_channel_through_gateway_runtime(monkeypatch):
     calls = []
 
     class FakeRuntime:
+        _running = False
+
         def start(self, *, channels):
             calls.append(("start", channels))
 
-    monkeypatch.setattr(channel_listener, "enabled_channels", lambda: {"telegram"})
+    monkeypatch.setattr(channel_listener, "enabled_channels", lambda: {"feishu"})
     monkeypatch.setattr(channel_listener, "_acquire_gateway_lock", lambda: object())
     monkeypatch.setattr(channel_listener, "GatewayRuntime", lambda: FakeRuntime())
-    monkeypatch.setattr(channel_listener, "run_telegram_poll", lambda *, runtime: calls.append(("telegram", runtime)))
-    monkeypatch.setattr(channel_listener.tg_listener, "main", lambda: calls.append(("legacy", None)))
+    monkeypatch.setattr(channel_listener, "run_feishu_ws", lambda *, runtime: calls.append(("feishu", runtime)))
 
     channel_listener.main()
 
-    assert calls[0] == ("start", {"telegram"})
-    assert calls[1][0] == "telegram"
-    assert ("legacy", None) not in calls
+    assert calls[0] == ("start", {"feishu"})
+    assert calls[-1][0] == "feishu"
+
+
+def test_main_marks_failed_listener_error_without_crashing_other_channels(monkeypatch):
+    calls = []
+
+    class FakeRuntime:
+        _running = True
+
+        def start(self, *, channels):
+            calls.append(("start", channels))
+
+        def write_state(self, **patch):
+            calls.append(("state", patch))
+            if (patch.get("adapters") or {}).get("weixin") == "error":
+                self._running = False
+
+    def fail_weixin(*, runtime):
+        raise RuntimeError("WEIXIN_TOKEN 未配置")
+
+    monkeypatch.setattr(channel_listener, "enabled_channels", lambda: {"feishu", "weixin"})
+    monkeypatch.setattr(channel_listener, "_acquire_gateway_lock", lambda: object())
+    monkeypatch.setattr(channel_listener, "GatewayRuntime", lambda: FakeRuntime())
+    monkeypatch.setattr(channel_listener, "run_feishu_ws", lambda *, runtime: calls.append(("feishu", runtime)))
+    monkeypatch.setattr(channel_listener, "run_weixin_listener", fail_weixin)
+
+    channel_listener.main()
+
+    assert calls[0] == ("start", {"feishu", "weixin"})
+    assert any(call[0] == "feishu" for call in calls)
+    assert any(
+        call == ("state", {"adapters": {"weixin": "error"}, "last_error": "WEIXIN_TOKEN 未配置"})
+        for call in calls
+    )
+
+
+def test_dispatch_message_dedups_and_enqueues(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(channel_listener.command_router, "handle_channel_message",
+                        lambda message: calls.append(message.message_id))
+    runtime = channel_listener.GatewayRuntime(
+        deduper=channel_listener.PersistentDeduper(tmp_path / "seen.json"),
+        state_file=tmp_path / "state.json",
+    )
+    msg = channel_listener.ChannelMessage(
+        channel="weixin", account_id="bot1", conversation_id="u1",
+        sender_id="u1", message_id="m1", event_id="m1", text="600519",
+    )
+
+    assert channel_listener._dispatch_message(runtime, msg) is True
+    assert channel_listener._dispatch_message(runtime, msg) is False  # duplicate
+    runtime._queues["u1"].join()
+
+    assert calls == ["m1"]
+
+
+def test_weixin_listed_in_listener_dispatch():
+    assert "weixin" in channel_listener._listener_dispatch()
+    assert "wecom" not in channel_listener._listener_dispatch()
 
 
 def test_gateway_runtime_start_writes_json_state(tmp_path):
@@ -208,9 +266,9 @@ def test_gateway_runtime_start_writes_json_state(tmp_path):
         state_file=tmp_path / "state.json",
     )
 
-    runtime.start(channels={"telegram"})
+    runtime.start(channels={"weixin"})
 
-    assert '"channels": [\n    "telegram"\n  ]' in (tmp_path / "state.json").read_text()
+    assert '"channels": [\n    "weixin"\n  ]' in (tmp_path / "state.json").read_text()
 
 
 def test_feishu_menu_texts_cover_recommended_event_keys():

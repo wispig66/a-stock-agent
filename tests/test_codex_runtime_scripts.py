@@ -73,7 +73,7 @@ def make_runtime_project(tmp_path: Path) -> Path:
         check=True,
     )
     (project / "data" / "trade_calendar.csv").write_text("cal_date,is_open\n20260519,1\n", encoding="utf-8")
-    (project / ".env").write_text("TG_BOT_TOKEN=test-token\nTG_CHAT_ID=test-chat\n", encoding="utf-8")
+    (project / ".env").write_text("FEISHU_APP_ID=test-app\nFEISHU_APP_SECRET=test-secret\n", encoding="utf-8")
     return project
 
 
@@ -110,7 +110,7 @@ def test_quickstart_installs_initializes_and_starts_gateway() -> None:
         [
             "bash scripts/quickstart.sh",
             "三分钟快速开始",
-            "Telegram Bot Token",
+            "飞书",
         ],
         label="README quickstart",
     )
@@ -120,8 +120,7 @@ def test_quickstart_installs_initializes_and_starts_gateway() -> None:
             "uv sync --group dev",
             "stock_codex/schema/init_db.sql",
             "scripts/migrate_channels.py",
-            "scripts/set_tg_commands.py",
-            "scripts/start_tg_listener.sh",
+            "scripts/start_gateway.sh",
             "--install-schedule",
             "--with-feishu",
         ],
@@ -130,9 +129,9 @@ def test_quickstart_installs_initializes_and_starts_gateway() -> None:
     assert_contains_none(
         script,
         [
-            "TG_BOT_TOKEN=$TG_BOT_TOKEN",
-            "echo $TG_BOT_TOKEN",
-            "echo \"$TG_BOT_TOKEN\"",
+            "scripts/set_tg_commands.py",
+            "scripts/start_tg_listener.sh",
+            "TG_BOT_TOKEN",
         ],
         label="scripts/quickstart.sh",
     )
@@ -187,7 +186,6 @@ exit 0
         "com.user.stockthemeloop",
     ]
 
-
 def test_runtime_services_installer_bootstraps_market_dynamic_only_when_opted_in(tmp_path) -> None:
     env = base_env(tmp_path)
     log = tmp_path / "launchctl.log"
@@ -218,50 +216,13 @@ exit 0
     assert "com.user.stockmarketdynamic.plist" in launchctl_log
 
 
-def test_runtime_services_installer_renders_tg_listener_home_from_environment(tmp_path) -> None:
-    env = base_env(tmp_path)
-    log = tmp_path / "launchctl.log"
-    env["LAUNCHCTL_LOG"] = str(log)
-    env["ENABLE_TG_LISTENER_LAUNCHD"] = "1"
-    write_executable(
-        tmp_path / "bin" / "launchctl",
-        """#!/usr/bin/env bash
-echo "$@" >> "$LAUNCHCTL_LOG"
-if [ "${1:-}" = "print" ]; then
-    exit 1
-fi
-exit 0
-""",
-    )
-
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "install_runtime_services.sh")],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    rendered = (
-        Path(env["HOME"])
-        / "Library"
-        / "LaunchAgents"
-        / "com.user.stocktglistener.plist"
-    ).read_text(encoding="utf-8")
-    assert "{{HOME}}" not in rendered
-    assert f"<string>{env['HOME']}</string>" in rendered
-    assert "<string>/Users/wispig</string>" not in rendered
-
-
 def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
     script = read_script("scripts/doctor_codex_runtime.sh")
 
     assert_contains_all(
         script,
         [
-            "TG_BOT_TOKEN",
+            "FEISHU_APP_ID",
             ".agents/skills",
             "stock-premarket",
             "stock-intraday",
@@ -277,13 +238,12 @@ def test_runtime_doctor_checks_without_sending_real_telegram_push() -> None:
             "command -v uv",
             "command -v sqlite3",
             "DNS_REQUIRED_HOSTS",
-            "api.telegram.org",
+            "open.feishu.cn",
             "push2ex.eastmoney.com",
             "q.10jqka.com.cn",
             "check_network_readiness",
-            "check_https_reachable \"https://api.telegram.org\"",
+            "check_https_reachable \"https://open.feishu.cn\"",
             "STOCK_DOCTOR_SKIP_NETWORK",
-            "409 Conflict",
             ".agents/skills/$skill/SKILL.md",
             "sqlite_master",
             "tomllib",
@@ -361,7 +321,7 @@ def test_runtime_doctor_executes_readiness_checks_without_real_push(tmp_path) ->
     )
 
     assert result.returncode == 0, result.stderr
-    assert "TG_BOT_TOKEN" in result.stdout
+    assert "FEISHU_APP_ID" in result.stdout
     assert "skill stock-premarket exists" in result.stdout
     assert "daily.db push_log table exists" in result.stdout
     assert "automation stock-premarket cwd ok" in result.stdout
@@ -375,12 +335,12 @@ def test_runtime_doctor_executes_readiness_checks_without_real_push(tmp_path) ->
 @pytest.mark.parametrize(
     ("env_text", "expected_error"),
     [
-        ("", "TG_BOT_TOKEN missing or empty in .env"),
-        ("TG_BOT_TOKEN=test-token\n", "TG_CHAT_ID missing or empty in .env"),
-        ("TG_BOT_TOKEN=\nTG_CHAT_ID=test-chat\n", "TG_BOT_TOKEN missing or empty in .env"),
-        ('TG_BOT_TOKEN=""\nTG_CHAT_ID=test-chat\n', "TG_BOT_TOKEN missing or empty in .env"),
-        ("TG_BOT_TOKEN=''\nTG_CHAT_ID=test-chat\n", "TG_BOT_TOKEN missing or empty in .env"),
-        ('TG_BOT_TOKEN=test-token\nTG_CHAT_ID=""\n', "TG_CHAT_ID missing or empty in .env"),
+        ("", "FEISHU_APP_ID missing or empty in .env"),
+        ("FEISHU_APP_ID=test-app\n", "FEISHU_APP_SECRET missing or empty in .env"),
+        ("FEISHU_APP_ID=\nFEISHU_APP_SECRET=test-secret\n", "FEISHU_APP_ID missing or empty in .env"),
+        ('FEISHU_APP_ID=""\nFEISHU_APP_SECRET=test-secret\n', "FEISHU_APP_ID missing or empty in .env"),
+        ("FEISHU_APP_ID=''\nFEISHU_APP_SECRET=test-secret\n", "FEISHU_APP_ID missing or empty in .env"),
+        ('FEISHU_APP_ID=test-app\nFEISHU_APP_SECRET=""\n', "FEISHU_APP_SECRET missing or empty in .env"),
     ],
 )
 def test_runtime_doctor_fails_when_required_env_values_are_missing_or_empty(
@@ -428,7 +388,7 @@ def test_runtime_doctor_fails_when_env_file_is_missing(tmp_path) -> None:
     )
 
     assert result.returncode != 0
-    assert ".env missing; TG_BOT_TOKEN is required" in result.stderr
+    assert ".env missing; FEISHU_APP_ID is required" in result.stderr
 
 
 def test_runtime_doctor_fails_when_legacy_short_launchd_is_loaded(tmp_path) -> None:

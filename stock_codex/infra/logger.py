@@ -3,7 +3,7 @@
 用法：
     from stock_codex.infra.logger import get_logger, new_req_id, set_req_id, run_subprocess
 
-    log = get_logger("tg_listener")
+    log = get_logger("command_router")
     log.info("启动")
     try:
         ...
@@ -43,7 +43,7 @@ _in_tg_handler = False  # 防递归
 
 
 def _redact_secrets(text: str) -> str:
-    for key in ("TG_BOT_TOKEN", "FEISHU_APP_SECRET"):
+    for key in ("FEISHU_APP_SECRET", "WEIXIN_TOKEN"):
         secret = os.environ.get(key)
         if secret:
             text = text.replace(secret, "<redacted>")

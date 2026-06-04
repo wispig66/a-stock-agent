@@ -1,6 +1,6 @@
 ---
 name: stock-market-dynamic
-description: A 股事件驱动盘面动态卡。由 market_commentary_loop 合并题材状态迁移、轮动、降温和动态候选事件后调用，基于共享市场快照写一张完整盘面叙事卡并推送 Telegram。
+description: A 股事件驱动盘面动态卡。由 market_commentary_loop 合并题材状态迁移、轮动、降温和动态候选事件后调用，基于共享市场快照写一张完整盘面叙事卡并推送 IM。
 metadata:
   type: skill
 ---

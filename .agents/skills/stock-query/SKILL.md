@@ -5,7 +5,7 @@ description: 单股深度分析。给定一个 A 股代码（主板/创业板）
 
 # stock-query · 单股决策助手
 
-**调用方**：`scripts/tg_listener.py` 通过 `codex exec` headless 触发；也可被 stock-ask 通过 Skill 工具转发。
+**调用方**：`stock_codex.apps.command_router` 通过 `codex exec` headless 触发；也可被 stock-ask 通过 Skill 工具转发。
 **入参**：prompt 文本中以 `code=600519 mode=fresh` 形式传入。
 
 # 工作流（按序，不跳）

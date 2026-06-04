@@ -79,7 +79,7 @@ Use the $skill skill in this repository.
 Required behavior:
 1. Run the $skill workflow from the current repository checkout.
 2. Produce the expected output: $expected_output.
-3. Use the unified push.py path for any Telegram delivery required by the skill.
+3. Use the unified push.py path for any IM delivery required by the skill.
 4. Invoke push.py with CARD_VALIDATOR_MODE=enforce. If validation fails, fix the card and retry; do not send a card while validation is only warning.
 5. Keep the work unattended; do not ask the user to run commands or provide context that the repository already contains.
 
@@ -148,43 +148,43 @@ write_automation \
     "stock-premarket" \
     "stock premarket" \
     "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0" \
-    "$(skill_prompt "stock-premarket" "today's A-share premarket trading plan, decision_tickets, and Telegram card" "the premarket run")"
+    "$(skill_prompt "stock-premarket" "today's A-share premarket trading plan, decision_tickets, and IM card" "the premarket run")"
 
 write_automation \
     "stock-intraday-09-30" \
     "stock intraday 09:30" \
     "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=30" \
-    "$(skill_prompt "stock-intraday" "the 09:30 intraday discipline reminder and Telegram card" "the 09:30 intraday run")"
+    "$(skill_prompt "stock-intraday" "the 09:30 intraday discipline reminder and IM card" "the 09:30 intraday run")"
 
 write_automation \
     "stock-intraday-09-45" \
     "stock intraday 09:45" \
     "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=45" \
-    "$(skill_prompt "stock-intraday" "the 09:45 intraday follow-up and Telegram card" "the 09:45 intraday run")"
+    "$(skill_prompt "stock-intraday" "the 09:45 intraday follow-up and IM card" "the 09:45 intraday run")"
 
 write_automation \
     "stock-intraday-11-30" \
     "stock intraday 11:30" \
     "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=11;BYMINUTE=30" \
-    "$(skill_prompt "stock-intraday" "the midday intraday review and Telegram card" "the 11:30 intraday run")"
+    "$(skill_prompt "stock-intraday" "the midday intraday review and IM card" "the 11:30 intraday run")"
 
 write_automation \
     "stock-intraday-14-30" \
     "stock intraday 14:30" \
     "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=14;BYMINUTE=30" \
-    "$(skill_prompt "stock-intraday" "the 14:30 late-session snapshot and Telegram card, not a post-close review" "the 14:30 intraday run")"
+    "$(skill_prompt "stock-intraday" "the 14:30 late-session snapshot and IM card, not a post-close review" "the 14:30 intraday run")"
 
 write_automation \
     "stock-postmarket" \
     "stock postmarket" \
     "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=15;BYMINUTE=35" \
-    "$(skill_prompt "stock-postmarket" "today's A-share postmarket review, tomorrow plan, and Telegram card" "the postmarket run")"
+    "$(skill_prompt "stock-postmarket" "today's A-share postmarket review, tomorrow plan, and IM card" "the postmarket run")"
 
 write_automation \
     "stock-weekly-review" \
     "stock weekly review" \
     "FREQ=WEEKLY;INTERVAL=1;BYDAY=SU;BYHOUR=21;BYMINUTE=0" \
-    "$(skill_prompt "stock-weekly" "the weekly long-form review and Telegram card" "the weekly review run")"
+    "$(skill_prompt "stock-weekly" "the weekly long-form review and IM card" "the weekly review run")"
 
 echo
 echo "Installed Codex automations under $AUTOMATIONS_DIR"

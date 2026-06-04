@@ -1,8 +1,9 @@
 """Unified IM gateway listener.
 
-Telegram remains the stable production path. Feishu is handled by a small
-gateway runtime that keeps SDK callbacks non-blocking and processes each chat
-serially.
+Feishu (WebSocket) and WeChat iLink (long-poll) each have a listener here. A
+shared GatewayRuntime keeps callbacks non-blocking and processes each chat
+serially; connection-bound channels (weixin) send outbound through the outbox
+drain thread.
 """
 from __future__ import annotations
 
@@ -18,8 +19,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from stock_codex.apps import tg_listener
+from stock_codex.apps import command_router
 from stock_codex.channels import ChannelMessage, FeishuAdapter, get_default_gateway, load_env_file
+from stock_codex.channels.outbox import run_outbox_drain
 from stock_codex.infra.logger import get_logger
 from stock_codex.paths import DATA_DIR
 
@@ -29,8 +31,8 @@ GATEWAY_LOCK_FILE = DATA_DIR / "channel_gateway.lock"
 GATEWAY_STATE_FILE = DATA_DIR / "channel_gateway_state.json"
 FEISHU_DEDUP_FILE = DATA_DIR / "feishu_seen_message_ids.json"
 FEISHU_MENU_TEXTS = {
-    "help": tg_listener.HELP_TEXT,
-    "menu_help": tg_listener.HELP_TEXT,
+    "help": command_router.HELP_TEXT,
+    "menu_help": command_router.HELP_TEXT,
     "query": "直接发送 6 位股票代码或股票名称，例如：600519 或 贵州茅台。",
     "menu_query": "直接发送 6 位股票代码或股票名称，例如：600519 或 贵州茅台。",
     "ask": "发送 /ask <问题> 或 /ask+ <问题>，例如：/ask 光伏怎么样。",
@@ -45,7 +47,7 @@ def enabled_channels() -> set[str]:
         return {x.strip() for x in raw.split(",") if x.strip()}
     if os.environ.get("FEISHU_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
         return {"feishu"}
-    return {os.environ.get("CHANNEL_DEFAULT", "telegram").strip() or "telegram"}
+    return {os.environ.get("CHANNEL_DEFAULT", "feishu").strip() or "feishu"}
 
 
 @dataclass(frozen=True)
@@ -177,7 +179,7 @@ class GatewayRuntime:
                 channel=message.channel,
                 conversation_id=message.conversation_id,
                 message_id=message.message_id,
-                handle=lambda: tg_listener.handle_channel_message(message),
+                handle=lambda: command_router.handle_channel_message(message),
             )
         )
 
@@ -399,7 +401,7 @@ def handle_feishu_menu_event(data: Any, adapter: FeishuAdapter) -> bool:
         return False
     text = FEISHU_MENU_TEXTS.get(event_key)
     if not text:
-        text = f"暂不支持的菜单：{event_key}\n\n{tg_listener.HELP_TEXT}"
+        text = f"暂不支持的菜单：{event_key}\n\n{command_router.HELP_TEXT}"
     target = f"open_id:{open_id}" if open_id else adapter.default_target()
     log.info("Feishu bot menu clicked key=%s target=%s", event_key, "open_id" if open_id else "home")
     get_default_gateway().send_text(
@@ -412,69 +414,228 @@ def handle_feishu_menu_event(data: Any, adapter: FeishuAdapter) -> bool:
     return True
 
 
-def run_telegram_poll(runtime: GatewayRuntime | None = None) -> None:
+def _dispatch_message(runtime: GatewayRuntime, message: ChannelMessage) -> bool:
+    """Dedup + enqueue an inbound message to its per-chat worker.
+
+    Channel-neutral: per-channel authorization is enforced downstream by
+    command_router.handle (_is_allowed_chat). Feishu additionally pre-filters
+    via FeishuPolicy in GatewayRuntime.submit; other channels route here.
+    """
+    if runtime.deduper.seen_or_mark(message.dedupe_key()):
+        log.info("%s inbound duplicate ignored: %s", message.channel, message.dedupe_key())
+        return False
+    return runtime.submit_task(
+        GatewayTask(
+            channel=message.channel,
+            conversation_id=message.conversation_id,
+            message_id=message.message_id,
+            handle=lambda: command_router.handle_channel_message(message),
+        )
+    )
+
+
+def run_wecom_listener(runtime: GatewayRuntime | None = None) -> None:
+    """WeCom 智能机器人长连接：收 aibot_msg_callback、发 aibot_send_msg。
+
+    出站绑定在这条 WS 上，因此连接成功后注册 outbox sender，由 drain 线程消费。
+    重连用指数退避；live 行为需用真实 WECOM_BOT_ID/SECRET 验收。
+    """
+    try:
+        import websocket  # type: ignore  # websocket-client
+    except ImportError as e:
+        raise RuntimeError("WeCom listener requires `uv add websocket-client`") from e
+    from stock_codex.channels.wecom import WeComAdapter, new_req_id
+    from stock_codex.channels.outbox import register_outbox_sender, unregister_outbox_sender
+
     runtime = runtime or GatewayRuntime()
-    _configure_telegram_from_env()
-    if not tg_listener.TG_TOKEN or not tg_listener.ALLOWED_CHAT_ID:
-        log.critical("TG_BOT_TOKEN / ALLOWED_CHAT_ID 未配置，退出")
-        sys.exit(2)
-    _poll_lock = tg_listener._acquire_poll_lock()
-    offset = tg_listener._load_offset()
-    log.info("Telegram poller starting offset=%d", offset)
-    runtime.write_state(adapters={"telegram": "running"}, last_error=None)
-    backoff = 1
-    poll_failures = 0
-    first_failure_at: float | None = None
+    adapter = get_default_gateway().adapter_for("wecom")
+    if not isinstance(adapter, WeComAdapter):
+        raise RuntimeError("configured wecom adapter is not WeComAdapter")
+
+    state: dict[str, Any] = {"ws": None, "attempt": 0}
+    send_lock = threading.Lock()
+
+    def sender(target: str, text: str, fmt: str) -> str:
+        ws = state["ws"]
+        if ws is None:
+            raise RuntimeError("wecom ws not connected")
+        req_id = new_req_id("send")
+        frame = adapter.send_frame(target, text, format=fmt, req_id=req_id)
+        with send_lock:
+            ws.send(json.dumps(frame, ensure_ascii=False))
+        return req_id
+
+    def on_open(ws):
+        state["ws"] = ws
+        state["attempt"] = 0  # healthy connection resets reconnect backoff
+        with send_lock:
+            ws.send(json.dumps(adapter.subscribe_frame(), ensure_ascii=False))
+        register_outbox_sender("wecom", sender)
+        runtime.write_state(adapters={"wecom": "running"}, last_error=None)
+        log.info("WeCom listener subscribed bot=%s", adapter.bot_id)
+
+    def on_message(ws, raw):
+        try:
+            frame = json.loads(raw)
+        except Exception:
+            return
+        if frame.get("cmd") != "aibot_msg_callback":
+            return
+        msg = adapter.normalize_event(frame)
+        if msg is None:
+            return
+        log.info("WeCom inbound chat=%s sender=%s text=%s",
+                 msg.conversation_id, msg.sender_id, msg.text[:80])
+        _dispatch_message(runtime, msg)
+
+    def on_error(ws, err):
+        exc = err if isinstance(err, Exception) else Exception(str(err))
+        runtime.write_state(adapters={"wecom": "error"}, last_error=_safe_error_text(exc))
+        log.warning("WeCom ws error: %s", err)
+
+    def on_close(ws, *_args):
+        state["ws"] = None
+        unregister_outbox_sender("wecom")
+        log.info("WeCom ws closed")
+
+    def heartbeat():
+        while True:
+            time.sleep(30)
+            ws = state["ws"]
+            if ws is None:
+                continue
+            try:
+                with send_lock:
+                    ws.send(json.dumps({"cmd": "ping"}))
+            except Exception:
+                pass
+
+    threading.Thread(target=heartbeat, name="wecom-ping", daemon=True).start()
+    backoffs = [2, 5, 10, 30, 60]
     while True:
         try:
-            updates = tg_listener._get_updates(offset)
-            if poll_failures:
-                downtime = time.monotonic() - (first_failure_at or time.monotonic())
-                log.info("Telegram getUpdates recovered after %d failures, downtime %.1fs",
-                         poll_failures, downtime)
-                poll_failures = 0
-                first_failure_at = None
-            backoff = 1
-            for update in updates:
-                offset = max(offset, update["update_id"] + 1)
-                tg_listener._save_offset(offset)
-                msg = update.get("message") or update.get("edited_message") or {}
-                text = (msg.get("text") or "").strip()
-                chat_id = (msg.get("chat") or {}).get("id")
-                reply_to = (msg.get("reply_to_message") or {}).get("message_id")
-                user_msg_id = msg.get("message_id")
-                if not text or chat_id is None:
-                    continue
-                runtime.submit_task(
-                    GatewayTask(
-                        channel="telegram",
-                        conversation_id=str(chat_id),
-                        message_id=str(update["update_id"]),
-                        handle=lambda text=text, chat_id=chat_id, reply_to=reply_to,
-                        update_id=update["update_id"], user_msg_id=user_msg_id: tg_listener.handle(
-                            text,
-                            chat_id,
-                            reply_to_msg_id=reply_to,
-                            update_id=update_id,
-                            user_msg_id=user_msg_id,
-                        ),
-                    )
+            app = websocket.WebSocketApp(
+                adapter.ws_url,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
+            )
+            app.run_forever()
+        except Exception:
+            log.exception("WeCom ws run_forever crashed")
+        # on_open resets attempt to 0, so a long healthy session reconnects fast.
+        time.sleep(backoffs[min(state["attempt"], len(backoffs) - 1)])
+        state["attempt"] += 1
+
+
+def _load_json_dict(path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items()}
+    except Exception:
+        pass
+    return {}
+
+
+def run_weixin_listener(runtime: GatewayRuntime | None = None) -> None:
+    """个人微信 iLink 长轮询：getupdates 收消息、sendmessage 发消息（回带 context_token）。
+
+    仅 1v1。出站经 outbox：sender 查 per-peer context_token 后调 sendmessage。
+    需先用 scripts/configure_weixin.py 扫码登录写入 WEIXIN_TOKEN/WEIXIN_ACCOUNT_ID。
+    live 行为需真实账号验收。
+    """
+    import requests
+    from stock_codex.channels.weixin import WeixinAdapter
+    from stock_codex.channels.outbox import register_outbox_sender, unregister_outbox_sender
+
+    runtime = runtime or GatewayRuntime()
+    adapter = get_default_gateway().adapter_for("weixin")
+    if not isinstance(adapter, WeixinAdapter):
+        raise RuntimeError("configured weixin adapter is not WeixinAdapter")
+    if not adapter.token:
+        raise RuntimeError("WEIXIN_TOKEN 未配置；先运行 scripts/configure_weixin.py 扫码登录")
+
+    ctx_file = DATA_DIR / "weixin_context_tokens.json"
+    buf_file = DATA_DIR / "weixin_updates_buf.txt"
+    ctx_lock = threading.Lock()
+    ctx_store = _load_json_dict(ctx_file)
+
+    def _save_ctx() -> None:
+        ctx_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = ctx_file.with_suffix(".tmp")
+        with ctx_lock:
+            tmp.write_text(json.dumps(ctx_store, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        tmp.replace(ctx_file)
+
+    def sender(target: str, text: str, fmt: str) -> str:
+        token = ctx_store.get(target, "")
+        body = adapter.send_payload(target, text, context_token=token)
+        r = requests.post(
+            f"{adapter.base_url}/ilink/bot/sendmessage",
+            headers=adapter.auth_headers(), json=body, timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json() if r.content else {}
+        if isinstance(data, dict) and data.get("ret") not in (0, None):
+            raise RuntimeError(f"weixin sendmessage ret={data.get('ret')}")
+        return str(data.get("svr_id") or "") if isinstance(data, dict) else ""
+
+    register_outbox_sender("weixin", sender)
+    runtime.write_state(adapters={"weixin": "running"}, last_error=None)
+    log.info("WeChat iLink listener starting account=%s", adapter.account_id)
+
+    buf = buf_file.read_text(encoding="utf-8").strip() if buf_file.exists() else ""
+    backoff = 1
+    try:
+        while True:
+            try:
+                r = requests.post(
+                    f"{adapter.base_url}/ilink/bot/getupdates",
+                    headers=adapter.auth_headers(),
+                    json=adapter.getupdates_payload(buf), timeout=40,
                 )
-        except Exception as e:
-            poll_failures += 1
-            if first_failure_at is None:
-                first_failure_at = time.monotonic()
-            downtime = time.monotonic() - first_failure_at
-            should_alert = tg_listener._should_alert_poll_failure(poll_failures, downtime)
-            msg = ("Telegram getUpdates failed #%d (%s: %s), backoff %ds"
-                   % (poll_failures, type(e).__name__, _safe_error_text(e)[:200], backoff))
-            runtime.write_state(adapters={"telegram": "error"}, last_error=msg)
-            if should_alert:
-                log.error(msg, exc_info=True)
-            else:
-                log.warning(msg)
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 30)
+                r.raise_for_status()
+                data = r.json()
+                backoff = 1
+                for m in data.get("msgs") or []:
+                    msg = adapter.normalize_event(m)
+                    if msg is None:
+                        continue
+                    token = msg.raw.get("context_token")
+                    if token:
+                        ctx_store[msg.sender_id] = token
+                        _save_ctx()
+                    log.info("WeChat iLink inbound from=%s text=%s", msg.sender_id, msg.text[:80])
+                    _dispatch_message(runtime, msg)
+                new_buf = data.get("get_updates_buf")
+                if new_buf is not None and new_buf != buf:
+                    buf = str(new_buf)
+                    buf_file.parent.mkdir(parents=True, exist_ok=True)
+                    buf_file.write_text(buf, encoding="utf-8")
+            except Exception as e:
+                runtime.write_state(adapters={"weixin": "error"}, last_error=_safe_error_text(e))
+                log.warning("WeChat iLink getupdates failed: %s", _safe_error_text(e)[:200])
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30)
+    finally:
+        unregister_outbox_sender("weixin")
+
+
+def _listener_dispatch() -> dict[str, Callable[..., None]]:
+    """Channel -> inbound listener. Built at call time so tests can monkeypatch
+    the module-level listener functions. Outbound for connection-bound channels
+    flows through the outbox regardless of whether an inbound listener exists."""
+    return {"feishu": run_feishu_ws, "weixin": run_weixin_listener}
+
+
+def _run_listener(channel: str, fn: Callable[..., None], runtime: GatewayRuntime) -> None:
+    try:
+        fn(runtime=runtime)
+    except Exception as e:
+        log.exception("%s listener stopped", channel)
+        runtime.write_state(adapters={channel: "error"}, last_error=_safe_error_text(e))
 
 
 def main() -> None:
@@ -482,15 +643,35 @@ def main() -> None:
     _gateway_lock = _acquire_gateway_lock()
     runtime = GatewayRuntime()
     runtime.start(channels=channels)
-    if "feishu" in channels and "telegram" in channels:
-        t = threading.Thread(target=run_feishu_ws, kwargs={"runtime": runtime}, name="feishu-ws", daemon=True)
-        t.start()
-        run_telegram_poll(runtime=runtime)
+    # Drain the outbox for connection-bound channels (weixin). Idle-cheap
+    # when no such sender is registered; senders appear once their listener connects.
+    drain = threading.Thread(
+        target=run_outbox_drain,
+        kwargs={
+            "logger": get_default_gateway(),
+            "should_stop": lambda: not getattr(runtime, "_running", False),
+        },
+        name="outbox-drain",
+        daemon=True,
+    )
+    drain.start()
+    dispatch = _listener_dispatch()
+    listeners = [(ch, dispatch[ch]) for ch in sorted(channels) if ch in dispatch]
+    if not listeners:
+        log.warning("no inbound listener for channels=%s; outbound still flows via outbox", channels)
+        while getattr(runtime, "_running", False):
+            time.sleep(3600)
         return
-    if "feishu" in channels:
-        run_feishu_ws(runtime=runtime)
-        return
-    run_telegram_poll(runtime=runtime)
+    # Run all but the last listener on background threads; the last blocks main.
+    for channel, fn in listeners[:-1]:
+        threading.Thread(
+            target=_run_listener, args=(channel, fn, runtime),
+            name=f"listener-{channel}", daemon=True,
+        ).start()
+    channel, fn = listeners[-1]
+    _run_listener(channel, fn, runtime)
+    while getattr(runtime, "_running", False):
+        time.sleep(3600)
 
 
 def _acquire_gateway_lock():
@@ -521,14 +702,6 @@ def _env_bool(name: str, *, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _configure_telegram_from_env() -> None:
-    load_env_file()
-    tg_listener.TG_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
-    tg_listener.TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
-    tg_listener.ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID") or tg_listener.TG_CHAT_ID
-    tg_listener.TG_API = f"https://api.telegram.org/bot{tg_listener.TG_TOKEN}"
-
-
 def _message_mentions_bot(message: ChannelMessage, bot_open_id: str | None) -> bool:
     mentions = message.raw.get("mentions") or []
     if not mentions:
@@ -546,7 +719,7 @@ def _message_mentions_bot(message: ChannelMessage, bot_open_id: str | None) -> b
 
 def _safe_error_text(exc: Exception) -> str:
     text = str(exc)
-    for key in ("TG_BOT_TOKEN", "FEISHU_APP_SECRET"):
+    for key in ("FEISHU_APP_SECRET", "WECOM_SECRET", "WEIXIN_TOKEN"):
         secret = os.environ.get(key)
         if secret:
             text = text.replace(secret, "<redacted>")

@@ -1,6 +1,6 @@
 ---
 name: stock-anomaly
-description: A 股全市场异动汇总 + 题材发现。读最近 N 分钟 anomaly_loop 推送（火箭发射/封板/炸板/60日新高），按题材聚类，叠加财联社/同花顺热点新闻，输出叙事卡片 + Telegram 推送。回答"现在场内有什么新方向"、"哪个题材在冒头"、"新主线有没有候选"。中间时段单条异动告警走 daemon 自动推送，不调本 skill。当用户在盘中要求"异动"、"anomaly"、"现在场内"、"新主线"、"什么在涨"、"哪些方向冒头"、"新候选"，或自然语言"A股短线 看看新机会"时调用此 skill。
+description: A 股全市场异动汇总 + 题材发现。读最近 N 分钟 anomaly_loop 推送（火箭发射/封板/炸板/60日新高），按题材聚类，叠加财联社/同花顺热点新闻，输出叙事卡片 + IM 推送。回答"现在场内有什么新方向"、"哪个题材在冒头"、"新主线有没有候选"。中间时段单条异动告警走 daemon 自动推送，不调本 skill。当用户在盘中要求"异动"、"anomaly"、"现在场内"、"新主线"、"什么在涨"、"哪些方向冒头"、"新候选"，或自然语言"A股短线 看看新机会"时调用此 skill。
 metadata:
   type: skill
 ---
@@ -138,7 +138,7 @@ https://www.cls.cn/telegraph
 
 L1 SKILL.md Step 1 已被改为：若 `data/anomaly_findings/<前一交易日>.md` 存在，读进来作为"昨日异动新主线候选"输入，**不**自动加入观察池，但允许 LLM 在题材判断时引用。
 
-**5b · Telegram 推送**
+**5b · IM 推送**
 
 ```bash
 .venv/bin/python .agents/skills/stock-premarket/scripts/push.py \

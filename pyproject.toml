@@ -10,6 +10,9 @@ dependencies = [
     "PyYAML>=6.0",
     "filelock>=3.13",
     "lark-oapi>=1.6.6",
+    "websocket-client>=1.9.0",
+    "qrcode>=8.2",
+    "pillow>=12.2.0",
 ]
 
 [build-system]
@@ -22,7 +25,6 @@ packages = ["stock_codex"]
 [project.scripts]
 stock-ask-pack = "stock_codex.apps.stock_ask_pipeline:main"
 stock-query-pack = "stock_codex.apps.stock_query_pipeline:main"
-stock-tg-listener = "stock_codex.apps.tg_listener:main"
 stock-channel-listener = "stock_codex.apps.channel_listener:main"
 stock-weekly = "stock_codex.apps.weekly_loop:main"
 stock-review = "stock_codex.tools.review:main"

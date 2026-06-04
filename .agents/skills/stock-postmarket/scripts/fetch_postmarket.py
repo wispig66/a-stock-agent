@@ -7,7 +7,7 @@
 3. UPSERT 写 ths_hot_reason（同花顺人工题材标签 + 个股清单）
 4. 渲染 postmarket fact pack md（与 premarket 同一份字典）
 
-LLM 后续读这份 fact pack + 今天的 Telegram 推送做复盘 / 明日预案。
+LLM 后续读这份 fact pack + 今天的 IM 推送做复盘 / 明日预案。
 """
 
 from __future__ import annotations

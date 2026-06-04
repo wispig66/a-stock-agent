@@ -3,7 +3,7 @@
 强制规则：stock skill 卡片里出现的每个数据点都必须能在 fact pack 的 ALLOWED 段
 找到对应字段。见 [[feedback-data-must-be-sourced]] 和 docs/allowed_schema.md。
 
-调用方：scripts/tg_listener.py 在 _tg_edit 推卡前调一次 validate_card()。
+调用方：apps/command_router.py 在推卡前调一次 validate_card()。
 mode=warn 仅打日志不拦截；mode=enforce 失败拒推。
 """
 from __future__ import annotations

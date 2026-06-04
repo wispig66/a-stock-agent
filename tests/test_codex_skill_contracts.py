@@ -14,7 +14,7 @@ SCHEDULED_SKILLS_REQUIRED_TERMS = {
         "非交易日",
         "数据源失败",
         "解禁检查失败",
-        "Telegram 失败",
+        "IM 推送失败",
     ],
     "stock-intraday": [
         "当前系统时间",
@@ -78,4 +78,4 @@ def test_scheduled_skills_separate_cards_from_automation_summary():
         assert "唯一最终 assistant 消息" not in text
         assert "最终 assistant 消息必须是卡片" not in text
         assert "写入文件" in text
-        assert "Telegram 推送" in text
+        assert "IM 推送" in text

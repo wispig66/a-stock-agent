@@ -1,3 +1,10 @@
+"""Channel gateway: adapters + gateway + default-gateway assembly.
+
+Platform-neutral models live in ``base``. Adapter classes execute in this
+module's namespace (tests monkeypatch ``stock_codex.channels.core.requests``).
+New platforms register a builder in ``ADAPTER_BUILDERS`` instead of editing
+``get_default_gateway``.
+"""
 from __future__ import annotations
 
 import json
@@ -5,206 +12,40 @@ import os
 import sqlite3
 import sys
 import time
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable
 
 import requests
 
 from stock_codex.infra.db import connect_close
-from stock_codex.paths import DB_FILE, ENV_FILE
+from stock_codex.paths import DB_FILE
+from stock_codex.channels.base import (
+    Capabilities,
+    ChannelAdapter,
+    ChannelError,
+    ChannelMessage,
+    Delivery,
+    load_env_file,
+    loads_json_object as _loads_json_object,
+)
+from stock_codex.channels.outbox import OutboxStore
 
-
-class ChannelError(RuntimeError):
-    pass
-
-
-@dataclass(frozen=True)
-class Capabilities:
-    send_text: bool = True
-    edit_text: bool = False
-    markdown: bool = False
-    html: bool = False
-    card: bool = False
-    streaming: bool = False
-
-
-@dataclass(frozen=True)
-class ChannelMessage:
-    channel: str
-    account_id: str
-    conversation_id: str
-    sender_id: str
-    message_id: str
-    text: str
-    thread_id: str | None = None
-    event_id: str | None = None
-    raw: dict[str, Any] = field(default_factory=dict)
-
-    def dedupe_key(self) -> str:
-        event = self.event_id or self.message_id
-        return f"{self.channel}:{self.account_id}:{self.conversation_id}:{event}"
-
-    @property
-    def is_direct_message(self) -> bool:
-        return str(self.raw.get("chat_type") or "").lower() in {"p2p", "private", "direct", "dm"}
-
-    @property
-    def is_from_bot(self) -> bool:
-        return bool(self.raw.get("is_bot"))
-
-    def to_satori_dict(self) -> dict[str, Any]:
-        """Return a Satori-shaped projection for future adapter compatibility."""
-        return {
-            "platform": self.channel,
-            "self_id": self.account_id,
-            "channel_id": self.conversation_id,
-            "user_id": self.sender_id,
-            "message_id": self.message_id,
-            "content": self.text,
-            "original": self.raw,
-        }
-
-
-@dataclass(frozen=True)
-class Delivery:
-    channel: str
-    account_id: str
-    conversation_id: str
-    provider_message_id: str
-    thread_id: str | None = None
-    editable: bool = False
-    raw: dict[str, Any] = field(default_factory=dict)
-
-
-class ChannelAdapter(Protocol):
-    channel: str
-    account_id: str
-    capabilities: Capabilities
-
-    def default_target(self) -> str:
-        ...
-
-    def send_text(self, target: str, text: str, *, format: str = "plain") -> Delivery:
-        ...
-
-    def edit_text(self, delivery: Delivery, text: str, *, format: str = "plain") -> bool:
-        ...
-
-
-class TelegramAdapter:
-    channel = "telegram"
-    capabilities = Capabilities(
-        send_text=True,
-        edit_text=True,
-        markdown=False,
-        html=True,
-        card=False,
-        streaming=True,
-    )
-
-    def __init__(
-        self,
-        *,
-        token: str,
-        default_conversation_id: str,
-        account_id: str = "default",
-        api_base: str | None = None,
-        timeout: int = 10,
-    ) -> None:
-        self.token = token
-        self.default_conversation_id = default_conversation_id
-        self.account_id = account_id
-        self.api_base = api_base or f"https://api.telegram.org/bot{token}"
-        self.timeout = timeout
-
-    def default_target(self) -> str:
-        if not self.default_conversation_id:
-            raise ChannelError("Telegram default conversation is not configured")
-        return self.default_conversation_id
-
-    def _safe_error_text(self, error: object) -> str:
-        text = str(error)
-        if self.token:
-            text = text.replace(self.token, "<redacted-token>")
-        return text
-
-    def send_text(self, target: str, text: str, *, format: str = "plain") -> Delivery:
-        if not self.token:
-            raise ChannelError("TG_BOT_TOKEN is not configured")
-        payload: dict[str, Any] = {
-            "chat_id": target,
-            "text": text,
-            "disable_web_page_preview": True,
-        }
-        if format == "html":
-            payload["parse_mode"] = "HTML"
-
-        last_error: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                r = requests.post(f"{self.api_base}/sendMessage", json=payload, timeout=self.timeout)
-                data = r.json()
-                if not data.get("ok"):
-                    raise ChannelError(f"Telegram API failed: {data}")
-                msg_id = str(data["result"]["message_id"])
-                return Delivery(
-                    channel=self.channel,
-                    account_id=self.account_id,
-                    conversation_id=str(target),
-                    provider_message_id=msg_id,
-                    editable=True,
-                    raw=data,
-                )
-            except ChannelError:
-                raise
-            except (requests.RequestException, ValueError) as e:
-                last_error = e
-                if attempt == 3:
-                    break
-                time.sleep(attempt)
-        raise ChannelError(f"Telegram send failed after 3 attempts: {self._safe_error_text(last_error)}")
-
-    def edit_text(self, delivery: Delivery, text: str, *, format: str = "plain") -> bool:
-        payload: dict[str, Any] = {
-            "chat_id": delivery.conversation_id,
-            "message_id": delivery.provider_message_id,
-            "text": text,
-            "disable_web_page_preview": True,
-        }
-        if format == "html":
-            payload["parse_mode"] = "HTML"
-        r = requests.post(f"{self.api_base}/editMessageText", json=payload, timeout=self.timeout)
-        if r.status_code == 400 and format == "html":
-            try:
-                data = r.json()
-            except ValueError:
-                data = {}
-            description = str(data.get("description") or "")
-            if "message is not modified" in description.lower():
-                return True
-            payload.pop("parse_mode", None)
-            r = requests.post(f"{self.api_base}/editMessageText", json=payload, timeout=self.timeout)
-        if r.status_code == 400:
-            try:
-                data = r.json()
-            except ValueError:
-                data = {}
-            description = str(data.get("description") or "")
-            if "message is not modified" in description.lower():
-                return True
-        if r.status_code == 429:
-            try:
-                retry_after = int((r.json().get("parameters") or {}).get("retry_after") or 1)
-            except (TypeError, ValueError):
-                retry_after = 1
-            time.sleep(max(1, min(retry_after, 30)))
-            r = requests.post(f"{self.api_base}/editMessageText", json=payload, timeout=self.timeout)
-        if r.status_code == 200:
-            return True
-        r.raise_for_status()
-        return True
+# Re-exported so `from stock_codex.channels.core import Capabilities` keeps working.
+__all__ = [
+    "Capabilities",
+    "ChannelAdapter",
+    "ChannelError",
+    "ChannelMessage",
+    "Delivery",
+    "FeishuAdapter",
+    "MockAdapter",
+    "ChannelGateway",
+    "ADAPTER_BUILDERS",
+    "get_default_gateway",
+    "load_env_file",
+    "reset_default_gateway_for_tests",
+]
 
 
 class FeishuAdapter:
@@ -228,6 +69,7 @@ class FeishuAdapter:
         account_id: str | None = None,
         api_base: str = "https://open.feishu.cn/open-apis",
         timeout: int = 10,
+        card_enabled: bool = False,
     ) -> None:
         self.app_id = app_id
         self.app_secret = app_secret
@@ -236,6 +78,7 @@ class FeishuAdapter:
         self.account_id = account_id or app_id or "default"
         self.api_base = api_base.rstrip("/")
         self.timeout = timeout
+        self.card_enabled = card_enabled
         self._tenant_token: str | None = None
         self._tenant_token_expires_at = 0.0
 
@@ -313,12 +156,43 @@ class FeishuAdapter:
         return target, self.receive_id_type
 
     def _message_body(self, text: str, *, format: str) -> tuple[str, str]:
-        if format in {"markdown", "lark_md", "interactive"}:
+        if format in {"markdown", "lark_md", "interactive", "card"}:
+            if self.card_enabled:
+                return "interactive", self._render_card(text)
             return "interactive", json.dumps({
                 "config": {"wide_screen_mode": True},
                 "elements": [{"tag": "markdown", "content": text}],
             }, ensure_ascii=False)
         return "text", json.dumps({"text": text}, ensure_ascii=False)
+
+    @staticmethod
+    def _header_color(text: str) -> str:
+        """Bearish -> red, bullish -> green, otherwise blue (Feishu header templates)."""
+        if any(k in text for k in ("止损", "破位", "跳水", "回避", "风险", "拦截", "清仓", "❌", "⚠️", "⌛")):
+            return "red"
+        if any(k in text for k in ("买点", "出手", "加仓", "突破", "主攻", "✅")):
+            return "green"
+        return "blue"
+
+    def _render_card(self, text: str) -> str:
+        """First non-empty line becomes a colored header title; the rest is the
+        markdown body. Keeps the raw text as body if there is only one line."""
+        stripped = text.strip()
+        lines = stripped.split("\n")
+        raw_title = lines[0].strip() if lines else ""
+        # plain_text header: drop markdown emphasis/heading markers.
+        title = raw_title.lstrip("#").replace("**", "").replace("`", "").strip() or "股票助手"
+        body = "\n".join(lines[1:]).strip()
+        elements = [{"tag": "markdown", "content": body if body else stripped}]
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": self._header_color(stripped),
+                "title": {"tag": "plain_text", "content": title[:100]},
+            },
+            "elements": elements,
+        }
+        return json.dumps(card, ensure_ascii=False)
 
     def edit_text(self, delivery: Delivery, text: str, *, format: str = "plain") -> bool:
         return False
@@ -365,20 +239,15 @@ class FeishuAdapter:
         )
 
 
-def _loads_json_object(value: str) -> dict[str, Any]:
-    try:
-        data = json.loads(value)
-    except (TypeError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 class MockAdapter:
     channel = "mock"
     account_id = "test"
 
-    def __init__(self, *, edit_text: bool = True) -> None:
-        self.capabilities = Capabilities(send_text=True, edit_text=edit_text, markdown=True, html=True)
+    def __init__(self, *, edit_text: bool = True, connection_bound: bool = False) -> None:
+        self.capabilities = Capabilities(
+            send_text=True, edit_text=edit_text, markdown=True, html=True,
+            connection_bound=connection_bound,
+        )
         self.sent: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
 
@@ -435,6 +304,12 @@ class ChannelGateway:
     ) -> Delivery:
         adapter = self.adapter_for(channel)
         conversation_id = target or adapter.default_target()
+        if getattr(adapter.capabilities, "connection_bound", False):
+            # Outbound must go through the listener-held connection: enqueue and
+            # let the drain thread send + log when it actually delivers.
+            return self._enqueue_outbound(
+                adapter, conversation_id, text, source=source, format=format
+            )
         try:
             delivery = adapter.send_text(conversation_id, text, format=format)
             self._log_outbound(delivery, source=source, text=text, format=format, success=True, error=None)
@@ -562,6 +437,59 @@ class ChannelGateway:
         except Exception as e:
             print(f"[channels] inbound log finish failed: {e}", file=sys.stderr, flush=True)
 
+    def _enqueue_outbound(
+        self,
+        adapter: ChannelAdapter,
+        conversation_id: str,
+        text: str,
+        *,
+        source: str,
+        format: str,
+    ) -> Delivery:
+        row_id = OutboxStore(self.db_path).enqueue(
+            channel=adapter.channel,
+            target=str(conversation_id),
+            text=text,
+            format=format,
+            account_id=adapter.account_id,
+            source=source,
+        )
+        return Delivery(
+            channel=adapter.channel,
+            account_id=adapter.account_id,
+            conversation_id=str(conversation_id),
+            provider_message_id="",
+            editable=False,
+            raw={"queued": True, "outbox_id": row_id},
+        )
+
+    def record_outbound(
+        self,
+        *,
+        channel: str,
+        account_id: str | None,
+        target: str,
+        provider_msg_id: str,
+        source: str | None,
+        text: str,
+        format: str,
+        success: bool,
+        error: str | None,
+    ) -> None:
+        """Log a delivery completed by the outbox drain to channel_outbound_log."""
+        delivery = Delivery(
+            channel=channel,
+            account_id=account_id or "",
+            conversation_id=str(target),
+            provider_message_id=provider_msg_id,
+            editable=False,
+            raw={},
+        )
+        self._log_outbound(
+            delivery, source=source or "outbox", text=text, format=format,
+            success=success, error=error,
+        )
+
     def _log_outbound(
         self,
         delivery: Delivery,
@@ -605,15 +533,65 @@ class ChannelGateway:
 _DEFAULT_GATEWAY: ChannelGateway | None = None
 
 
-def load_env_file() -> None:
-    if not ENV_FILE.exists():
-        return
-    for line in ENV_FILE.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+def _build_wecom(default_channel: str, enabled: set[str]) -> ChannelAdapter | None:
+    from stock_codex.channels.wecom import WeComAdapter
+
+    bot_id = os.environ.get("WECOM_BOT_ID", "")
+    secret = os.environ.get("WECOM_SECRET", "")
+    home = os.environ.get("WECOM_HOME_CHANNEL", "")
+    if "wecom" in enabled or default_channel == "wecom" or bot_id or secret:
+        return WeComAdapter(
+            bot_id=bot_id,
+            secret=secret,
+            default_conversation_id=home,
+        )
+    return None
+
+
+def _build_weixin(default_channel: str, enabled: set[str]) -> ChannelAdapter | None:
+    from stock_codex.channels.weixin import WeixinAdapter
+
+    account_id = os.environ.get("WEIXIN_ACCOUNT_ID", "")
+    token = os.environ.get("WEIXIN_TOKEN", "")
+    home = os.environ.get("WEIXIN_HOME_CHANNEL", "")
+    if "weixin" in enabled or default_channel == "weixin" or account_id or token:
+        return WeixinAdapter(
+            account_id=account_id,
+            token=token,
+            default_conversation_id=home,
+            base_url=os.environ.get("WEIXIN_BASE_URL", "").strip() or "https://ilinkai.weixin.qq.com",
+        )
+    return None
+
+
+def _build_feishu(default_channel: str, enabled: set[str]) -> ChannelAdapter | None:
+    app_id = os.environ.get("FEISHU_APP_ID", "")
+    app_secret = os.environ.get("FEISHU_APP_SECRET", "")
+    chat_id = os.environ.get("FEISHU_HOME_CHANNEL") or os.environ.get("FEISHU_DEFAULT_CHAT_ID", "")
+    feishu_enabled = os.environ.get("FEISHU_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    if (
+        "feishu" in enabled
+        or feishu_enabled
+        or default_channel == "feishu"
+        or app_id
+        or app_secret
+        or chat_id
+    ):
+        return FeishuAdapter(
+            app_id=app_id,
+            app_secret=app_secret,
+            default_conversation_id=chat_id,
+            card_enabled=os.environ.get("FEISHU_CARD", "").strip().lower() in {"1", "true", "yes", "on"},
+        )
+    return None
+
+
+# Channel name -> builder(default_channel, channels_enabled) -> adapter | None.
+# New platforms register here; get_default_gateway iterates in insertion order.
+ADAPTER_BUILDERS: dict[str, Callable[[str, set[str]], ChannelAdapter | None]] = {
+    "weixin": _build_weixin,
+    "feishu": _build_feishu,
+}
 
 
 def get_default_gateway() -> ChannelGateway:
@@ -621,32 +599,13 @@ def get_default_gateway() -> ChannelGateway:
     if _DEFAULT_GATEWAY is not None:
         return _DEFAULT_GATEWAY
     load_env_file()
-    default_channel = os.environ.get("CHANNEL_DEFAULT", "telegram").strip() or "telegram"
+    default_channel = os.environ.get("CHANNEL_DEFAULT", "feishu").strip() or "feishu"
+    enabled = {c.strip() for c in os.environ.get("CHANNELS_ENABLED", "").split(",") if c.strip()}
     adapters: dict[str, ChannelAdapter] = {}
-    token = os.environ.get("TG_BOT_TOKEN", "")
-    chat_id = os.environ.get("TG_CHAT_ID", "")
-    if token or chat_id or default_channel == "telegram":
-        adapters["telegram"] = TelegramAdapter(token=token, default_conversation_id=chat_id)
-    channels_enabled = {
-        c.strip() for c in os.environ.get("CHANNELS_ENABLED", "").split(",") if c.strip()
-    }
-    feishu_app_id = os.environ.get("FEISHU_APP_ID", "")
-    feishu_app_secret = os.environ.get("FEISHU_APP_SECRET", "")
-    feishu_chat_id = os.environ.get("FEISHU_HOME_CHANNEL") or os.environ.get("FEISHU_DEFAULT_CHAT_ID", "")
-    feishu_enabled = os.environ.get("FEISHU_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
-    if (
-        "feishu" in channels_enabled
-        or feishu_enabled
-        or default_channel == "feishu"
-        or feishu_app_id
-        or feishu_app_secret
-        or feishu_chat_id
-    ):
-        adapters["feishu"] = FeishuAdapter(
-            app_id=feishu_app_id,
-            app_secret=feishu_app_secret,
-            default_conversation_id=feishu_chat_id,
-        )
+    for name, builder in ADAPTER_BUILDERS.items():
+        adapter = builder(default_channel, enabled)
+        if adapter is not None:
+            adapters[name] = adapter
     _DEFAULT_GATEWAY = ChannelGateway(adapters, default_channel=default_channel)
     return _DEFAULT_GATEWAY
 

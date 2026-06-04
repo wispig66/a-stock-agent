@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None):
         if e.notified:
             print("[push] enforce 模式：原卡已拒推；已发送拦截告警", file=sys.stderr)
         else:
-            print("[push] enforce 模式：原卡已拒推，未发送 Telegram", file=sys.stderr)
+            print("[push] enforce 模式：原卡已拒推，未发送 IM", file=sys.stderr)
         sys.exit(2)
 
     for i, r in enumerate(results, 1):
