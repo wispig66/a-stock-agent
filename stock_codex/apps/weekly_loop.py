@@ -48,19 +48,45 @@ def _current_week_label(today: date) -> str:
     return f"{iso_year}-W{iso_week:02d}"
 
 
-def _invoke_codex(timeout: int = TIMEOUT_SECONDS) -> int:
-    """Headless 触发 stock-weekly skill。stdin 给自然语言 prompt。"""
-    root = _project_root()
-    cmd = [
-        "codex", "exec",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "-C", str(root),
-        "-",
-    ]
-    prompt = "请运行 /stock-weekly：跑当周周复盘，输出长文 + IM 推送。"
+def _resolve_agent_cmd() -> tuple[str, list[str], str]:
+    """Return (agent_name, base_cmd, prompt_via) from jobs.yaml."""
     try:
-        result = run_subprocess(cmd, name="weekly_skill", timeout=timeout,
-                                input_text=prompt, cwd=root)
+        from config.jobs_loader import load_config, active_agent_name, active_agent
+        cfg = load_config()
+        name = active_agent_name(cfg)
+        profile = active_agent(cfg)
+        import shutil
+        cli = profile.get("cli", "codex")
+        bin_path = shutil.which(cli) or cli
+        exec_cfg = profile.get("exec", {})
+        cmd_template = exec_cfg.get("cmd", [
+            "exec", "--dangerously-bypass-approvals-and-sandbox",
+            "-C", "{cwd}", "-",
+        ])
+        root = str(_project_root())
+        cmd = [bin_path] + [p.format(cwd=root, outfile="/dev/null") for p in cmd_template]
+        return name, cmd, exec_cfg.get("prompt_via", "stdin")
+    except Exception:
+        root = str(_project_root())
+        return "codex", [
+            "codex", "exec", "--dangerously-bypass-approvals-and-sandbox",
+            "-C", root, "-",
+        ], "stdin"
+
+
+def _invoke_agent(timeout: int = TIMEOUT_SECONDS) -> int:
+    """Headless 触发 stock-weekly skill。"""
+    root = _project_root()
+    name, cmd, prompt_via = _resolve_agent_cmd()
+    prompt = "请运行 /stock-weekly：跑当周周复盘，输出长文 + IM 推送。"
+    if prompt_via == "argument":
+        cmd.append(prompt)
+        input_text = None
+    else:
+        input_text = prompt
+    try:
+        result = run_subprocess(cmd, name=f"{name}_weekly_skill", timeout=timeout,
+                                input_text=input_text, cwd=root)
     except subprocess.TimeoutExpired:
         return 124
     return result.returncode
@@ -84,7 +110,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     log.info("START weekly loop for %s", label)
-    rc = _invoke_codex()
+    rc = _invoke_agent()
     if rc == 0:
         log.info("DONE rc=0")
     else:

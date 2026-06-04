@@ -61,7 +61,7 @@ def test_readme_describes_codex_as_short_llm_scheduler():
 
     assert_contains_all(
         schedule_section,
-        ["Codex automations", "短时 LLM", "launchd 运行长时 daemon"],
+        ["短时 LLM", "launchd 运行长时 daemon"],
         label="README scheduling section",
     )
     assert_contains_none(
@@ -77,7 +77,7 @@ def test_readme_describes_codex_as_short_llm_scheduler():
     assert_contains_all(
         text,
         [
-            "bash scripts/install_codex_automations.sh",
+            "bash scripts/install_automations.sh",
             "bash scripts/install_runtime_services.sh",
         ],
         label="README install instructions",
@@ -85,16 +85,15 @@ def test_readme_describes_codex_as_short_llm_scheduler():
 
 
 def test_codex_runbook_documents_local_runtime_deploy():
-    text = read("docs/codex_automations.md")
+    text = read("docs/automations.md")
 
     assert_contains_all(
         text,
         [
-            "本机运行模型",
-            "~/.codex/automations/",
-            "~/Library/LaunchAgents/",
-            "scripts/doctor_codex_runtime.sh",
-            "scripts/disable_legacy_llm_launchd.sh",
+            "config/jobs.yaml",
+            "install_automations.sh",
+            "install_runtime_services.sh",
+            "doctor_codex_runtime.sh",
             "scripts/start_gateway.sh",
             "com.user.stockchannelgateway",
         ],

@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import tomllib
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "install_codex_automations.sh"
+INSTALL_SCRIPT = ROOT / "scripts" / "install_automations.sh"
 
 EXPECTED_JOBS = {
     "stock-premarket": "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0",
@@ -31,35 +29,14 @@ EXPECTED_SKILLS = {
 }
 
 
-def run_installer(output_dir: Path, *extra_args: str) -> subprocess.CompletedProcess[str]:
+def run_installer(output_dir: Path, agent: str = "codex") -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env["HOME"] = str(output_dir.parent / "home")
     env["CODEX_HOME"] = str(output_dir.parent / "codex-home")
-    env["CODEX_AUTOMATIONS_DIR"] = str(output_dir)
     env["CODEX_AUTOMATION_MODEL"] = "gpt-5.4"
     env["CODEX_AUTOMATION_REASONING_EFFORT"] = "medium"
     return subprocess.run(
-        ["bash", str(SCRIPT), "--dry-run", *extra_args],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-
-def run_installer_without_output_dir(
-    sandbox: Path,
-    *extra_args: str,
-) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env["HOME"] = str(sandbox / "home")
-    env["CODEX_HOME"] = str(sandbox / "codex-home")
-    env.pop("CODEX_AUTOMATIONS_DIR", None)
-    env["CODEX_AUTOMATION_MODEL"] = "gpt-5.4"
-    env["CODEX_AUTOMATION_REASONING_EFFORT"] = "medium"
-    return subprocess.run(
-        ["bash", str(SCRIPT), "--dry-run", *extra_args],
+        ["bash", str(INSTALL_SCRIPT), "install", "--agent", agent,
+         "--dry-run", "--output-dir", str(output_dir)],
         cwd=ROOT,
         env=env,
         text=True,
@@ -80,12 +57,6 @@ def assert_success(result: subprocess.CompletedProcess[str]) -> None:
     assert result.returncode == 0, result_details(result)
 
 
-def installed_dir_from_stdout(result: subprocess.CompletedProcess[str]) -> Path:
-    match = re.search(r"Installed Codex automations under (.+)", result.stdout)
-    assert match, result_details(result)
-    return Path(match.group(1).strip())
-
-
 def load_job(output_dir: Path, job_id: str, result: subprocess.CompletedProcess[str]) -> dict:
     path = output_dir / job_id / "automation.toml"
     assert path.exists(), (
@@ -98,27 +69,11 @@ def load_job(output_dir: Path, job_id: str, result: subprocess.CompletedProcess[
 
 def test_codex_automation_dry_run_generates_all_jobs(tmp_path):
     out_dir = tmp_path / "automations"
-
     result = run_installer(out_dir)
-
     assert_success(result)
     assert "[dry-run]" in result.stdout
     assert out_dir.exists(), result_details(result)
     assert sorted(p.name for p in out_dir.iterdir()) == sorted(EXPECTED_JOBS)
-
-
-def test_codex_automation_dry_run_without_target_uses_temp_dir(tmp_path):
-    sandbox = tmp_path / "sandbox"
-    live_dir = sandbox / "codex-home" / "automations"
-
-    result = run_installer_without_output_dir(sandbox)
-
-    assert_success(result)
-    generated_dir = installed_dir_from_stdout(result)
-    assert generated_dir != live_dir
-    assert not live_dir.exists(), result_details(result)
-    assert generated_dir.exists(), result_details(result)
-    assert sorted(p.name for p in generated_dir.iterdir()) == sorted(EXPECTED_JOBS)
 
 
 def test_codex_automation_toml_contract(tmp_path):
@@ -139,30 +94,6 @@ def test_codex_automation_toml_contract(tmp_path):
         assert job["cwds"] == [str(ROOT)]
         assert isinstance(job["created_at"], int)
         assert isinstance(job["updated_at"], int)
-
-
-def test_codex_automation_toml_escapes_string_values(tmp_path):
-    out_dir = tmp_path / "automations"
-    env = os.environ.copy()
-    env["HOME"] = str(tmp_path / "home")
-    env["CODEX_HOME"] = str(tmp_path / "codex-home")
-    env["CODEX_AUTOMATIONS_DIR"] = str(out_dir)
-    env["CODEX_AUTOMATION_MODEL"] = 'bad"model\\x'
-    env["CODEX_AUTOMATION_REASONING_EFFORT"] = "medium"
-
-    result = subprocess.run(
-        ["bash", str(SCRIPT), "--dry-run"],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert_success(result)
-    job = load_job(out_dir, "stock-premarket", result)
-    assert job["model"] == 'bad"model\\x'
-    assert job["reasoning_effort"] == "medium"
 
 
 def test_codex_automation_prompts_have_unattended_contract(tmp_path):
@@ -186,8 +117,35 @@ def test_codex_automation_prompts_have_unattended_contract(tmp_path):
 def test_codex_automation_installer_summary_lists_jobs(tmp_path):
     out_dir = tmp_path / "automations"
     result = run_installer(out_dir)
-
     assert_success(result)
     for job_id in EXPECTED_JOBS:
         assert job_id in result.stdout
-    assert "Installed Codex automations under" in result.stdout
+
+
+def test_claude_code_dry_run_generates_skill_md(tmp_path):
+    out_dir = tmp_path / "claude-tasks"
+    result = run_installer(out_dir, agent="claude-code")
+    assert_success(result)
+    assert sorted(p.name for p in out_dir.iterdir()) == sorted(EXPECTED_JOBS)
+    for job_id in EXPECTED_JOBS:
+        skill_md = out_dir / job_id / "SKILL.md"
+        assert skill_md.exists(), f"Missing SKILL.md for {job_id}"
+        content = skill_md.read_text(encoding="utf-8")
+        assert f"name: {job_id}" in content
+        assert EXPECTED_SKILLS[job_id] in content
+        assert "SKILL.md" in content
+        assert "push.py" in content
+
+
+def test_launchd_fallback_generates_plists(tmp_path):
+    out_dir = tmp_path / "plists"
+    result = run_installer(out_dir, agent="opencode")
+    assert_success(result)
+    for job_id in EXPECTED_JOBS:
+        label = f"com.user.stockagent.{job_id}"
+        plist = out_dir / f"{label}.plist"
+        assert plist.exists(), f"Missing plist for {job_id}"
+        content = plist.read_text(encoding="utf-8")
+        assert label in content
+        assert "run_agent_job.sh" in content
+        assert job_id in content

@@ -54,10 +54,10 @@ def skill_text(skill: str) -> str:
 def test_scheduled_skills_define_required_outputs_and_failures():
     for skill, required_terms in SCHEDULED_SKILLS_REQUIRED_TERMS.items():
         text = skill_text(skill)
-        assert "Codex automation" in text
+        assert "自动化契约" in text
         assert "无人值守" in text
         assert "不要只回复完成" in text
-        assert "Codex automation 最终回复只给简要运行摘要" in text
+        assert "自动化最终回复只给简要运行摘要" in text
         assert "失败" in text
         for term in required_terms:
             assert term in text

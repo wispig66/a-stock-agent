@@ -3,15 +3,15 @@ name: stock-weekly
 description: A 股周日晚 21:00 触发的周复盘 + 下周方向。Part 1 本周市场叙事 + 个人交易回顾，Part 2 周末消息归类 + 下周 2-3 条主线（含代表股、催化、风险）。落地长文 data/weekly_review/YYYY-WW.md 供下周 L1-L4 读取。当用户要求"周复盘"、"周报"、"weekly"、"下周看什么"、"下周方向"，或周日晚自然触发时调用。
 ---
 
-## Codex automation 契约
+## 自动化契约
 
-本 skill 会被 Codex automation 无人值守触发。执行时必须产出下面列出的文件和推送副作用；不要只回复完成。如果任一步骤失败，必须说明具体失败步骤，并停止声称成功。
+本 skill 会被自动化调度无人值守触发。执行时必须产出下面列出的文件和推送副作用；不要只回复完成。如果任一步骤失败，必须说明具体失败步骤，并停止声称成功。
 
 - 必须先检查本周 `data/weekly_review/YYYY-WW.md` 是否已存在。
 - 已存在且未 force 时必须跳过并报告，不重复推送。
 - 需要生成周报时必须写入 `data/weekly_review/YYYY-WW.md` 和 `data/last_weekly_card.md`。
 - 必须通过 `.agents/skills/stock-premarket/scripts/push.py --source stock-weekly` 推送摘要。
-- 输出层级：文件内容是完整卡片/长文，IM 推送是摘要卡片，Codex automation 最终回复只给简要运行摘要。
+- 输出层级：文件内容是完整卡片/长文，IM 推送是摘要卡片，自动化最终回复只给简要运行摘要。
 
 # 定位
 
@@ -41,11 +41,11 @@ L7 望远镜层，周维度。**不给买点**（买点交给 L1 周一早上）
 
 `push.py` 自动跑校验器（warn 模式留日志；enforce 模式拒推）。
 
-写入文件的内容必须是周复盘长文，IM 推送必须是摘要卡片；Codex automation 最终回复只给简要运行摘要，不要用“完成”替代文件写入和推送。
+写入文件的内容必须是周复盘长文，IM 推送必须是摘要卡片；自动化最终回复只给简要运行摘要，不要用“完成”替代文件写入和推送。
 
 ## Step 0 · 幂等检查（先于聚合/Web）
 
-先算本周 `week_label`，检查 `data/weekly_review/YYYY-WW.md` 是否已存在。存在且未 force 时，直接停止：不跑 aggregate、不做 WebSearch、不写 `data/last_weekly_card.md`、不推送 IM，只在 Codex automation 最终回复中报告已跳过。
+先算本周 `week_label`，检查 `data/weekly_review/YYYY-WW.md` 是否已存在。存在且未 force 时，直接停止：不跑 aggregate、不做 WebSearch、不写 `data/last_weekly_card.md`、不推送 IM，只在自动化最终回复中报告已跳过。
 
 ```python
 from datetime import date, timedelta

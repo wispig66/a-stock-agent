@@ -39,17 +39,34 @@ from stock_codex.paths import DATA_DIR, DB_FILE, HOLDINGS_FILE, PROJECT_ROOT
 log = get_logger("command_router")
 
 
-def _find_codex_bin() -> str:
-    for p in (Path.home() / ".nvm/versions/node/v24.15.0/bin/codex",
-              Path.home() / ".local/bin/codex",
-              Path("/opt/homebrew/bin/codex"),
-              Path("/usr/local/bin/codex")):
+def _resolve_agent() -> tuple[str, dict]:
+    """Read STOCK_AGENT from env / config and return (agent_name, agent_profile)."""
+    try:
+        from config.jobs_loader import load_config, active_agent_name, active_agent
+        cfg = load_config()
+        name = active_agent_name(cfg)
+        return name, active_agent(cfg)
+    except Exception:
+        return "codex", {}
+
+
+def _find_agent_bin(agent_profile: dict) -> str:
+    cli = agent_profile.get("cli", "codex")
+    import shutil
+    found = shutil.which(cli)
+    if found:
+        return found
+    for p in (Path.home() / ".nvm/versions/node/v24.15.0/bin" / cli,
+              Path.home() / ".local/bin" / cli,
+              Path("/opt/homebrew/bin") / cli,
+              Path("/usr/local/bin") / cli):
         if p.is_file() and os.access(p, os.X_OK):
             return str(p)
-    return "codex"
+    return cli
 
 
-CODEX_BIN = _find_codex_bin()
+AGENT_NAME, AGENT_PROFILE = _resolve_agent()
+AGENT_BIN = _find_agent_bin(AGENT_PROFILE)
 
 _ASK_RE = re.compile(r"^/ask(\+)?(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)
 _WATCH_RE = re.compile(r"^/watch(?:\s+(.+))?$", re.IGNORECASE | re.DOTALL)
@@ -217,7 +234,7 @@ def run_skill_streaming(code: str, mode: str,
     """
     prompt = (f"请使用 stock-query skill 分析这只股票，严格按 SKILL.md "
               f"模板输出卡片，不要任何额外文字：code={code} mode={mode}")
-    return _run_codex_exec(prompt=prompt, timeout=SKILL_TIMEOUT,
+    return _run_agent_exec(prompt=prompt, timeout=SKILL_TIMEOUT,
                            label=f"query:{code}:{mode}",
                            on_text=on_text, on_tool=on_tool)
 
@@ -225,38 +242,44 @@ def run_skill_streaming(code: str, mode: str,
 def run_skill_streaming_generic(*, prompt: str, timeout: int,
                                 on_text: Callable[[str], None],
                                 on_tool: Callable[[str], None]) -> str:
-    """通用 Codex headless 调用。返回最终卡片文本。
+    """通用 agent headless 调用。返回最终卡片文本。
     与 run_skill_streaming 的差异：prompt + timeout 都是入参，不依赖模块级 SKILL_TIMEOUT。"""
-    return _run_codex_exec(prompt=prompt, timeout=timeout, label="generic",
+    return _run_agent_exec(prompt=prompt, timeout=timeout, label="generic",
                            on_text=on_text, on_tool=on_tool)
 
 
-def _run_codex_exec(*, prompt: str, timeout: int, label: str,
+def _run_agent_exec(*, prompt: str, timeout: int, label: str,
                     on_text: Callable[[str], None],
                     on_tool: Callable[[str], None]) -> str:
     import tempfile
-    on_tool("codex")
+    on_tool(AGENT_NAME)
     env = os.environ.copy()
     env["STOCK_REQ_ID"] = get_req_id()
     start = time.time()
+    exec_cfg = AGENT_PROFILE.get("exec", {})
+    prompt_via = exec_cfg.get("prompt_via", "stdin")
+    output_mode = exec_cfg.get("output_mode", "tempfile")
+
     with tempfile.NamedTemporaryFile("r+", encoding="utf-8", delete=True) as out:
-        cmd = [
-            CODEX_BIN,
-            "exec",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "-C",
-            str(ROOT),
-            "--output-last-message",
-            out.name,
-            "-",
-        ]
-        log.info("codex_exec(%s) 启动 timeout=%ss prompt_head=%s",
-                 label, timeout, prompt[:80].replace("\n", " "))
+        cmd_template = exec_cfg.get("cmd", [
+            "exec", "--dangerously-bypass-approvals-and-sandbox",
+            "-C", "{cwd}", "--output-last-message", "{outfile}", "-",
+        ])
+        cmd = [AGENT_BIN]
+        for part in cmd_template:
+            cmd.append(part.format(cwd=str(ROOT), outfile=out.name))
+        if prompt_via == "argument":
+            cmd.append(prompt)
+
+        stdin_data = prompt if prompt_via == "stdin" else None
+
+        log.info("agent_exec(%s/%s) 启动 timeout=%ss prompt_head=%s",
+                 AGENT_NAME, label, timeout, prompt[:80].replace("\n", " "))
         try:
             result = subprocess.run(
                 cmd,
                 cwd=str(ROOT),
-                input=prompt,
+                input=stdin_data,
                 text=True,
                 capture_output=True,
                 timeout=timeout,
@@ -264,18 +287,26 @@ def _run_codex_exec(*, prompt: str, timeout: int, label: str,
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            log.error("codex_exec(%s) 超时 %ds", label, timeout)
+            log.error("agent_exec(%s/%s) 超时 %ds", AGENT_NAME, label, timeout)
             raise
-        out.seek(0)
-        final_text = out.read().strip()
+
+        if output_mode == "tempfile":
+            out.seek(0)
+            final_text = out.read().strip()
+        else:
+            final_text = ""
+
     if result.returncode != 0:
         err = (result.stderr or "")[-4000:]
-        log.error("codex_exec(%s) 退出码 %d\nstderr:\n%s", label, result.returncode, err)
-        raise RuntimeError(f"codex exec 退出码 {result.returncode}: {(result.stderr or '')[:500]}")
+        log.error("agent_exec(%s/%s) 退出码 %d\nstderr:\n%s",
+                  AGENT_NAME, label, result.returncode, err)
+        raise RuntimeError(
+            f"{AGENT_NAME} exec 退出码 {result.returncode}: {(result.stderr or '')[:500]}")
     if not final_text:
         final_text = (result.stdout or "").strip()
     on_text(final_text)
-    log.info("codex_exec(%s) 完成 用时 %.1fs len=%d", label, time.time() - start, len(final_text))
+    log.info("agent_exec(%s/%s) 完成 用时 %.1fs len=%d",
+             AGENT_NAME, label, time.time() - start, len(final_text))
     return final_text
 
 

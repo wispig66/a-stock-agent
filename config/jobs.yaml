@@ -1,0 +1,188 @@
+# 多 Agent 自动化任务配置
+#
+# 全局 agent 选择：STOCK_AGENT 环境变量覆盖此处的 agent 字段。
+# 安装：bash scripts/install_automations.sh [--agent <name>] [--dry-run]
+
+agent: codex
+
+# ---------------------------------------------------------------------------
+# Agent profiles（声明式，新增 agent 只需加一段声明）
+# ---------------------------------------------------------------------------
+agents:
+  codex:
+    cli: codex
+    scheduling:
+      type: config-file
+      format: toml
+      dir: "{agent_home}/automations/{job_id}"
+      file: automation.toml
+    exec:
+      cmd: ["exec", "--dangerously-bypass-approvals-and-sandbox", "-C", "{cwd}", "--output-last-message", "{outfile}", "-"]
+      prompt_via: stdin
+      output_mode: tempfile
+    defaults:
+      model: gpt-5.4
+      reasoning_effort: medium
+    env:
+      agent_home: CODEX_HOME
+      agent_home_default: "~/.codex"
+
+  claude-code:
+    cli: claude
+    scheduling:
+      type: config-file
+      format: skill-md
+      dir: "{agent_home}/scheduled-tasks/{job_id}"
+      file: SKILL.md
+    exec:
+      cmd: ["-p", "--output-format", "text"]
+      prompt_via: argument
+      output_mode: stdout
+    defaults:
+      model: claude-sonnet-4-20250514
+    env:
+      agent_home: CLAUDE_CONFIG_DIR
+      agent_home_default: "~/.claude"
+
+  cline:
+    cli: cline
+    scheduling:
+      type: cli-register
+      install_cmd: "cron add --name {job_id} --schedule '{cron}' --prompt '{prompt_escaped}'"
+      uninstall_cmd: "cron remove --name {job_id}"
+      verify_cmd: "cron list"
+    exec:
+      cmd: []
+      prompt_via: argument
+      output_mode: stdout
+
+  openclaw:
+    cli: openclaw
+    scheduling:
+      type: cli-register
+      install_cmd: "cron create '{schedule}' --name {job_id} --message '{prompt_escaped}'"
+      uninstall_cmd: "cron remove {job_id}"
+      verify_cmd: "cron list"
+    exec:
+      cmd: []
+      prompt_via: argument
+      output_mode: stdout
+
+  hermes:
+    cli: hermes
+    scheduling:
+      type: cli-register
+      install_cmd: "cron create --name {job_id} --schedule '{cron}' --prompt '{prompt_escaped}'"
+      uninstall_cmd: "cron remove {job_id}"
+      verify_cmd: "cron list"
+    exec:
+      cmd: ["-z"]
+      prompt_via: argument
+      output_mode: stdout
+
+  opencode:
+    cli: opencode
+    scheduling:
+      type: launchd-fallback
+    exec:
+      cmd: ["run"]
+      prompt_via: argument
+      output_mode: stdout
+
+  kimicode:
+    cli: kimi
+    scheduling:
+      type: launchd-fallback
+    exec:
+      cmd: ["--print"]
+      prompt_via: argument
+      output_mode: stdout
+
+
+# ---------------------------------------------------------------------------
+# Job definitions（从 install_codex_automations.sh 提取）
+# ---------------------------------------------------------------------------
+jobs:
+  stock-premarket:
+    name: stock premarket
+    skill: stock-premarket
+    schedule:
+      rrule: "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=8;BYMINUTE=0"
+      cron: "0 8 * * 1-5"
+      hour: 8
+      minute: 0
+      weekdays_only: true
+    expected_output: "today's A-share premarket trading plan, decision_tickets, and IM card"
+    timing: "the premarket run"
+
+  stock-intraday-09-30:
+    name: stock intraday 09:30
+    skill: stock-intraday
+    schedule:
+      rrule: "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=30"
+      cron: "30 9 * * 1-5"
+      hour: 9
+      minute: 30
+      weekdays_only: true
+    expected_output: "the 09:30 intraday discipline reminder and IM card"
+    timing: "the 09:30 intraday run"
+
+  stock-intraday-09-45:
+    name: stock intraday 09:45
+    skill: stock-intraday
+    schedule:
+      rrule: "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=45"
+      cron: "45 9 * * 1-5"
+      hour: 9
+      minute: 45
+      weekdays_only: true
+    expected_output: "the 09:45 intraday follow-up and IM card"
+    timing: "the 09:45 intraday run"
+
+  stock-intraday-11-30:
+    name: stock intraday 11:30
+    skill: stock-intraday
+    schedule:
+      rrule: "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=11;BYMINUTE=30"
+      cron: "30 11 * * 1-5"
+      hour: 11
+      minute: 30
+      weekdays_only: true
+    expected_output: "the midday intraday review and IM card"
+    timing: "the 11:30 intraday run"
+
+  stock-intraday-14-30:
+    name: stock intraday 14:30
+    skill: stock-intraday
+    schedule:
+      rrule: "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=14;BYMINUTE=30"
+      cron: "30 14 * * 1-5"
+      hour: 14
+      minute: 30
+      weekdays_only: true
+    expected_output: "the 14:30 late-session snapshot and IM card, not a post-close review"
+    timing: "the 14:30 intraday run"
+
+  stock-postmarket:
+    name: stock postmarket
+    skill: stock-postmarket
+    schedule:
+      rrule: "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=15;BYMINUTE=35"
+      cron: "35 15 * * 1-5"
+      hour: 15
+      minute: 35
+      weekdays_only: true
+    expected_output: "today's A-share postmarket review, tomorrow plan, and IM card"
+    timing: "the postmarket run"
+
+  stock-weekly-review:
+    name: stock weekly review
+    skill: stock-weekly
+    schedule:
+      rrule: "FREQ=WEEKLY;INTERVAL=1;BYDAY=SU;BYHOUR=21;BYMINUTE=0"
+      cron: "0 21 * * 0"
+      hour: 21
+      minute: 0
+      weekdays_only: false
+    expected_output: "the weekly long-form review and IM card"
+    timing: "the weekly review run"

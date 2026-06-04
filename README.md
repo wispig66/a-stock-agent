@@ -1,6 +1,6 @@
 # A Stock Agent
 
-基于 Codex skills 和 Codex automations 的本地 A 股短线研究 Agent。
+基于可配置多 Agent 自动化调度的本地 A 股短线研究 Agent。
 
 它把「盘前计划、盘中纪律、盘后复盘、周复盘、异动监控、随时问答」拆成一组可审计的 Codex skill：先由确定性脚本拉取行情、题材、消息和持仓数据，形成 fact pack；再由 Codex/LLM 生成交易研究卡片；最后通过飞书 / 个人微信推送给用户。
 
@@ -18,10 +18,10 @@
 当前项目处于 **个人本地运行 / 早期开源** 阶段：
 
 - 飞书和个人微信 iLink 是当前运行通道；飞书使用官方 WebSocket 长连，个人微信扫码登录、仅 1v1。
-- Codex automations 是完整自动化流程的核心依赖。
+- 支持多种 AI agent 执行自动化任务（Codex / Claude Code / Cline / OpenClaw / Hermes / OpenCode / KimiCode），通过 `config/jobs.yaml` 或 `STOCK_AGENT` 环境变量切换。
 - macOS 是主要支持环境；Linux 可运行部分 Python 逻辑，但 launchd 调度不适用。
 
-如果你只是想体验单股/题材问答，先跑 `quickstart.sh` 即可。如果你想让它每天自动跑盘前、盘中、盘后和周复盘，需要安装 Codex automations。
+如果你只是想体验单股/题材问答，先跑 `quickstart.sh` 即可。如果你想让它每天自动跑盘前、盘中、盘后和周复盘，需要安装自动化调度（默认使用 Codex）。
 
 ## 目录
 
@@ -32,6 +32,7 @@
 - [功能概览](#功能概览)
 - [三分钟快速开始](#三分钟快速开始)
 - [完整自动化运行](#完整自动化运行)
+- [多 Agent 自动化运行手册](docs/automations.md)
 - [IM 接入](#im-接入)
 - [IM gateway 运行手册](docs/im_gateway.md)
 - [数据可信度和校验](#数据可信度和校验)
@@ -193,7 +194,7 @@ FEISHU_APP_ID=xxx FEISHU_APP_SECRET=yyy bash scripts/quickstart.sh
 
 ## 完整自动化运行
 
-如果你要让系统每天自动跑盘前、盘中、盘后和周复盘，需要安装 Codex automations 和本地长时 daemon：
+如果你要让系统每天自动跑盘前、盘中、盘后和周复盘，需要安装自动化调度和本地长时 daemon：
 
 ```bash
 bash scripts/quickstart.sh --install-schedule
@@ -203,8 +204,15 @@ bash scripts/quickstart.sh --install-schedule
 
 ```bash
 bash scripts/sync_codex_skills.sh
-bash scripts/install_codex_automations.sh
+bash scripts/install_automations.sh install    # 统一入口，默认 Codex；可 --agent claude-code 切换
 bash scripts/install_runtime_services.sh
+```
+
+切换 agent（详见 [docs/automations.md](docs/automations.md)）：
+
+```bash
+export STOCK_AGENT=claude-code
+bash scripts/install_automations.sh install --replace
 ```
 
 安装后运行诊断：
@@ -282,15 +290,15 @@ launchctl list | rg 'stockchannelgateway' || true
 
 本项目把运行时分成两类：
 
-- **Codex automations**：短时 LLM 任务，到点运行一次 skill，生成卡片后退出。
+- **短时 LLM 任务**：到点运行一次 skill，生成卡片后退出。由 `config/jobs.yaml` 定义，支持多种 AI agent 调度（默认 Codex，可切换为 Claude Code / Cline / OpenClaw / Hermes / OpenCode / KimiCode）。
 - **launchd 运行长时 daemon**：盘中常驻进程，负责不适合 LLM 长跑的轮询、阈值监控和 IM gateway 常驻。
 
 | 类型 | 任务 | 入口 |
 |------|------|------|
-| Codex automations | 盘前计划 | `stock-premarket` |
-| Codex automations | 盘中四个时点 | `stock-intraday-*` |
-| Codex automations | 盘后复盘 | `stock-postmarket` |
-| Codex automations | 周复盘 | `stock-weekly-review` |
+| 短时 LLM（多 agent） | 盘前计划 | `stock-premarket` |
+| 短时 LLM（多 agent） | 盘中四个时点 | `stock-intraday-*` |
+| 短时 LLM（多 agent） | 盘后复盘 | `stock-postmarket` |
+| 短时 LLM（多 agent） | 周复盘 | `stock-weekly-review` |
 | launchd 运行长时 daemon | 观察池/持仓轮询 | `com.user.stockwatchloop` |
 | launchd 运行长时 daemon | 全市场异动监控 | `com.user.stockanomalyloop` |
 | launchd 运行长时 daemon | 题材冒头监控 | `com.user.stockthemeloop` |
