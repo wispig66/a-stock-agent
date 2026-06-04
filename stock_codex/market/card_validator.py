@@ -244,7 +244,7 @@ def validate_card(
             continue
         # 排除买点/止损/封单等不是当日涨跌幅的 % 上下文
         ctx_pre = text[max(0, pos - 30):pos]
-        if re.search(r"(买点|止损|止盈|封单|换手|量比|占|权重|目标)", ctx_pre):
+        if re.search(r"(买点|止损|止盈|封单|换手|量比|占|权重|目标|仓位)", ctx_pre):
             continue
         # 跳过未来时/预测上下文（'高开 +2%'/'能否 ±N%'/'若再涨 N%'）
         if _PREDICTION_PREFIX_RE.search(ctx_pre):

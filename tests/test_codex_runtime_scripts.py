@@ -160,6 +160,7 @@ exit 0
             "stockwatchloop",
             "stockanomalyloop",
             "stockthemeloop",
+            "stockmarketdynamic",
         ],
         label="scripts/install_runtime_services.sh",
     )
@@ -185,6 +186,36 @@ exit 0
         "com.user.stockanomalyloop",
         "com.user.stockthemeloop",
     ]
+
+
+def test_runtime_services_installer_bootstraps_market_dynamic_only_when_opted_in(tmp_path) -> None:
+    env = base_env(tmp_path)
+    log = tmp_path / "launchctl.log"
+    env["LAUNCHCTL_LOG"] = str(log)
+    env["ENABLE_MARKET_DYNAMIC_LAUNCHD"] = "1"
+    write_executable(
+        tmp_path / "bin" / "launchctl",
+        """#!/usr/bin/env bash
+echo "$@" >> "$LAUNCHCTL_LOG"
+if [ "${1:-}" = "print" ]; then
+    exit 1
+fi
+exit 0
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "install_runtime_services.sh")],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    launchctl_log = log.read_text(encoding="utf-8")
+    assert "com.user.stockmarketdynamic.plist" in launchctl_log
 
 
 def test_runtime_services_installer_renders_tg_listener_home_from_environment(tmp_path) -> None:

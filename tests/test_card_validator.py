@@ -177,6 +177,18 @@ def test_future_tense_pct_not_flagged():
     assert not pct_violations, f"未来时上下文不应触发 pct_mismatch: {pct_violations}"
 
 
+def test_position_size_pct_not_flagged():
+    """'仓位 10%'是执行参数，不是股票当日涨幅。"""
+    card = "000988 华工科技 · 仓位 10%"
+    allowed = {
+        "codes": {"000988": "华工科技"},
+        "pct": {"000988": 2.00},
+    }
+    ok, v = validate_card(card, allowed)
+    pct_violations = [x for x in v if x.kind == "pct_mismatch"]
+    assert not pct_violations, f"仓位百分比不应触发 pct_mismatch: {pct_violations}"
+
+
 def test_news_entity_name_not_flagged():
     """'鸿博股份子公司英博数科债务逾期' — 新闻里出现的公司不应被当作虚构股名。"""
     card = "17:23 鸿博股份子公司英博数科债务逾期，公司承担连带责任 → 算力租赁分支利空"
