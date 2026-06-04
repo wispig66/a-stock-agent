@@ -115,3 +115,98 @@ def test_allowed_collects_concepts_from_eastmoney_shape() -> None:
     )
 
     assert allowed["concepts"] == ["昨日连板", "蓝宝石"]
+
+
+def test_allowed_v2_includes_market_narrative_fields() -> None:
+    fr = load_module()
+
+    allowed = fr._build_allowed(
+        watchlist=[],
+        holdings=[],
+        spot=pd.DataFrame(),
+        zt=pd.DataFrame(),
+        zb=pd.DataFrame(),
+        cc=pd.DataFrame(),
+        now=datetime(2026, 5, 21, 14, 31, 0),
+        label="尾盘快照（14:30）",
+    )
+
+    assert allowed["schema_version"] == "2"
+    assert allowed["summary"]["market_snapshot_stale"] is True
+    assert allowed["market_breadth"] == {}
+    assert allowed["indices"] == {}
+    assert allowed["turnover"] == {}
+    assert allowed["theme_strength"] == {}
+    assert allowed["overseas"] == {}
+    assert allowed["anchors"] == {}
+    assert allowed["pool_summary"] == {}
+
+
+def test_allowed_v2_drops_stale_shared_market_narrative_fields() -> None:
+    fr = load_module()
+    market_snapshot = {
+        "snapshot_ts": "2026-05-21T14:00:00",
+        "is_stale": True,
+        "news": [{"title": "过期新闻"}],
+        "breadth": {"up": 3000, "down": 2000},
+        "theme_strength": {"CPO光模块": {"pct": 5.0}},
+        "overseas": {"NVDA": {"pct": 3.0}},
+        "anchors": {"300308": {"name": "中际旭创"}},
+    }
+
+    allowed = fr._build_allowed(
+        watchlist=[],
+        holdings=[],
+        spot=pd.DataFrame(),
+        zt=pd.DataFrame(),
+        zb=pd.DataFrame(),
+        cc=pd.DataFrame(),
+        now=datetime(2026, 5, 21, 14, 31, 0),
+        label="尾盘快照（14:30）",
+        market_snapshot=market_snapshot,
+    )
+
+    assert allowed["summary"]["market_snapshot_stale"] is True
+    assert allowed["news"] == []
+    assert allowed["market_breadth"] == {}
+    assert allowed["theme_strength"] == {}
+    assert allowed["overseas"] == {}
+    assert allowed["anchors"] == {}
+
+
+def test_fetch_concept_hot_falls_back_when_ths_has_only_name_shape(monkeypatch) -> None:
+    fr = load_module()
+    ths_df = pd.DataFrame([
+        {"name": "液冷服务器", "code": "309999"},
+        {"name": "煤炭", "code": "300123"},
+    ])
+    em_df = pd.DataFrame([
+        {"板块名称": "光纤概念", "涨跌幅": 3.86},
+        {"板块名称": "培育钻石", "涨跌幅": 4.53},
+    ])
+
+    monkeypatch.setattr(fr.ak, "stock_board_concept_name_ths", lambda: ths_df)
+    monkeypatch.setattr(fr.ak, "stock_board_concept_name_em", lambda: em_df)
+
+    cc = fr.fetch_concept_hot()
+
+    assert cc.to_dict("records") == [
+        {"板块名称": "培育钻石", "涨跌幅": 4.53},
+        {"板块名称": "光纤概念", "涨跌幅": 3.86},
+    ]
+
+
+def test_fetch_concept_hot_rejects_name_only_cache(tmp_path, monkeypatch) -> None:
+    fr = load_module()
+    monkeypatch.setattr(fr, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(fr, "datetime", FixedDatetime)
+    fr._write_df_cache("concept_hot", pd.DataFrame([{"name": "液冷服务器", "code": "309999"}]))
+    monkeypatch.setattr(
+        fr.ak,
+        "stock_board_concept_name_ths",
+        lambda: (_ for _ in ()).throw(OSError("ths down")),
+    )
+
+    cc = fr.fetch_concept_hot()
+
+    assert cc.empty

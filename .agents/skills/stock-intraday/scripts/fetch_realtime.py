@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[4]
 DB = ROOT / "data" / "daily.db"
 HOLDINGS_FILE = ROOT / "holdings.yaml"
 CACHE_DIR = ROOT / "data" / "intraday_cache"
+MARKET_SNAPSHOT_STALE_SECONDS = 10 * 60
 
 from stock_codex.infra.db import connect as db_connect  # noqa: E402
 
@@ -47,7 +48,7 @@ def load_today_watchlist() -> list[dict]:
 
     Fallback 链：
     1. decision_tickets 今日决策单（盘前交易决策漏斗）
-    2. watchlist_dynamic 今日盘中题材升档池（trend）
+    2. watchlist_dynamic 手工 /watch 池（仅接受买点和止损完整记录）
     3. push_log 今日 stock-premarket（旧观察池）
     4. data/last_card.md（mtime=今天，已写卡未推送，比如 push 链路慢）
     5. 都没有 → 返回空，并打 PREMARKET_MISSING 标记给上游 SKILL 走兜底文案
@@ -152,10 +153,9 @@ def load_today_watchlist() -> list[dict]:
 
 
 def load_dynamic_watchlist(today: str) -> list[dict]:
-    """把盘中主线确认产生的 watchlist_dynamic 映射到 L2 兼容观察池。
+    """把手工 /watch 产生的 watchlist_dynamic 映射到 L2 兼容观察池。
 
-    dynamic 候选本质是趋势升档池：若 theme_loop 已给出 entry/stop，
-    watch_loop 可以按 trend 买点触发；若暂无价格，只保留封板/异动观察能力。
+    只有买点和止损完整的记录才能进入交易观察池。
     """
     out: list[dict] = []
     with db_connect(DB) as conn:
@@ -165,6 +165,8 @@ def load_dynamic_watchlist(today: str) -> list[dict]:
                FROM watchlist_dynamic
                WHERE trade_date=?
                  AND COALESCE(status, 'pending') IN ('pending', 'triggered')
+                 AND entry_price IS NOT NULL
+                 AND stop_price IS NOT NULL
                ORDER BY created_at, id""",
             (today,),
         ).fetchall()
@@ -340,22 +342,19 @@ def fetch_concept_hot() -> pd.DataFrame:
         df = ak.stock_board_concept_name_ths()
         if "涨跌幅" in df.columns:
             return df.sort_values("涨跌幅", ascending=False).head(15)
-        if "概念名称" in df.columns:
-            return df.head(15)
 
         # AkShare 近期将同花顺接口降级为仅返回 name/code；此时改走东财实时榜，
         # 保住 11:30 / 14:30 对概念热度排序和涨跌幅解释的硬依赖。
         em_df = ak.stock_board_concept_name_em()
         if "涨跌幅" in em_df.columns:
             return em_df.sort_values("涨跌幅", ascending=False).head(15)
-        if "板块名称" in em_df.columns:
-            return em_df.head(15)
-        return em_df
+        raise ValueError("同花顺和东财概念榜均缺少涨跌幅字段")
 
     return _fetch_structured_table(
         label="概念热度",
         cache_name="concept_hot",
         fetcher=_fetch,
+        validator=lambda df: "涨跌幅" in df.columns,
     )
 
 
@@ -400,6 +399,7 @@ def _fetch_structured_table(
     fetcher,
     attempts: int = 3,
     sleep_seconds: float = 1.5,
+    validator=None,
 ) -> pd.DataFrame:
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
@@ -407,6 +407,8 @@ def _fetch_structured_table(
             df = fetcher()
             if not isinstance(df, pd.DataFrame):
                 raise TypeError(f"{label} 返回非 DataFrame: {type(df).__name__}")
+            if validator is not None and not validator(df):
+                raise ValueError(f"{label} 返回结构不可用")
             if not df.empty:
                 _write_df_cache(cache_name, df)
             return df
@@ -417,6 +419,8 @@ def _fetch_structured_table(
                 time.sleep(sleep_seconds)
 
     cached, cached_at = _read_df_cache(cache_name)
+    if validator is not None and not validator(cached):
+        cached = pd.DataFrame()
     if not cached.empty:
         log(f"[warn] {label} 使用缓存快照 {cached_at}（实时源失败: {last_error}）")
         return cached
@@ -432,9 +436,41 @@ def _cache_note(df: pd.DataFrame) -> str | None:
     return f"（使用缓存快照：{snapshot_at}，实时源失败）"
 
 
+def load_latest_market_snapshot(now: datetime) -> dict:
+    """读取 theme loop 最近一次紧凑市场快照；表未初始化时返回空。"""
+    try:
+        with db_connect(DB) as conn:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='market_snapshot'"
+            ).fetchone()
+            if not has_table:
+                return {}
+            row = conn.execute(
+                """SELECT payload_json FROM market_snapshot
+                   WHERE trade_date=? AND snapshot_ts<=?
+                   ORDER BY snapshot_ts DESC LIMIT 1""",
+                (now.strftime("%Y-%m-%d"), now.isoformat(timespec="seconds")),
+            ).fetchone()
+        if not row:
+            return {}
+        payload = json.loads(row[0])
+        snapshot_at = str(payload.get("snapshot_ts") or "")
+        try:
+            age_seconds = max(0, int((now - datetime.fromisoformat(snapshot_at)).total_seconds()))
+        except ValueError:
+            age_seconds = None
+        payload["age_seconds"] = age_seconds
+        if age_seconds is None or age_seconds > MARKET_SNAPSHOT_STALE_SECONDS:
+            payload["is_stale"] = True
+        return payload
+    except Exception as e:
+        log(f"[warn] market_snapshot 读取失败：{type(e).__name__}: {str(e)[:120]}")
+        return {}
+
+
 def _build_allowed(
     *, watchlist: list[dict], holdings: list[dict], spot,
-    zt, zb, cc, now: datetime, label: str,
+    zt, zb, cc, now: datetime, label: str, market_snapshot: dict | None = None,
 ) -> dict:
     """聚合本次 fact pack 的全部允许引用事实。卡片里任何不在此清单的数据点 → 违规。"""
     codes: dict[str, str] = {}
@@ -495,7 +531,7 @@ def _build_allowed(
         elif "name" in cc.columns:
             concepts = [str(x) for x in cc["name"].tolist()[:30]]
 
-    summary: dict[str, int | str] = {
+    summary: dict[str, object] = {
         "date": now.strftime("%Y-%m-%d"),
     }
     if zt is not None and not zt.empty:
@@ -512,8 +548,20 @@ def _build_allowed(
         summary["concept_snapshot_source"] = "cache"
         summary["concept_snapshot_at"] = str(cc.attrs.get("snapshot_at") or "")
 
+    market_snapshot = market_snapshot or {}
+    market_snapshot_stale = not market_snapshot or bool(market_snapshot.get("is_stale"))
+    summary["market_snapshot_stale"] = market_snapshot_stale
+    if market_snapshot.get("snapshot_ts"):
+        summary["market_snapshot_at"] = str(market_snapshot["snapshot_ts"])
+    narrative_snapshot = {} if market_snapshot_stale else market_snapshot
+    pool_summary = dict(narrative_snapshot.get("pool_summary") or {})
+    if zt is not None and not zt.empty:
+        pool_summary["limit_up"] = int(len(zt))
+    if zb is not None and not zb.empty:
+        pool_summary["broken"] = int(len(zb))
+
     return {
-        "schema_version": "1",
+        "schema_version": "2",
         "skill": "stock-intraday",
         "label": label,
         "snapshot_at": now.replace(microsecond=0).isoformat(),
@@ -522,8 +570,15 @@ def _build_allowed(
         "pct": pct,
         "summary": summary,
         "concepts": concepts,
-        "news": [],  # v1: 模型仍用 WebFetch 抓，v2 搬进来
-        "global_markets": {},  # 同上
+        "news": narrative_snapshot.get("news") or [],
+        "global_markets": narrative_snapshot.get("overseas") or {},
+        "market_breadth": narrative_snapshot.get("breadth") or {},
+        "indices": narrative_snapshot.get("indices") or {},
+        "turnover": narrative_snapshot.get("turnover") or {},
+        "theme_strength": narrative_snapshot.get("theme_strength") or {},
+        "overseas": narrative_snapshot.get("overseas") or {},
+        "anchors": narrative_snapshot.get("anchors") or {},
+        "pool_summary": pool_summary,
     }
 
 
@@ -620,6 +675,7 @@ def main():
     allowed = _build_allowed(
         watchlist=watchlist, holdings=holdings, spot=spot,
         zt=zt, zb=zb, cc=cc, now=now, label=label,
+        market_snapshot=load_latest_market_snapshot(now),
     )
     print("\n=== ALLOWED ===")
     print(json.dumps(allowed, ensure_ascii=False, indent=2))

@@ -45,6 +45,8 @@ ROOT = Path(__file__).resolve().parents[4]  # stock-premarket/scripts -> skills 
 DB = ROOT / "data" / "daily.db"
 
 from stock_codex.infra.db import connect as db_connect  # noqa: E402
+from stock_codex.domain.holdings import read_holdings  # noqa: E402
+from stock_codex.market.theme_graph import ThemeGraph  # noqa: E402
 OUT_DIR = ROOT / "data" / "fact_pack"
 PREMARKET_CACHE_DIR = ROOT / "data" / "premarket_cache"
 POSTMARKET_CACHE_DIR = ROOT / "data" / "postmarket_cache"
@@ -401,35 +403,16 @@ def fetch_overnight_news(date: str) -> pd.DataFrame:
 
 # ============ 消息面命中匹配 ============
 
-# A 股短线主线题材关键词（命中即标记，用于消息面归因）
-NEWS_KEYWORDS = {
-    "半导体": ["半导体", "芯片", "晶圆", "光刻", "存储", "EDA", "封测", "中芯", "长鑫", "长存"],
-    "电子特气": ["电子特气", "氟化", "硅光", "三氟化氮", "六氟化"],
-    "AI算力/CPO": ["CPO", "光模块", "算力", "AI", "GPU", "大模型", "光通信"],
-    "机器人": ["机器人", "Optimus", "人形", "灵巧手", "减速器"],
-    "新能源": ["光伏", "锂电", "储能", "电池", "钙钛矿", "硅料", "组件"],
-    "碳化硅/第三代": ["碳化硅", "SiC", "氮化镓", "GaN", "第三代半导体"],
-    "军工/低空": ["军工", "国防", "无人机", "低空", "eVTOL", "导弹"],
-    "医药/创新药": ["创新药", "ADC", "GLP-1", "减肥药", "CXO", "医保"],
-    "汽车/智驾": ["新能源车", "智能驾驶", "智驾", "Robotaxi", "L3", "L4", "华为车"],
-    "消费/白酒": ["白酒", "茅台", "消费券", "免税"],
-    "宏观/政策": ["央行", "降准", "降息", "MLF", "政策", "国务院", "证监会", "PMI", "CPI"],
-    "外围/美股": ["美股", "纳斯达克", "标普", "道指", "美联储", "FOMC", "美债", "美元", "黄金"],
-    "黑色/有色": ["稀土", "钨", "锂矿", "铜", "黄金", "白银"],
-}
-
-
 def tag_news_themes(news_df: pd.DataFrame) -> pd.DataFrame:
-    """给每条消息打题材标签（多标签）。返回新列 命中题材。"""
+    """用共享题材图谱别名给每条消息打多标签。"""
     if news_df.empty:
         return news_df
+    graph = ThemeGraph(ROOT / "data" / "concept_whitelist.yaml", db_path=DB)
     out = news_df.copy()
     tags = []
     for title in out["标题"]:
-        hit = []
-        for theme, kws in NEWS_KEYWORDS.items():
-            if any(kw in title for kw in kws):
-                hit.append(theme)
+        matches = graph.resolve("", "", "", str(title), datetime.now())
+        hit = [match.theme for match in matches if not match.temporary]
         tags.append(" + ".join(hit) if hit else "")
     out["命中题材"] = tags
     return out
@@ -743,6 +726,11 @@ def build_allowed(*, date: str, zt, zb, lhb, hot, news) -> dict:
     _add(zb)
     _add(lhb)
     _add(hot)
+    try:
+        for h in read_holdings():
+            codes[h.code] = h.name or codes.get(h.code, "")
+    except Exception as e:
+        log(f"[warn] holdings.yaml 读取失败，ALLOWED 不含持仓: {e}")
 
     # 题材
     if hot is not None and not hot.empty and "题材归因" in hot.columns:

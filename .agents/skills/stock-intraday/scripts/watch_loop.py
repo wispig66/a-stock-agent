@@ -95,6 +95,7 @@ def evaluate(
     if h:
         locked = _is_locked(h, today)
         sl = h.get("stop_loss")
+        tp = h.get("take_profit")
         if sl and price <= sl:
             if locked:
                 alerts.append((
@@ -105,6 +106,17 @@ def evaluate(
                 alerts.append((
                     "hold_stop",
                     f"💥 持仓跌破止损 · {code} {name} · 现价 {price} ≤ 止损 {sl}（成本 {h.get('cost')}）→ 立即出",
+                ))
+        if tp and price >= tp:
+            if locked:
+                alerts.append((
+                    "hold_take_profit_locked",
+                    f"🌙 锁仓中 · 持仓到达止盈位 · {code} {name} · 现价 {price} ≥ 止盈 {tp}（成本 {h.get('cost')}）· T+1 不可出，明早集合竞价处理",
+                ))
+            else:
+                alerts.append((
+                    "hold_take_profit",
+                    f"🎯 持仓到达止盈位 · {code} {name} · 现价 {price} ≥ 止盈 {tp}（成本 {h.get('cost')}）→ 分批兑现，至少锁定部分利润",
                 ))
         if pct is not None and pct <= -5:
             if locked:
@@ -254,6 +266,21 @@ def snapshot_holdings(now: datetime) -> None:
         log.info("holdings 快照 → %s", dst.name)
 
 
+def load_monitor_targets() -> tuple[dict, dict, list[str]]:
+    """重新读取观察池和持仓，确保盘中新成交立即进入监控。"""
+    try:
+        watch_map = {w["code"]: w for w in load_today_watchlist()}
+    except Exception:
+        log.exception("观察池重载失败，本轮仅监控持仓")
+        watch_map = {}
+    try:
+        hold_map = {h["code"]: h for h in load_holdings()}
+    except Exception:
+        log.exception("持仓重载失败，本轮仅监控观察池")
+        hold_map = {}
+    return watch_map, hold_map, sorted(set(watch_map) | set(hold_map))
+
+
 def append_raw(now: datetime, df) -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     path = RAW_DIR / f"{now.strftime('%Y%m%d')}.jsonl"
@@ -272,16 +299,7 @@ def main():
     args = p.parse_args()
     snapshot_holdings(datetime.now())
 
-    watchlist = load_today_watchlist()
-    holdings = load_holdings()
-    watch_map = {w["code"]: w for w in watchlist}
-    hold_map = {h["code"]: h for h in holdings}
-    codes = list(set(watch_map) | set(hold_map))
-
-    if not codes:
-        log.info("无观察池 + 持仓，退出")
-        return
-
+    watch_map, hold_map, codes = load_monitor_targets()
     log.info("监控 %d 只票：观察池 %d 持仓 %d", len(codes), len(watch_map), len(hold_map))
 
     sent: set[str] = set()
@@ -301,6 +319,13 @@ def main():
             continue
 
         round_idx += 1
+        watch_map, hold_map, codes = load_monitor_targets()
+        if not codes:
+            log.info("round %d 无观察池 + 持仓，等待下一轮", round_idx)
+            if args.once:
+                return
+            time.sleep(args.interval)
+            continue
         try:
             df = fetch_spot(codes)
         except Exception:

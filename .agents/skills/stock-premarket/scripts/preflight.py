@@ -8,12 +8,13 @@
       "exposure_pct": 50.0,
       "available_pct": 20.0,
       "position_count": 3,
+      "holdings": [{"code": "000001", "name": "平安银行", ...}],
       "banner": null,
       "ok": true
     }
 
-失败兜底：任何异常都返回保守默认值（banner=null, available_pct=max_single_position_pct）
-以保证 L1 推送不被风控模块阻塞。
+失败兜底：风险计算异常时返回保守默认值，但保留已经成功读取的持仓明细，
+避免 L1 把风控故障误判成空仓。
 """
 from __future__ import annotations
 import json
@@ -27,10 +28,32 @@ from stock_codex.domain import risk  # noqa: E402
 from stock_codex.domain.holdings import read_holdings  # noqa: E402
 
 
+def _holding_dict(h) -> dict:
+    return {
+        "code": h.code,
+        "name": h.name,
+        "genre": h.genre,
+        "cost": h.cost,
+        "shares": h.shares,
+        "buy_date": h.buy_date.isoformat(),
+        "stop_loss": h.stop_loss,
+        "take_profit": h.take_profit,
+        "note": h.note,
+    }
+
+
 def main() -> int:
+    holdings = []
+    holding_details: list[dict] = []
+    try:
+        holdings = read_holdings()
+        holding_details = [_holding_dict(h) for h in holdings]
+    except Exception as e:
+        print(f"[preflight] holdings.yaml 读取异常: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+
     try:
         cfg = risk.load_risk_config()
-        holdings = read_holdings()
         holdings_dicts = [
             {"code": h.code, "name": h.name, "cost": h.cost, "shares": h.shares}
             for h in holdings
@@ -44,6 +67,7 @@ def main() -> int:
             "exposure_pct": exposure["exposure_pct"],
             "available_pct": result["available_pct"],
             "position_count": exposure["position_count"],
+            "holdings": holding_details,
             "banner": result["banner"],
             "ok": result["ok"],
         }
@@ -55,7 +79,8 @@ def main() -> int:
         fallback = {
             "exposure_pct": 0.0,
             "available_pct": 30.0,
-            "position_count": 0,
+            "position_count": len(holding_details),
+            "holdings": holding_details,
             "banner": None,
             "ok": True,
         }

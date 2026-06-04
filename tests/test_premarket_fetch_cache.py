@@ -110,6 +110,26 @@ def test_allowed_marks_cached_premarket_sources() -> None:
     assert allowed["summary"]["limit_up_snapshot_cache"] == "postmarket_cache"
 
 
+def test_allowed_includes_existing_holdings(monkeypatch) -> None:
+    fp = load_module()
+    monkeypatch.setattr(
+        fp,
+        "read_holdings",
+        lambda: [type("Holding", (), {"code": "002608", "name": "江苏国信"})()],
+    )
+
+    allowed = fp.build_allowed(
+        date="20260521",
+        zt=pd.DataFrame(),
+        zb=pd.DataFrame(),
+        lhb=pd.DataFrame(),
+        hot=pd.DataFrame(),
+        news=pd.DataFrame(),
+    )
+
+    assert allowed["codes"]["002608"] == "江苏国信"
+
+
 def test_last_trade_day_uses_latest_cached_day_after_live_probe_failures(tmp_path, monkeypatch) -> None:
     fp = load_module()
     monkeypatch.setattr(fp, "PREMARKET_CACHE_DIR", tmp_path / "premarket_cache")
@@ -178,3 +198,17 @@ def test_overnight_news_returns_empty_when_all_sources_fail(monkeypatch) -> None
 
     assert df.empty
     assert list(df.columns) == ["发布时间", "来源", "标题", "URL"]
+
+
+def test_news_theme_tags_use_catalog_aliases_without_mapping_fiber_to_cpo() -> None:
+    fp = load_module()
+    news = pd.DataFrame([
+        {"标题": "光纤需求增长"},
+        {"标题": "AI 行业出现新催化"},
+    ])
+
+    tagged = fp.tag_news_themes(news)
+
+    assert "光纤光缆" in tagged.iloc[0]["命中题材"]
+    assert "CPO光模块" not in tagged.iloc[0]["命中题材"]
+    assert tagged.iloc[1]["命中题材"] == "AI硬件"
