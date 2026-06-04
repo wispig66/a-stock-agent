@@ -11,13 +11,13 @@
         log.exception("xxx 失败")   # 自动带 traceback
 
 req_id 贯穿：
-    set_req_id(new_req_id())           # TG 入站时
+    set_req_id(new_req_id())           # IM 入站时
     run_subprocess(["codex", "exec", ...], name="ask")  # 自动把 req_id 塞子进程 env
     # 子进程脚本启动时：
     from stock_codex.infra.logger import init_req_id_from_env
     init_req_id_from_env()
 
-ERROR/CRITICAL 自动推 TG（同 daemon+异常类型 5min 节流）。
+ERROR/CRITICAL 自动推 IM（同 daemon+异常类型 5min 节流）。
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ LOG_DIR.mkdir(exist_ok=True)
 
 _req_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("req_id", default="-")
 _loggers: dict[str, logging.Logger] = {}
-_in_tg_handler = False  # 防递归
+_in_error_handler = False  # 防递归
 
 
 def _redact_secrets(text: str) -> str:
@@ -75,8 +75,22 @@ class _ReqIdFilter(logging.Filter):
         return True
 
 
-class _TgErrorHandler(logging.Handler):
-    """ERROR+ → TG 推送，按 (logger_name, exception_type) 5 分钟节流。"""
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _error_alerts_enabled() -> bool:
+    if _env_truthy("STOCK_DISABLE_ERROR_ALERTS"):
+        return False
+    # pytest sets this during setup/call/teardown. Unit-test failures must never
+    # leak to live IM channels even when the developer shell has real .env creds.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    return True
+
+
+class _IMErrorHandler(logging.Handler):
+    """ERROR+ → IM 推送，按 (logger_name, exception_type) 5 分钟节流。"""
 
     def __init__(self, throttle_sec: int = 300):
         super().__init__(level=logging.ERROR)
@@ -84,8 +98,8 @@ class _TgErrorHandler(logging.Handler):
         self._last_sent: dict[tuple[str, str], float] = {}
 
     def emit(self, record: logging.LogRecord) -> None:
-        global _in_tg_handler
-        if _in_tg_handler:
+        global _in_error_handler
+        if _in_error_handler or not _error_alerts_enabled():
             return
         exc_type = "NoExc"
         if record.exc_info and record.exc_info[0]:
@@ -108,14 +122,14 @@ class _TgErrorHandler(logging.Handler):
             lines.append(f"```\n{_redact_secrets(tail)[:800]}\n```")
         text = "\n".join(lines)
 
-        _in_tg_handler = True
+        _in_error_handler = True
         try:
             from stock_codex.infra.notify import push  # type: ignore
             push(text, source=f"error:{record.name}", raw=True)
         except Exception as e:
-            print(f"[logger:TgErrorHandler] 推送失败: {e}", file=sys.stderr, flush=True)
+            print(f"[logger:IMErrorHandler] 推送失败: {e}", file=sys.stderr, flush=True)
         finally:
-            _in_tg_handler = False
+            _in_error_handler = False
 
 
 def get_logger(name: str, *, level: int = logging.INFO, tg_alert: bool = True) -> logging.Logger:
@@ -148,7 +162,7 @@ def get_logger(name: str, *, level: int = logging.INFO, tg_alert: bool = True) -
     log.addHandler(sh)
 
     if tg_alert:
-        log.addHandler(_TgErrorHandler())
+        log.addHandler(_IMErrorHandler())
 
     _loggers[name] = log
     return log

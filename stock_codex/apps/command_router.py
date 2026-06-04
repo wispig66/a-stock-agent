@@ -699,7 +699,7 @@ def _sync_trade_to_holdings(parsed: dict, now: Optional[datetime] = None) -> str
             parsed["code"], parsed["price"], parsed["qty"], target_pct,
         )
         fallback_genre = BUY_REASON_GENRE.get(parsed["reason"] or "", "未标记")
-        fallback_note = parsed["reason"] or "TG /buy"
+        fallback_note = parsed["reason"] or "IM /buy"
         rec = holdings_lib.Holding(
             code=parsed["code"],
             name=_stock_name_for_code(parsed["code"]),

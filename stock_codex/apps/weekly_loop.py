@@ -57,7 +57,7 @@ def _invoke_codex(timeout: int = TIMEOUT_SECONDS) -> int:
         "-C", str(root),
         "-",
     ]
-    prompt = "请运行 /stock-weekly：跑当周周复盘，输出长文 + TG 推送。"
+    prompt = "请运行 /stock-weekly：跑当周周复盘，输出长文 + IM 推送。"
     try:
         result = run_subprocess(cmd, name="weekly_skill", timeout=timeout,
                                 input_text=prompt, cwd=root)

@@ -319,7 +319,7 @@ def validate_card(
 
 
 def format_violations(violations: Iterable[Violation], limit: int = 10) -> str:
-    """人类可读的违规清单，用于 TG 提示卡 / 审计日志。"""
+    """人类可读的违规清单，用于 IM 提示卡 / 审计日志。"""
     lines = []
     for v in list(violations)[:limit]:
         if v.expected:

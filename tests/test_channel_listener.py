@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from stock_codex.apps import channel_listener
 from stock_codex.channels import FeishuAdapter
 
@@ -214,6 +216,7 @@ def test_main_marks_failed_listener_error_without_crashing_other_channels(monkey
     def fail_weixin(*, runtime):
         raise RuntimeError("WEIXIN_TOKEN 未配置")
 
+    monkeypatch.setenv("WEIXIN_TOKEN", "unit-token")
     monkeypatch.setattr(channel_listener, "enabled_channels", lambda: {"feishu", "weixin"})
     monkeypatch.setattr(channel_listener, "_acquire_gateway_lock", lambda: object())
     monkeypatch.setattr(channel_listener, "GatewayRuntime", lambda: FakeRuntime())
@@ -226,6 +229,44 @@ def test_main_marks_failed_listener_error_without_crashing_other_channels(monkey
     assert any(call[0] == "feishu" for call in calls)
     assert any(
         call == ("state", {"adapters": {"weixin": "error"}, "last_error": "WEIXIN_TOKEN 未配置"})
+        for call in calls
+    )
+
+
+def test_main_skips_weixin_listener_when_token_missing(monkeypatch):
+    calls = []
+
+    class FakeRuntime:
+        _running = False
+
+        def start(self, *, channels):
+            calls.append(("start", channels))
+
+        def write_state(self, **patch):
+            calls.append(("state", patch))
+
+    monkeypatch.delenv("WEIXIN_TOKEN", raising=False)
+    monkeypatch.setattr(channel_listener, "enabled_channels", lambda: {"feishu", "weixin"})
+    monkeypatch.setattr(channel_listener, "_acquire_gateway_lock", lambda: object())
+    monkeypatch.setattr(channel_listener, "GatewayRuntime", lambda: FakeRuntime())
+    monkeypatch.setattr(channel_listener, "run_feishu_ws", lambda *, runtime: calls.append(("feishu", runtime)))
+    monkeypatch.setattr(
+        channel_listener,
+        "run_weixin_listener",
+        lambda *, runtime: pytest.fail("missing-token weixin listener should not start"),
+    )
+
+    channel_listener.main()
+
+    assert any(call[0] == "feishu" for call in calls)
+    assert any(
+        call == (
+            "state",
+            {
+                "adapters": {"weixin": "config_missing"},
+                "last_error": "WEIXIN_TOKEN 未配置；先运行 scripts/configure_weixin.py 扫码登录",
+            },
+        )
         for call in calls
     )
 

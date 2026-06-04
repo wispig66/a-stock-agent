@@ -630,6 +630,12 @@ def _listener_dispatch() -> dict[str, Callable[..., None]]:
     return {"feishu": run_feishu_ws, "weixin": run_weixin_listener}
 
 
+def _listener_startup_error(channel: str) -> str | None:
+    if channel == "weixin" and not os.environ.get("WEIXIN_TOKEN", "").strip():
+        return "WEIXIN_TOKEN 未配置；先运行 scripts/configure_weixin.py 扫码登录"
+    return None
+
+
 def _run_listener(channel: str, fn: Callable[..., None], runtime: GatewayRuntime) -> None:
     try:
         fn(runtime=runtime)
@@ -656,7 +662,16 @@ def main() -> None:
     )
     drain.start()
     dispatch = _listener_dispatch()
-    listeners = [(ch, dispatch[ch]) for ch in sorted(channels) if ch in dispatch]
+    listeners: list[tuple[str, Callable[..., None]]] = []
+    for ch in sorted(channels):
+        if ch not in dispatch:
+            continue
+        startup_error = _listener_startup_error(ch)
+        if startup_error:
+            runtime.write_state(adapters={ch: "config_missing"}, last_error=startup_error)
+            log.warning("%s listener not started: %s", ch, startup_error)
+            continue
+        listeners.append((ch, dispatch[ch]))
     if not listeners:
         log.warning("no inbound listener for channels=%s; outbound still flows via outbox", channels)
         while getattr(runtime, "_running", False):
