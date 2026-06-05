@@ -36,6 +36,13 @@ bash scripts/install_automations.sh install --replace --agent hermes
 bash scripts/install_automations.sh install --agent claude-code --dry-run
 ```
 
+`--dry-run` 不会写真实 agent 配置目录；未指定 `--output-dir` 时会自动生成临时目录。需要检查生成文件时显式传输出目录：
+
+```bash
+bash scripts/install_automations.sh install --agent codex --dry-run --output-dir /tmp/stock-codex-automations
+bash scripts/install_automations.sh install --agent claude-code --dry-run --output-dir /tmp/stock-claude-tasks
+```
+
 ## 部署模型
 
 部署只保留本机路径：
@@ -43,6 +50,8 @@ bash scripts/install_automations.sh install --agent claude-code --dry-run
 - 本机安装 Python 依赖和 skills。
 - 短时 LLM jobs 由选定 agent 的调度机制管理。
 - 本机 `~/Library/LaunchAgents/` 是长时 daemon 的唯一 launchd 来源。
+
+调度安装失败会返回非 0：`cli-register` agent 任一 job 注册/卸载失败、`launchd-fallback` 任一 bootstrap 失败，都会让 installer 失败退出，不能只看末尾 summary。
 
 ## 本机安装
 
@@ -66,6 +75,8 @@ bash scripts/doctor_codex_runtime.sh
 ```
 
 `scripts/install_automations.sh` 负责短时 LLM jobs；`scripts/install_runtime_services.sh` 负责长时 launchd daemon。旧入口 `scripts/install_codex_automations.sh` 仍可用（自动委托到新统一入口）。
+
+`opencode` / `kimicode` 使用 launchd fallback：生成的 plist 会写入 `STOCK_AGENT`，运行时固定使用安装时选择的 agent；`config/jobs.yaml` 的 cron weekday 会转换为 launchd `Weekday`，周日支持 `0` 或 `7`。
 
 ## Active Jobs
 

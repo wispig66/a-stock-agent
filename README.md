@@ -215,6 +215,13 @@ export STOCK_AGENT=claude-code
 bash scripts/install_automations.sh install --replace
 ```
 
+安装前可先 dry-run；不带 `--output-dir` 时只写临时目录，不会改真实 agent 配置：
+
+```bash
+bash scripts/install_automations.sh install --agent codex --dry-run
+bash scripts/install_automations.sh install --agent claude-code --dry-run --output-dir /tmp/stock-claude-tasks
+```
+
 安装后运行诊断：
 
 ```bash
