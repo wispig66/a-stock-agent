@@ -6,13 +6,6 @@
 
 > 本项目只做研究、记录和提醒，不自动下单，不连接券商，不承诺收益。所有交易决策和实际下单都由使用者自行完成。
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green" alt="License: MIT"></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue" alt="Python 3.11/3.12"></a>
-  <a href="tests"><img src="https://img.shields.io/badge/tests-pytest-blue" alt="pytest"></a>
-  <img src="https://img.shields.io/badge/runtime-macOS-lightgrey" alt="macOS runtime">
-</p>
-
 ## 项目状态
 
 当前项目处于 **个人本地运行 / 早期开源** 阶段：
