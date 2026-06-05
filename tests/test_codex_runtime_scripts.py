@@ -108,8 +108,9 @@ def test_quickstart_installs_initializes_and_starts_gateway() -> None:
     assert_contains_all(
         readme,
         [
-            "bash scripts/quickstart.sh",
             "三分钟快速开始",
+            "请帮我在这台机器上运行 A Stock Agent 快速开始",
+            "不要让我手动复制命令",
             "飞书",
         ],
         label="README quickstart",

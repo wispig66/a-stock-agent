@@ -149,17 +149,27 @@ sequenceDiagram
 
 ## 三分钟快速开始
 
-新用户建议先跑 IM 问答模式，把本地依赖、数据库、飞书配置和 IM 网关跑起来。微信需要扫码登录，通常在快速安装后单独配置：
+把下面这段话发给 Codex / Claude Code，让 agent 在你的机器上完成快速开始。目标是先跑通随时问答入口，完整定时自动化可以在下一步再开。
 
-```bash
-git clone https://github.com/wispig66/a-stock-agent.git
-cd a-stock-agent
-bash scripts/quickstart.sh
+```text
+请帮我在这台机器上运行 A Stock Agent 快速开始。
+
+目标：
+1. 让随时问答入口可用。
+2. 不自动下单，不连接券商，不做任何真实交易动作。
+3. 如果缺少飞书、微信或其他外部服务凭证，只告诉我需要补哪些字段，不要伪造凭证。
+
+执行要求：
+1. 如果当前目录没有仓库，请 clone https://github.com/wispig66/a-stock-agent.git 并进入项目；如果已经在仓库里，请先确认分支、工作区和最新代码状态。
+2. 先阅读 README.md、docs/automations.md、scripts/quickstart.sh 和 .env.example，确认当前参考实现需要做什么。
+3. 需要安装工具、同步依赖、初始化 SQLite、创建 .env、启动 IM gateway 或运行验证时，请你直接执行对应命令，不要让我手动复制命令。
+4. 每一步都要基于实际命令输出判断，不要假设环境已经满足。
+5. 完成后告诉我：执行了哪些关键动作，哪些服务已经启动，哪些凭证还缺，验证是否通过，以及我可以向 IM 发送哪些测试消息。
 ```
 
-脚本会检查或安装 `uv`，同步 Python 依赖，初始化 SQLite，创建 `.env`，写入飞书等通道默认配置，并启动统一 IM gateway。飞书凭证可在安装后运行 `scripts/configure_feishu.py` 写入；个人微信通过 `scripts/configure_weixin.py` 扫码登录。
+agent 通常会使用仓库内置的 `scripts/quickstart.sh` 完成参考实现的安装和初始化。这个脚本会检查或安装 `uv`，同步依赖，初始化 SQLite，创建 `.env`，写入 IM 通道默认配置，并启动统一 IM gateway。飞书凭证可通过 `scripts/configure_feishu.py` 写入；个人微信通过 `scripts/configure_weixin.py` 扫码登录。
 
-这一步只代表 **随时问答入口可用**。启动成功后，你可以在飞书私聊机器人发送：
+快速开始只代表 **随时问答入口可用**。启动成功后，你可以在飞书或已配置的 IM 通道里发送：
 
 ```text
 /help
@@ -167,28 +177,28 @@ bash scripts/quickstart.sh
 /ask 光伏今天能不能看
 ```
 
-常用选项：
+如果你想跳过 agent，手动跑参考实现，可以直接执行：
 
 ```bash
-# 只安装和初始化，不启动 IM gateway
-bash scripts/quickstart.sh --no-start
-
-# 安装后进入飞书配置向导
-bash scripts/quickstart.sh --with-feishu
-
-# 配置个人微信 iLink
-uv run --no-sync python scripts/configure_weixin.py
-
-# 安装后跑测试
-bash scripts/quickstart.sh --test
-
-# 非交互安装，适合脚本化部署（飞书凭证先写好 .env）
-FEISHU_APP_ID=xxx FEISHU_APP_SECRET=yyy bash scripts/quickstart.sh
+bash scripts/quickstart.sh
 ```
 
 ## 完整自动化运行
 
-如果你要让系统每天自动跑盘前、盘中、盘后和周复盘，需要安装自动化调度和本地长时 daemon：
+如果你要让系统每天自动跑盘前、盘中、盘后和周复盘，继续让 agent 安装自动化调度和长时 daemon：
+
+```text
+请继续帮我启用 A Stock Agent 的完整自动化运行。
+
+目标：
+1. 安装 config/jobs.yaml 里的短时 LLM 自动化任务。
+2. 安装长时 daemon，用于观察池、异动和题材监控。
+3. 先 dry-run 或检查现有配置，避免覆盖未知的本机调度项。
+4. 安装后运行诊断和相关测试，确认 Codex / Claude Code 或我指定的 agent 能正常调度。
+5. 如果缺少 CLI、凭证或系统权限，请明确列出阻塞点，不要假装安装成功。
+```
+
+如果你想手动跑当前参考实现，可以执行：
 
 ```bash
 bash scripts/quickstart.sh --install-schedule
