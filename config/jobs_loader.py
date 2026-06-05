@@ -21,6 +21,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -93,6 +94,25 @@ def validate(cfg: dict[str, Any]) -> list[str]:
             errors.append(f"job '{job_id}': skill 目录不存在 {skill_dir}")
         if "schedule" not in job:
             errors.append(f"job '{job_id}': 缺少 schedule")
+            continue
+        sched = job["schedule"]
+        for field in ("rrule", "cron", "hour", "minute"):
+            if field not in sched:
+                errors.append(f"job '{job_id}': schedule 缺少 {field}")
+        hour = sched.get("hour")
+        minute = sched.get("minute")
+        if not isinstance(hour, int) or not 0 <= hour <= 23:
+            errors.append(f"job '{job_id}': schedule.hour 必须是 0-23")
+        if not isinstance(minute, int) or not 0 <= minute <= 59:
+            errors.append(f"job '{job_id}': schedule.minute 必须是 0-59")
+        cron = str(sched.get("cron", ""))
+        if len(cron.split()) != 5:
+            errors.append(f"job '{job_id}': cron 必须是 5 段")
+            continue
+        try:
+            _cron_weekdays(cron)
+        except ValueError as exc:
+            errors.append(f"job '{job_id}': {exc}")
 
     return errors
 
@@ -260,6 +280,7 @@ def _install_cli_register(
     cli = agent["cli"]
     sched = agent["scheduling"]
     install_tpl = sched["install_cmd"]
+    failures: list[str] = []
 
     for job_id, job in jobs:
         prompt = render_prompt(job, agent_name)
@@ -276,9 +297,15 @@ def _install_cli_register(
             result = subprocess.run(
                 cmd_str, shell=True, capture_output=True, text=True, check=False)
             if result.returncode != 0:
-                print(f"[!] {job_id} 注册失败: {result.stderr[:200]}", file=sys.stderr)
+                detail = (result.stderr or result.stdout or "")[:200]
+                failures.append(f"{job_id}: {detail}")
+                print(f"[!] {job_id} 注册失败: {detail}", file=sys.stderr)
             else:
                 print(f"[+] registered {job_id}")
+
+    if failures:
+        print(f"错误: {len(failures)} 个 job 注册失败", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +328,11 @@ _PLIST_TEMPLATE = """\
   </array>
   <key>WorkingDirectory</key>
   <string>{cwd}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>STOCK_AGENT</key>
+    <string>{agent_name}</string>
+  </dict>
   <key>StartCalendarInterval</key>
   {calendar_xml}
   <key>RunAtLoad</key>
@@ -313,13 +345,55 @@ _PLIST_TEMPLATE = """\
 </plist>"""
 
 
+def _normalize_cron_weekday(day: int) -> int:
+    if day == 7:
+        return 0
+    if 0 <= day <= 6:
+        return day
+    raise ValueError(f"cron weekday must be 0-7, got {day}")
+
+
+def _cron_weekdays(cron: str) -> list[int] | None:
+    fields = cron.split()
+    if len(fields) != 5:
+        return None
+    weekday_field = fields[4]
+    if weekday_field in {"*", "?"}:
+        return None
+
+    days: list[int] = []
+    for item in weekday_field.split(","):
+        item = item.strip()
+        if not item:
+            raise ValueError(f"invalid cron weekday field: {cron}")
+        try:
+            if "-" in item:
+                start, end = item.split("-", 1)
+                start_day = int(start)
+                end_day = int(end)
+                if start_day > end_day:
+                    raise ValueError(f"cron weekday range must ascend, got {item}")
+                days.extend(_normalize_cron_weekday(day)
+                            for day in range(start_day, end_day + 1))
+            else:
+                days.append(_normalize_cron_weekday(int(item)))
+        except ValueError as exc:
+            if "cron weekday" in str(exc):
+                raise
+            raise ValueError(f"invalid cron weekday value: {item}") from exc
+    return list(dict.fromkeys(days))
+
+
 def _calendar_xml(job: dict[str, Any]) -> str:
     sched = job["schedule"]
     hour = sched["hour"]
     minute = sched["minute"]
-    if sched.get("weekdays_only", False):
+    weekdays = _cron_weekdays(str(sched.get("cron", "")))
+    if weekdays is None and sched.get("weekdays_only", False):
+        weekdays = list(range(1, 6))
+    if weekdays is not None:
         entries = []
-        for day in range(1, 6):  # Monday=1 .. Friday=5
+        for day in weekdays:
             entries.append(textwrap.dedent(f"""\
                 <dict>
                   <key>Weekday</key><integer>{day}</integer>
@@ -337,18 +411,21 @@ def _calendar_xml(job: dict[str, Any]) -> str:
 def _install_launchd_fallback(
     jobs: list[tuple[str, dict[str, Any]]],
     *,
+    agent_name: str,
     dry_run: bool,
     output_dir: Path | None,
 ) -> None:
     runner = ROOT / "scripts" / "run_agent_job.sh"
     plist_dir = output_dir or Path.home() / "Library" / "LaunchAgents"
     plist_dir.mkdir(parents=True, exist_ok=True)
+    failures: list[str] = []
 
     for job_id, job in jobs:
         label = f"{LAUNCHD_LABEL_PREFIX}.{job_id}"
         job_id_safe = job_id.replace("-", "_")
         xml = _PLIST_TEMPLATE.format(
             label=label,
+            agent_name=agent_name,
             runner=str(runner),
             job_id=job_id,
             cwd=str(ROOT),
@@ -368,10 +445,15 @@ def _install_launchd_fallback(
                 ["launchctl", "bootstrap", f"gui/{uid}", str(dest)],
                 capture_output=True, text=True, check=False)
             if result.returncode != 0:
-                print(f"[!] {job_id} launchd bootstrap 失败: {result.stderr[:200]}",
-                      file=sys.stderr)
+                detail = (result.stderr or result.stdout or "")[:200]
+                failures.append(f"{job_id}: {detail}")
+                print(f"[!] {job_id} launchd bootstrap 失败: {detail}", file=sys.stderr)
             else:
                 print(f"[+] installed {dest.name}")
+
+    if failures:
+        print(f"错误: {len(failures)} 个 launchd job 安装失败", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +476,9 @@ def install_jobs(
         sys.exit(f"错误: 未找到 {cli} 可执行文件。请先安装 {name}。")
 
     stype = agent["scheduling"]["type"]
+    if dry_run and output_dir is None and stype in {"config-file", "launchd-fallback"}:
+        output_dir = Path(tempfile.mkdtemp(prefix=f"stock-agent-{name}-dry-run."))
+        print(f"[dry-run] using temporary output dir {output_dir}")
 
     if stype == "config-file":
         fmt = agent["scheduling"]["format"]
@@ -406,7 +491,8 @@ def install_jobs(
     elif stype == "cli-register":
         _install_cli_register(agent, jobs, name, dry_run=dry_run)
     elif stype == "launchd-fallback":
-        _install_launchd_fallback(jobs, dry_run=dry_run, output_dir=output_dir)
+        _install_launchd_fallback(
+            jobs, agent_name=name, dry_run=dry_run, output_dir=output_dir)
 
     print(f"\nInstalled {len(jobs)} automation jobs for agent '{name}' "
           f"(scheduling: {stype})")
@@ -443,13 +529,23 @@ def uninstall_jobs(
     elif stype == "cli-register":
         cli = agent["cli"]
         uninstall_tpl = agent["scheduling"].get("uninstall_cmd", "")
+        failures: list[str] = []
         for job_id, _ in jobs:
             cmd_str = f"{cli} {uninstall_tpl}".format(job_id=job_id)
             if dry_run:
                 print(f"[dry-run] would run: {cmd_str}")
             else:
-                subprocess.run(cmd_str, shell=True, capture_output=True, check=False)
-                print(f"[-] unregistered {job_id}")
+                result = subprocess.run(
+                    cmd_str, shell=True, capture_output=True, text=True, check=False)
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout or "")[:200]
+                    failures.append(f"{job_id}: {detail}")
+                    print(f"[!] {job_id} 取消注册失败: {detail}", file=sys.stderr)
+                else:
+                    print(f"[-] unregistered {job_id}")
+        if failures:
+            print(f"错误: {len(failures)} 个 job 取消注册失败", file=sys.stderr)
+            sys.exit(1)
 
     elif stype == "launchd-fallback":
         uid = os.getuid()

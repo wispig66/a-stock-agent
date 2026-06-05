@@ -32,11 +32,28 @@ EXPECTED_SKILLS = {
 def run_installer(output_dir: Path, agent: str = "codex") -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["CODEX_HOME"] = str(output_dir.parent / "codex-home")
+    env["CLAUDE_CONFIG_DIR"] = str(output_dir.parent / "claude-home")
     env["CODEX_AUTOMATION_MODEL"] = "gpt-5.4"
     env["CODEX_AUTOMATION_REASONING_EFFORT"] = "medium"
     return subprocess.run(
         ["bash", str(INSTALL_SCRIPT), "install", "--agent", agent,
          "--dry-run", "--output-dir", str(output_dir)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def run_default_dry_run(tmp_path: Path, agent: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(tmp_path / "codex-home")
+    env["CLAUDE_CONFIG_DIR"] = str(tmp_path / "claude-home")
+    env["CODEX_AUTOMATION_MODEL"] = "gpt-5.4"
+    env["CODEX_AUTOMATION_REASONING_EFFORT"] = "medium"
+    return subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), "install", "--agent", agent, "--dry-run"],
         cwd=ROOT,
         env=env,
         text=True,
@@ -74,6 +91,20 @@ def test_codex_automation_dry_run_generates_all_jobs(tmp_path):
     assert "[dry-run]" in result.stdout
     assert out_dir.exists(), result_details(result)
     assert sorted(p.name for p in out_dir.iterdir()) == sorted(EXPECTED_JOBS)
+
+
+def test_codex_dry_run_without_output_dir_does_not_write_agent_home(tmp_path):
+    result = run_default_dry_run(tmp_path, "codex")
+    assert_success(result)
+    assert "temporary output dir" in result.stdout
+    assert not (tmp_path / "codex-home").exists()
+
+
+def test_claude_code_dry_run_without_output_dir_does_not_write_agent_home(tmp_path):
+    result = run_default_dry_run(tmp_path, "claude-code")
+    assert_success(result)
+    assert "temporary output dir" in result.stdout
+    assert not (tmp_path / "claude-home").exists()
 
 
 def test_codex_automation_toml_contract(tmp_path):
@@ -149,3 +180,15 @@ def test_launchd_fallback_generates_plists(tmp_path):
         assert label in content
         assert "run_agent_job.sh" in content
         assert job_id in content
+        assert "STOCK_AGENT" in content
+        assert "opencode" in content
+
+
+def test_launchd_fallback_preserves_weekly_schedule(tmp_path):
+    out_dir = tmp_path / "plists"
+    result = run_installer(out_dir, agent="opencode")
+    assert_success(result)
+
+    weekly = out_dir / "com.user.stockagent.stock-weekly-review.plist"
+    content = weekly.read_text(encoding="utf-8")
+    assert "<key>Weekday</key><integer>0</integer>" in content

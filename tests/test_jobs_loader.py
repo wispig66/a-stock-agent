@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -15,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config.jobs_loader import (
     load_config,
     active_agent_name,
+    _cron_weekdays,
     install_jobs,
     uninstall_jobs,
     verify_jobs,
@@ -113,6 +115,68 @@ def test_install_launchd_fallback(tmp_path, cfg):
         assert plist.exists(), f"Missing {plist}"
         content = plist.read_text(encoding="utf-8")
         assert "run_agent_job.sh" in content
+
+
+def test_cron_weekdays_supports_sunday_aliases():
+    assert _cron_weekdays("0 21 * * 0") == [0]
+    assert _cron_weekdays("0 21 * * 7") == [0]
+    assert _cron_weekdays("0 8 * * 1-5") == [1, 2, 3, 4, 5]
+    assert _cron_weekdays("0 8 * * *") is None
+
+
+def test_cron_weekdays_rejects_invalid_values():
+    with pytest.raises(ValueError, match="weekday"):
+        _cron_weekdays("0 8 * * 8")
+    with pytest.raises(ValueError, match="weekday"):
+        _cron_weekdays("0 8 * * 5-1")
+
+
+def test_cli_register_install_failure_exits_nonzero(cfg, monkeypatch):
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=args[0], returncode=2, stderr="boom")
+
+    monkeypatch.setattr("shutil.which", lambda _: "/tmp/fake-cli")
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        install_jobs(cfg, agent_override="cline", dry_run=False)
+
+    assert exc.value.code == 1
+
+
+def test_cli_register_uninstall_failure_exits_nonzero(cfg, monkeypatch):
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=args[0], returncode=2, stderr="boom")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        uninstall_jobs(cfg, agent_override="cline", dry_run=False)
+
+    assert exc.value.code == 1
+
+
+def test_launchd_bootstrap_failure_exits_nonzero(tmp_path, cfg, monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if "bootstrap" in args:
+            return subprocess.CompletedProcess(args=args, returncode=5, stderr="boom")
+        return subprocess.CompletedProcess(args=args, returncode=0, stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        install_jobs(
+            cfg,
+            agent_override="opencode",
+            dry_run=False,
+            output_dir=tmp_path,
+        )
+
+    assert exc.value.code == 1
+    assert any("bootstrap" in call for call in calls)
 
 
 # --- verify ---
