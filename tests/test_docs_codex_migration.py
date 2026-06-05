@@ -61,7 +61,7 @@ def test_readme_describes_codex_as_short_llm_scheduler():
 
     assert_contains_all(
         schedule_section,
-        ["短时 LLM", "launchd 运行长时 daemon"],
+        ["短时 LLM", "长时 daemon", "等价服务管理器"],
         label="README scheduling section",
     )
     assert_contains_none(

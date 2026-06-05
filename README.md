@@ -1,20 +1,21 @@
 # A Stock Agent
 
-基于可配置多 Agent 自动化调度的本地 A 股短线研究 Agent。
+自托管的 A 股研究工作流，基于可配置 AI agent、可审计 skill 和确定性数据脚本运行。
 
-它把「盘前计划、盘中纪律、盘后复盘、周复盘、异动监控、随时问答」拆成一组可审计的 skill：先由确定性脚本拉取行情、题材、消息和持仓数据，形成 fact pack；再由 AI agent 生成交易研究卡片；最后通过飞书 / 个人微信推送给用户。
+它把「盘前计划、盘中纪律、盘后复盘、周复盘、异动监控、随时问答」拆成一组可审计的 workflow：先由确定性脚本或数据适配层拉取行情、题材、消息和持仓数据，形成 fact pack；再由 AI agent 生成交易研究卡片；最后通过 IM 通道推送给用户。
 
 > 本项目只做研究、记录和提醒，不自动下单，不连接券商，不承诺收益。所有交易决策和实际下单都由使用者自行完成。
 
-## 项目状态
+## 项目定位
 
-当前项目处于 **个人本地运行 / 早期开源** 阶段：
+A Stock Agent 不是交易执行系统，也不是通用聊天机器人。它关注的是把 A 股短线研究流程拆成可重复、可审计、可替换的环节：
 
-- 飞书和个人微信 iLink 是当前运行通道；飞书使用官方 WebSocket 长连，个人微信扫码登录、仅 1v1。
-- 支持多种 AI agent 执行自动化任务（Codex / Claude Code / Cline / OpenClaw / Hermes / OpenCode / KimiCode），通过 `config/jobs.yaml` 或 `STOCK_AGENT` 环境变量切换。
-- macOS 是主要支持环境；Linux 可运行部分 Python 逻辑，但 launchd 调度不适用。
+- `stock-*` skills 定义研究任务和输出契约。
+- `config/jobs.yaml` 定义自动化任务、时间表和 agent profile。
+- 数据抓取、校验、去重、日志和 IM 推送由确定性组件承担。
+- AI agent 负责阅读 fact pack，生成结构化研究卡片。
 
-如果你只是想体验单股/题材问答，先跑 `quickstart.sh` 即可。如果你想让它每天自动跑盘前、盘中、盘后和周复盘，需要安装自动化调度（默认使用 Codex）。
+仓库内置了一套 Python/SQLite/IM gateway 参考实现和一组 macOS launchd 安装脚本；这些是当前实现路径，不是项目模型的唯一边界。其他运行环境可以用等价的进程管理器、调度器或数据适配层替换。
 
 ## 目录
 
@@ -33,7 +34,7 @@
 
 ## 核心定位
 
-A Stock Agent 不是普通行情脚本，也不是聊天机器人。它的核心是一个本机运行的 **AI Agent 工作流**：
+A Stock Agent 的核心是一个自托管的 **AI Agent 研究工作流**：
 
 ```text
 自动化调度到点触发（支持 Codex / Claude Code / Cline / OpenClaw / Hermes 等）
@@ -45,10 +46,10 @@ A Stock Agent 不是普通行情脚本，也不是聊天机器人。它的核心
   -> SQLite 留痕，供后续复盘和下一轮分析使用
 ```
 
-长时间轮询类任务不交给 LLM 常驻，而是由本地 daemon 负责：
+长时间轮询类任务不交给 LLM 常驻，而是由本地常驻服务负责：
 
 ```text
-launchd 运行长时 daemon
+本地服务管理器运行长时 daemon
   -> watch_loop / anomaly_loop / theme_emergence_loop
   -> 命中阈值后直接推送或写入上下文
   -> stock-* skill 在固定时点读取这些上下文做综合判断
@@ -58,7 +59,7 @@ launchd 运行长时 daemon
 
 ## 架构和流程
 
-运行时分成三层：stock-* skills 负责研究任务，确定性 Python 模块负责数据和校验，IM gateway 负责用户入口和推送。SQLite 是中间状态和审计日志，不把关键状态藏在聊天上下文里。
+运行时分成三层：stock-* skills 负责研究任务，当前参考实现中的确定性模块负责数据和校验，IM gateway 负责用户入口和推送。SQLite 是中间状态和审计日志，不把关键状态藏在聊天上下文里。
 
 ```mermaid
 flowchart LR
@@ -79,7 +80,7 @@ flowchart LR
     Gateway --> DB
 ```
 
-每天的固定任务由自动化调度触发（`config/jobs.yaml` 定义，支持多种 AI agent），盘中长轮询交给 launchd daemon。这样做是为了让 LLM 只在需要归因和整理时运行，行情轮询、阈值判断和日志记录都留给可重复执行的脚本。
+每天的固定任务由自动化调度触发（`config/jobs.yaml` 定义，支持多种 AI agent），盘中长轮询交给常驻 daemon。这样做是为了让 LLM 只在需要归因和整理时运行，行情轮询、阈值判断和日志记录都留给可重复执行的脚本。
 
 ```mermaid
 sequenceDiagram
@@ -89,7 +90,7 @@ sequenceDiagram
     participant DB as SQLite
     participant LLM as AI agent
     participant Push as 飞书 / 微信
-    participant Daemon as launchd daemon
+    participant Daemon as 常驻 daemon
 
     Auto->>Skill: 到点触发盘前/盘中/盘后/周复盘
     Skill->>Data: 拉行情、题材、消息、持仓
@@ -225,14 +226,13 @@ bash scripts/doctor_codex_runtime.sh
 
 | 依赖 | 说明 |
 |------|------|
-| macOS | 当前主要支持的运行环境；launchd 调度按 macOS 设计。 |
-| AI agent CLI | 至少安装一种：Codex（默认）/ Claude Code / Cline / OpenClaw / Hermes / OpenCode / KimiCode。 |
-| Python 3.11/3.12 | 由 `uv` 管理。 |
-| SQLite | 保存本地运行状态和审计日志。 |
-| 飞书 bot | 默认 IM 入口和推送通道；使用官方 WebSocket SDK，不需要公网 webhook。 |
-| 个人微信 iLink | 当前启用的第二通道；扫码登录、仅 1v1，定时推送 best-effort。 |
+| Agent CLI | 至少安装一种支持的 AI agent CLI；内置 profile 包括 Codex、Claude Code、Cline、OpenClaw、Hermes、OpenCode、KimiCode。 |
+| 参考实现运行环境 | 仓库内置脚本使用 `uv` 管理 Python 依赖，并用 SQLite 保存本地状态和审计日志。只复用 skill / 调度配置时，可以接入自己的执行环境。 |
+| 定时和常驻服务 | macOS launchd 安装脚本已内置；其他系统可用 systemd、cron、supervisor、容器任务或自定义调度器实现同等能力。 |
+| IM 通道 | 当前内置飞书 bot 和个人微信 iLink；只做本地分析或测试时不需要配置 IM 凭证。 |
+| 数据源和密钥 | 按启用的 workflow 配置行情、消息、IM 等外部服务凭证。 |
 
-如果只是开发或跑单元测试，AI agent CLI 和 IM 凭证不是必须的；如果要完整跑自动化研究流程，AI agent CLI、IM 通道和本机常驻环境都需要配置好。
+如果只是阅读 skills、跑部分单元测试或复用配置，很多运行依赖都不是必须的；如果要完整跑当前参考实现，需要配置 agent CLI、数据源、IM 通道和一个可用的定时/常驻运行环境。
 
 ## 手动安装
 
@@ -291,7 +291,7 @@ launchctl list | rg 'stockchannelgateway' || true
 本项目把运行时分成两类：
 
 - **短时 LLM 任务**：到点运行一次 skill，生成卡片后退出。由 `config/jobs.yaml` 定义，支持多种 AI agent 调度（默认 Codex，可切换为 Claude Code / Cline / OpenClaw / Hermes / OpenCode / KimiCode）。
-- **launchd 运行长时 daemon**：盘中常驻进程，负责不适合 LLM 长跑的轮询、阈值监控和 IM gateway 常驻。
+- **长时 daemon**：盘中常驻进程，负责不适合 LLM 长跑的轮询、阈值监控和 IM gateway 常驻。仓库提供 macOS launchd 模板，其他环境可替换为等价服务管理器。
 
 | 类型 | 任务 | 入口 |
 |------|------|------|
@@ -299,9 +299,9 @@ launchctl list | rg 'stockchannelgateway' || true
 | 短时 LLM（多 agent） | 盘中四个时点 | `stock-intraday-*` |
 | 短时 LLM（多 agent） | 盘后复盘 | `stock-postmarket` |
 | 短时 LLM（多 agent） | 周复盘 | `stock-weekly-review` |
-| launchd 运行长时 daemon | 观察池/持仓轮询 | `com.user.stockwatchloop` |
-| launchd 运行长时 daemon | 全市场异动监控 | `com.user.stockanomalyloop` |
-| launchd 运行长时 daemon | 题材冒头监控 | `com.user.stockthemeloop` |
+| 长时 daemon | 观察池/持仓轮询 | `com.user.stockwatchloop` |
+| 长时 daemon | 全市场异动监控 | `com.user.stockanomalyloop` |
+| 长时 daemon | 题材冒头监控 | `com.user.stockthemeloop` |
 
 IM gateway 监听进程通过 `bash scripts/start_gateway.sh` 启动。macOS 下脚本会用 `launchctl submit` 挂起 `com.user.stockchannelgateway`，其他环境回退到 `nohup`。连接绑定型通道的出站发送依赖 gateway 持有的 listener 和 outbox drain，因此它必须常驻。
 
@@ -399,7 +399,7 @@ sqlite3 data/daily.db "SELECT channel, success, source FROM channel_outbound_log
 
 ```text
 .agents/skills/          skill 定义：盘前、盘中、盘后、周复盘、异动、问答
-stock_codex/             Python 包
+stock_codex/             当前参考实现
   apps/                  runtime 入口
   channels/              飞书 / 微信 gateway adapter
   domain/                交易日历、持仓、风控、决策票
@@ -407,8 +407,8 @@ stock_codex/             Python 包
   market/                行情、题材、事件、卡片校验
   schema/                SQLite schema
 scripts/                 安装、迁移、诊断、配置脚本
-bin/                     手动或 launchd runtime 入口
-launchd/                 launchd 模板
+bin/                     手动或服务管理器入口
+launchd/                 macOS launchd 参考模板
 tests/                   pytest 测试
 docs/                    运行手册和设计文档
 ```
@@ -419,7 +419,7 @@ docs/                    运行手册和设计文档
 # 快速安装/启动
 bash scripts/quickstart.sh
 
-# 安装自动化调度和 launchd daemon
+# 安装自动化调度和长时 daemon
 bash scripts/quickstart.sh --install-schedule
 
 # 诊断本机运行环境
