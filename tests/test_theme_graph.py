@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 
@@ -178,3 +179,51 @@ def test_old_reason_is_not_promoted_when_recent_scored_dates_have_no_code_row(tm
     matches = graph.resolve("600000", "测试股", "", "", datetime(2026, 6, 3, 10, 0))
 
     assert "CPO光模块" not in {match.theme for match in matches}
+
+
+def test_reason_lookup_closes_database_connections(tmp_path, monkeypatch) -> None:
+    graph = make_graph(tmp_path, with_db=True)
+    calls = {"entered": 0, "closed": 0}
+
+    class FakeCursor:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+        def fetchall(self):
+            return self.rows
+
+    class FakeConnection:
+        def execute(self, sql, params=()):
+            if "sqlite_master" in sql:
+                return FakeCursor([(1,)])
+            if "DISTINCT date" in sql:
+                return FakeCursor([("2026-06-02",)])
+            return FakeCursor([("2026-06-02", "CPO")])
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            calls["closed"] += 1
+
+    @contextmanager
+    def fake_connect_close(path, *, timeout_ms=5000):
+        calls["entered"] += 1
+        conn = FakeConnection()
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+    monkeypatch.setattr("stock_codex.market.theme_graph.connect_close", fake_connect_close)
+
+    graph.resolve("600000", "测试股", "", "", datetime(2026, 6, 3, 10, 0))
+
+    assert calls == {"entered": 2, "closed": 2}

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+from stock_codex.infra.db import connect_close
 from stock_codex.paths import DATA_DIR, DB_FILE
 
 
@@ -200,7 +201,7 @@ class ThemeGraph:
         if not code or not self.db_path.exists():
             return []
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with connect_close(self.db_path) as conn:
                 has_table = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ths_hot_reason'"
                 ).fetchone()
@@ -219,7 +220,7 @@ class ThemeGraph:
         if not self.db_path.exists():
             return []
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with connect_close(self.db_path) as conn:
                 has_table = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ths_hot_reason'"
                 ).fetchone()
