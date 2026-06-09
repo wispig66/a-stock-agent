@@ -157,6 +157,7 @@ exit 0
     assert_contains_all(
         script,
         [
+            "stockchannelgateway",
             "stockwatchloop",
             "stockanomalyloop",
             "stockthemeloop",
@@ -182,10 +183,48 @@ exit 0
         if line.startswith("bootstrap ")
     ]
     assert bootstrapped == [
+        "com.user.stockchannelgateway",
         "com.user.stockwatchloop",
         "com.user.stockanomalyloop",
         "com.user.stockthemeloop",
     ]
+
+
+def test_channel_gateway_has_persistent_launchd_agent() -> None:
+    plist = ROOT / "launchd" / "com.user.stockchannelgateway.plist"
+    assert plist.exists()
+
+    text = plist.read_text(encoding="utf-8")
+    assert_contains_all(
+        text,
+        [
+            "com.user.stockchannelgateway",
+            "{{PROJECT_ROOT}}/bin/run_channel_gateway.sh",
+            "<key>RunAtLoad</key>",
+            "<true/>",
+            "<key>KeepAlive</key>",
+            "<true/>",
+        ],
+        label="launchd/com.user.stockchannelgateway.plist",
+    )
+
+
+def test_start_gateway_uses_persistent_launchd_plist() -> None:
+    script = read_script("scripts/start_gateway.sh")
+
+    assert_contains_all(
+        script,
+        [
+            "com.user.stockchannelgateway.plist",
+            "launchctl bootstrap",
+        ],
+        label="scripts/start_gateway.sh",
+    )
+    assert_contains_none(
+        script,
+        ["launchctl submit"],
+        label="scripts/start_gateway.sh",
+    )
 
 def test_runtime_services_installer_bootstraps_market_dynamic_only_when_opted_in(tmp_path) -> None:
     env = base_env(tmp_path)

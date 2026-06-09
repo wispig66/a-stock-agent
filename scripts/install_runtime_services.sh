@@ -2,7 +2,7 @@
 # 安装长时非 LLM runtime 服务。
 #
 # 用法：从仓库根目录跑 `bash scripts/install_runtime_services.sh`
-# 默认只安装长时循环服务；IM gateway 单独用 scripts/start_gateway.sh 启动。
+# 默认安装长时循环服务和 IM gateway；也可单独用 scripts/start_gateway.sh 重启 gateway。
 # 盘面动态 worker 在题材发现 V2 验收通过前保持关闭；显式启用：
 #   ENABLE_MARKET_DYNAMIC_LAUNCHD=1 bash scripts/install_runtime_services.sh
 
@@ -14,6 +14,7 @@ cd "$PROJECT_ROOT"
 TARGET_DIR="$HOME/Library/LaunchAgents"
 GUI_DOMAIN="gui/$(id -u)"
 TEMPLATES=(
+    "launchd/com.user.stockchannelgateway.plist"
     "launchd/com.user.stockwatchloop.plist"
     "launchd/com.user.stockanomalyloop.plist"
     "launchd/com.user.stockthemeloop.plist"
